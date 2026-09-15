@@ -1,11 +1,10 @@
 """Test the Aquacell init module."""
 
-from __future__ import annotations
-
-from datetime import datetime
-from unittest.mock import AsyncMock, patch
+import time
+from unittest.mock import AsyncMock
 
 from aioaquacell import AquacellApiException, AuthenticationFailed
+from freezegun.api import FrozenDateTimeFactory
 import pytest
 
 from homeassistant.components.aquacell.const import (
@@ -38,6 +37,17 @@ async def test_load_unload_entry(
     assert entry.state is ConfigEntryState.NOT_LOADED
 
 
+async def test_load_withoutbrand(
+    hass: HomeAssistant,
+    mock_aquacell_api: AsyncMock,
+    mock_config_entry_without_brand: MockConfigEntry,
+) -> None:
+    """Test load entry without brand."""
+    await setup_integration(hass, mock_config_entry_without_brand)
+
+    assert mock_config_entry_without_brand.state is ConfigEntryState.LOADED
+
+
 async def test_coordinator_update_valid_refresh_token(
     hass: HomeAssistant,
     mock_aquacell_api: AsyncMock,
@@ -56,18 +66,14 @@ async def test_coordinator_update_valid_refresh_token(
 
 async def test_coordinator_update_expired_refresh_token(
     hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
     mock_aquacell_api: AsyncMock,
     mock_config_entry_expired: MockConfigEntry,
 ) -> None:
     """Test load and unload entry."""
     mock_aquacell_api.authenticate.return_value = "new-refresh-token"
 
-    now = datetime.now()
-    with patch(
-        "homeassistant.components.aquacell.coordinator.datetime"
-    ) as datetime_mock:
-        datetime_mock.now.return_value = now
-        await setup_integration(hass, mock_config_entry_expired)
+    await setup_integration(hass, mock_config_entry_expired)
 
     entry = hass.config_entries.async_entries(DOMAIN)[0]
 
@@ -78,7 +84,7 @@ async def test_coordinator_update_expired_refresh_token(
     assert len(mock_aquacell_api.get_all_softeners.mock_calls) == 1
 
     assert entry.data[CONF_REFRESH_TOKEN] == "new-refresh-token"
-    assert entry.data[CONF_REFRESH_TOKEN_CREATION_TIME] == now.timestamp()
+    assert entry.data[CONF_REFRESH_TOKEN_CREATION_TIME] == time.time()
 
 
 @pytest.mark.parametrize(

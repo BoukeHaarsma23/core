@@ -1,13 +1,11 @@
 """Config flow to configure the LG Netcast TV integration."""
 
-from __future__ import annotations
-
 import contextlib
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
+import probatio
 from pylgnetcast import AccessTokenError, LgNetCastClient, SessionIdError
-import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
@@ -18,10 +16,9 @@ from homeassistant.const import (
     CONF_MODEL,
     CONF_NAME,
 )
-from homeassistant.core import CALLBACK_TYPE, DOMAIN as HOMEASSISTANT_DOMAIN, callback
+from homeassistant.core import CALLBACK_TYPE, callback
 from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.helpers.event import async_track_time_interval
-from homeassistant.helpers.issue_registry import IssueSeverity, async_create_issue
 from homeassistant.util.network import is_host_valid
 
 from .const import DEFAULT_NAME, DOMAIN
@@ -48,6 +45,7 @@ class LGNetCast(config_entries.ConfigFlow, domain=DOMAIN):
         access_token = self.device_config.get(CONF_ACCESS_TOKEN)
         self.client = LgNetCastClient(host, access_token)
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -64,59 +62,9 @@ class LGNetCast(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({vol.Required(CONF_HOST): str}),
+            data_schema=probatio.Schema({probatio.Required(CONF_HOST): str}),
             errors=errors,
         )
-
-    async def async_step_import(self, config: dict[str, Any]) -> ConfigFlowResult:
-        """Import configuration from yaml."""
-        self.device_config = {
-            CONF_HOST: config[CONF_HOST],
-            CONF_NAME: config[CONF_NAME],
-        }
-
-        def _create_issue():
-            async_create_issue(
-                self.hass,
-                HOMEASSISTANT_DOMAIN,
-                f"deprecated_yaml_{DOMAIN}",
-                breaks_in_ha_version="2024.11.0",
-                is_fixable=False,
-                issue_domain=DOMAIN,
-                severity=IssueSeverity.WARNING,
-                translation_key="deprecated_yaml",
-                translation_placeholders={
-                    "domain": DOMAIN,
-                    "integration_title": "LG Netcast",
-                },
-            )
-
-        try:
-            result: ConfigFlowResult = await self.async_step_authorize(config)
-        except AbortFlow as err:
-            if err.reason != "already_configured":
-                async_create_issue(
-                    self.hass,
-                    DOMAIN,
-                    "deprecated_yaml_import_issue_{err.reason}",
-                    breaks_in_ha_version="2024.11.0",
-                    is_fixable=False,
-                    issue_domain=DOMAIN,
-                    severity=IssueSeverity.WARNING,
-                    translation_key=f"deprecated_yaml_import_issue_{err.reason}",
-                    translation_placeholders={
-                        "domain": DOMAIN,
-                        "integration_title": "LG Netcast",
-                        "error_type": err.reason,
-                    },
-                )
-            else:
-                _create_issue()
-            raise
-
-        _create_issue()
-
-        return result
 
     async def async_discover_client(self):
         """Handle Discovery step."""
@@ -181,9 +129,11 @@ class LGNetCast(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="authorize",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Optional(CONF_ACCESS_TOKEN): vol.All(str, vol.Length(max=6)),
+                    probatio.Optional(CONF_ACCESS_TOKEN): probatio.All(
+                        str, probatio.Length(max=6)
+                    ),
                 }
             ),
             errors=errors,
@@ -198,6 +148,7 @@ class LGNetCast(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
     @callback
+    @override
     def async_remove(self):
         """Terminate Access token display if flow is removed."""
         self.async_stop_display_access_token()

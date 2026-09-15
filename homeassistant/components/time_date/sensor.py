@@ -1,13 +1,11 @@
 """Support for showing the date and the time."""
 
-from __future__ import annotations
-
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 import logging
-from typing import Any
+from typing import Any, override
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.components.sensor import (
     ENTITY_ID_FORMAT,
@@ -17,11 +15,14 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_DISPLAY_OPTIONS, EVENT_CORE_CONFIG_UPDATE
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
-import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.entity_platform import (
+    AddConfigEntryEntitiesCallback,
+    AddEntitiesCallback,
+)
 from homeassistant.helpers.event import async_track_point_in_utc_time
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-import homeassistant.util.dt as dt_util
+from homeassistant.util import dt as dt_util
 
 from .const import OPTION_TYPES
 
@@ -32,8 +33,8 @@ TIME_STR_FORMAT = "%H:%M"
 
 PLATFORM_SCHEMA = SENSOR_PLATFORM_SCHEMA.extend(
     {
-        vol.Optional(CONF_DISPLAY_OPTIONS, default=["time"]): vol.All(
-            cv.ensure_list, [vol.In(OPTION_TYPES)]
+        probatio.Optional(CONF_DISPLAY_OPTIONS, default=["time"]): probatio.All(
+            cv.ensure_list, [probatio.In(OPTION_TYPES)]
         )
     }
 )
@@ -48,7 +49,7 @@ async def async_setup_platform(
     """Set up the Time and Date sensor."""
     if hass.config.time_zone is None:
         _LOGGER.error("Timezone is not set in Home Assistant configuration")  # type: ignore[unreachable]
-        return False
+        return
 
     async_add_entities(
         [TimeDateSensor(variable) for variable in config[CONF_DISPLAY_OPTIONS]]
@@ -56,7 +57,9 @@ async def async_setup_platform(
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the Time & Date sensor."""
 
@@ -83,11 +86,13 @@ class TimeDateSensor(SensorEntity):
         self._update_internal_state(dt_util.utcnow())
 
     @property
+    @override
     def native_value(self) -> str | None:
         """Return the state of the sensor."""
         return self._state
 
     @property
+    @override
     def icon(self) -> str:
         """Icon to use in the frontend, if any."""
         if "date" in self.type and "time" in self.type:
@@ -125,6 +130,7 @@ class TimeDateSensor(SensorEntity):
         point_in_time_listener(None)
         return async_stop_preview
 
+    @override
     async def async_added_to_hass(self) -> None:
         """Set up first update."""
 
@@ -138,6 +144,7 @@ class TimeDateSensor(SensorEntity):
         )
         self._update_state_and_setup_listener()
 
+    @override
     async def async_will_remove_from_hass(self) -> None:
         """Cancel next update."""
         if self.unsub:

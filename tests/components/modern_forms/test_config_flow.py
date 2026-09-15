@@ -1,21 +1,22 @@
 """Tests for the Modern Forms config flow."""
 
+from functools import partial
 from ipaddress import ip_address
 from unittest.mock import MagicMock, patch
 
 import aiohttp
 from aiomodernforms import ModernFormsConnectionError
 
-from homeassistant.components import zeroconf
 from homeassistant.components.modern_forms.const import DOMAIN
 from homeassistant.config_entries import SOURCE_USER, SOURCE_ZEROCONF
 from homeassistant.const import CONF_HOST, CONF_MAC, CONF_NAME, CONTENT_TYPE_JSON
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
-from . import init_integration
+from . import init_integration, modern_forms_gen4_call_mock
 
-from tests.common import load_fixture
+from tests.common import async_load_fixture
 from tests.test_util.aiohttp import AiohttpClientMocker
 
 
@@ -25,7 +26,7 @@ async def test_full_user_flow_implementation(
     """Test the full manual user flow from start to finish."""
     aioclient_mock.post(
         "http://192.168.1.123:80/mf",
-        text=load_fixture("modern_forms/device_info.json"),
+        text=await async_load_fixture(hass, "device_info.json", DOMAIN),
         headers={"Content-Type": CONTENT_TYPE_JSON},
     )
 
@@ -59,14 +60,14 @@ async def test_full_zeroconf_flow_implementation(
     """Test the full manual user flow from start to finish."""
     aioclient_mock.post(
         "http://192.168.1.123:80/mf",
-        text=load_fixture("modern_forms/device_info.json"),
+        text=await async_load_fixture(hass, "device_info.json", DOMAIN),
         headers={"Content-Type": CONTENT_TYPE_JSON},
     )
 
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": SOURCE_ZEROCONF},
-        data=zeroconf.ZeroconfServiceInfo(
+        data=ZeroconfServiceInfo(
             ip_address=ip_address("192.168.1.123"),
             ip_addresses=[ip_address("192.168.1.123")],
             hostname="example.local.",
@@ -84,10 +85,9 @@ async def test_full_zeroconf_flow_implementation(
     assert result.get("step_id") == "zeroconf_confirm"
     assert result.get("type") is FlowResultType.FORM
 
-    flow = flows[0]
-    assert "context" in flow
-    assert flow["context"][CONF_HOST] == "192.168.1.123"
-    assert flow["context"][CONF_NAME] == "example"
+    flow = hass.config_entries.flow._progress[flows[0]["flow_id"]]
+    assert flow.host == "192.168.1.123"
+    assert flow.name == "example"
 
     result2 = await hass.config_entries.flow.async_configure(
         result["flow_id"], user_input={}
@@ -114,7 +114,11 @@ async def test_connection_error(
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": SOURCE_USER},
-        data={CONF_HOST: "example.com"},
+    )
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={CONF_HOST: "example.com"},
     )
 
     assert result.get("type") is FlowResultType.FORM
@@ -135,7 +139,7 @@ async def test_zeroconf_connection_error(
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": SOURCE_ZEROCONF},
-        data=zeroconf.ZeroconfServiceInfo(
+        data=ZeroconfServiceInfo(
             ip_address=ip_address("192.168.1.123"),
             ip_addresses=[ip_address("192.168.1.123")],
             hostname="example.local.",
@@ -167,7 +171,7 @@ async def test_zeroconf_confirm_connection_error(
             CONF_HOST: "example.com",
             CONF_NAME: "test",
         },
-        data=zeroconf.ZeroconfServiceInfo(
+        data=ZeroconfServiceInfo(
             ip_address=ip_address("192.168.1.123"),
             ip_addresses=[ip_address("192.168.1.123")],
             hostname="example.com.",
@@ -188,30 +192,20 @@ async def test_user_device_exists_abort(
     """Test we abort zeroconf flow if Modern Forms device already configured."""
     aioclient_mock.post(
         "http://192.168.1.123:80/mf",
-        text=load_fixture("modern_forms/device_info.json"),
+        text=await async_load_fixture(hass, "device_info.json", DOMAIN),
         headers={"Content-Type": CONTENT_TYPE_JSON},
     )
 
     await init_integration(hass, aioclient_mock, skip_setup=True)
 
-    await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data={
-            "host": "192.168.1.123",
-            "hostname": "example.local.",
-            "properties": {CONF_MAC: "AA:BB:CC:DD:EE:FF"},
-        },
-    )
-
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": SOURCE_USER},
-        data={
-            "host": "192.168.1.123",
-            "hostname": "example.local.",
-            "properties": {CONF_MAC: "AA:BB:CC:DD:EE:FF"},
-        },
+    )
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={CONF_HOST: "192.168.1.123"},
     )
 
     assert result.get("type") is FlowResultType.ABORT
@@ -224,20 +218,10 @@ async def test_zeroconf_with_mac_device_exists_abort(
     """Test we abort zeroconf flow if a Modern Forms device already configured."""
     await init_integration(hass, aioclient_mock, skip_setup=True)
 
-    await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data={
-            "host": "192.168.1.123",
-            "hostname": "example.local.",
-            "properties": {CONF_MAC: "AA:BB:CC:DD:EE:FF"},
-        },
-    )
-
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": SOURCE_ZEROCONF},
-        data=zeroconf.ZeroconfServiceInfo(
+        data=ZeroconfServiceInfo(
             ip_address=ip_address("192.168.1.123"),
             ip_addresses=[ip_address("192.168.1.123")],
             hostname="example.local.",
@@ -250,3 +234,36 @@ async def test_zeroconf_with_mac_device_exists_abort(
 
     assert result.get("type") is FlowResultType.ABORT
     assert result.get("reason") == "already_configured"
+
+
+async def test_full_user_flow_gen4(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Test the user flow successfully adds a Gen4 fan."""
+    aioclient_mock.post("http://192.168.1.123:80/mf", text="", status=404)
+    aioclient_mock.post(
+        "http://192.168.1.123:80/device",
+        side_effect=partial(modern_forms_gen4_call_mock, hass),
+    )
+    aioclient_mock.post(
+        "http://192.168.1.123:80/fixture",
+        side_effect=partial(modern_forms_gen4_call_mock, hass),
+    )
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": SOURCE_USER},
+    )
+
+    with patch(
+        "homeassistant.components.modern_forms.async_setup_entry",
+        return_value=True,
+    ):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={CONF_HOST: "192.168.1.123"}
+        )
+
+    assert result2.get("type") is FlowResultType.CREATE_ENTRY
+    assert result2.get("title") == "ModernFormsFan"
+    assert result2["data"][CONF_HOST] == "192.168.1.123"
+    assert result2["data"][CONF_MAC] == "AA:BB:CC:00:11:22"

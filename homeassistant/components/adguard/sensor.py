@@ -1,18 +1,16 @@
 """Support for AdGuard Home sensors."""
 
-from __future__ import annotations
-
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
+from typing import Any, override
 
 from adguardhome import AdGuardHome
 
 from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
 from homeassistant.const import PERCENTAGE, UnitOfTime
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import AdGuardConfigEntry, AdGuardData
 from .const import DOMAIN
@@ -85,7 +83,7 @@ SENSORS: tuple[AdGuardHomeEntityDescription, ...] = (
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: AdGuardConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up AdGuard Home sensor based on a config entry."""
     data = entry.runtime_data
@@ -110,7 +108,7 @@ class AdGuardHomeSensor(AdGuardHomeEntity, SensorEntity):
         """Initialize AdGuard Home sensor."""
         super().__init__(data, entry)
         self.entity_description = description
-        self._attr_unique_id = "_".join(
+        self._attr_unique_id = "_".join(  # pylint: disable=home-assistant-entity-unique-id-redundant-domain,home-assistant-entity-unique-id-redundant-platform
             [
                 DOMAIN,
                 self.adguard.host,
@@ -120,6 +118,7 @@ class AdGuardHomeSensor(AdGuardHomeEntity, SensorEntity):
             ]
         )
 
+    @override
     async def _adguard_update(self) -> None:
         """Update AdGuard Home entity."""
         value = await self.entity_description.value_fn(self.adguard)

@@ -1,25 +1,24 @@
 """Support for deCONZ buttons."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
+from typing import override
 
 from pydeconz.models.event import EventType
 from pydeconz.models.scene import Scene as PydeconzScene
 from pydeconz.models.sensor.presence import Presence
 
 from homeassistant.components.button import (
-    DOMAIN,
+    DOMAIN as BUTTON_DOMAIN,
     ButtonDeviceClass,
     ButtonEntity,
     ButtonEntityDescription,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .deconz_device import DeconzDevice, DeconzSceneMixin
+from . import DeconzConfigEntry
+from .entity import DeconzDevice, DeconzSceneMixin
 from .hub import DeconzHub
 
 
@@ -46,12 +45,12 @@ ENTITY_DESCRIPTIONS = {
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    config_entry: DeconzConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the deCONZ button entity."""
-    hub = DeconzHub.get_hub(hass, config_entry)
-    hub.entities[DOMAIN] = set()
+    hub = config_entry.runtime_data
+    hub.entities[BUTTON_DOMAIN] = set()
 
     @callback
     def async_add_scene(_: EventType, scene_id: str) -> None:
@@ -83,7 +82,7 @@ async def async_setup_entry(
 class DeconzSceneButton(DeconzSceneMixin, ButtonEntity):
     """Representation of a deCONZ button entity."""
 
-    TYPE = DOMAIN
+    TYPE = BUTTON_DOMAIN
 
     def __init__(
         self,
@@ -97,6 +96,7 @@ class DeconzSceneButton(DeconzSceneMixin, ButtonEntity):
 
         self._attr_name = f"{self._attr_name} {description.suffix}"
 
+    @override
     async def async_press(self) -> None:
         """Store light states into scene."""
         async_button_fn = getattr(
@@ -105,6 +105,7 @@ class DeconzSceneButton(DeconzSceneMixin, ButtonEntity):
         )
         await async_button_fn(self._device.group_id, self._device.id)
 
+    @override
     def get_device_identifier(self) -> str:
         """Return a unique identifier for this scene."""
         return f"{super().get_device_identifier()}-{self.entity_description.key}"
@@ -119,8 +120,9 @@ class DeconzPresenceResetButton(DeconzDevice[Presence], ButtonEntity):
     _attr_entity_category = EntityCategory.CONFIG
     _attr_device_class = ButtonDeviceClass.RESTART
 
-    TYPE = DOMAIN
+    TYPE = BUTTON_DOMAIN
 
+    @override
     async def async_press(self) -> None:
         """Store reset presence state."""
         await self.hub.api.sensors.presence.set_config(

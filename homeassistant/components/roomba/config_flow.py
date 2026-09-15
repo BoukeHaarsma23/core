@@ -1,25 +1,19 @@
 """Config flow to configure roomba component."""
 
-from __future__ import annotations
-
 import asyncio
 from functools import partial
-from typing import Any
+from typing import Any, override
 
+import probatio
 from roombapy import RoombaFactory, RoombaInfo
 from roombapy.discovery import RoombaDiscovery
 from roombapy.getpassword import RoombaPassword
-import voluptuous as vol
 
-from homeassistant.components import dhcp, zeroconf
-from homeassistant.config_entries import (
-    ConfigEntry,
-    ConfigFlow,
-    ConfigFlowResult,
-    OptionsFlowWithConfigEntry,
-)
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import CONF_DELAY, CONF_HOST, CONF_NAME, CONF_PASSWORD
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from . import CannotConnect, async_connect_or_timeout, async_disconnect_or_timeout
 from .const import (
@@ -30,6 +24,7 @@ from .const import (
     DOMAIN,
     ROOMBA_SESSION,
 )
+from .models import RoombaConfigEntry
 
 ROOMBA_DISCOVERY_LOCK = "roomba_discovery_lock"
 ALL_ATTEMPTS = 2
@@ -41,7 +36,9 @@ DEFAULT_OPTIONS = {CONF_CONTINUOUS: DEFAULT_CONTINUOUS, CONF_DELAY: DEFAULT_DELA
 MAX_NUM_DEVICES_TO_DISCOVER = 25
 
 AUTH_HELP_URL_KEY = "auth_help_url"
-AUTH_HELP_URL_VALUE = "https://www.home-assistant.io/integrations/roomba/#manually-retrieving-your-credentials"
+AUTH_HELP_URL_VALUE = (
+    "https://www.home-assistant.io/integrations/roomba/#retrieving-your-credentials"
+)
 
 
 async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
@@ -55,7 +52,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
             address=data[CONF_HOST],
             blid=data[CONF_BLID],
             password=data[CONF_PASSWORD],
-            continuous=False,
+            continuous=True,
             delay=data[CONF_DELAY],
         )
     )
@@ -77,7 +74,7 @@ class RoombaConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     name: str | None = None
-    blid: str | None = None
+    blid: str
     host: str | None = None
 
     def __init__(self) -> None:
@@ -86,22 +83,25 @@ class RoombaConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
+    @override
     def async_get_options_flow(
-        config_entry: ConfigEntry,
+        config_entry: RoombaConfigEntry,
     ) -> RoombaOptionsFlowHandler:
         """Get the options flow for this handler."""
-        return RoombaOptionsFlowHandler(config_entry)
+        return RoombaOptionsFlowHandler()
 
+    @override
     async def async_step_zeroconf(
-        self, discovery_info: zeroconf.ZeroconfServiceInfo
+        self, discovery_info: ZeroconfServiceInfo
     ) -> ConfigFlowResult:
         """Handle zeroconf discovery."""
         return await self._async_step_discovery(
             discovery_info.host, discovery_info.hostname.lower().removesuffix(".local.")
         )
 
+    @override
     async def async_step_dhcp(
-        self, discovery_info: dhcp.DhcpServiceInfo
+        self, discovery_info: DhcpServiceInfo
     ) -> ConfigFlowResult:
         """Handle dhcp discovery."""
         return await self._async_step_discovery(
@@ -114,11 +114,21 @@ class RoombaConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle any discovery."""
         self._async_abort_entries_match({CONF_HOST: ip_address})
 
-        if not hostname.startswith(("irobot-", "roomba-")):
+        self.host = ip_address
+
+        # Actively probe the device at this IP for its real blid. This is
+        # authoritative and handles two cases where the hostname can't be
+        # trusted: some routers substitute a user-assigned friendly name
+        # for the DHCP/mDNS hostname instead of irobot-<blid>/roomba-<blid>,
+        # and even a well-formed hostname's blid may be truncated if the
+        # hostname exceeds length limits somewhere in the chain.
+        if devices := await _async_discover_roombas(self.hass, self.host):
+            self.blid = devices[0].blid
+        elif hostname.startswith(("irobot-", "roomba-")):
+            self.blid = _async_blid_from_hostname(hostname)
+        else:
             return self.async_abort(reason="not_irobot_device")
 
-        self.host = ip_address
-        self.blid = _async_blid_from_hostname(hostname)
         await self.async_set_unique_id(self.blid)
         self._abort_if_unique_id_configured(updates={CONF_HOST: ip_address})
 
@@ -128,7 +138,9 @@ class RoombaConfigFlow(ConfigFlow, domain=DOMAIN):
         # going for a longer hostname we abort so the user
         # does not see two flows if discovery fails.
         for progress in self._async_in_progress():
-            flow_unique_id: str = progress["context"]["unique_id"]
+            flow_unique_id = progress["context"].get("unique_id")
+            if not flow_unique_id:
+                continue
             if flow_unique_id.startswith(self.blid):
                 return self.async_abort(reason="short_blid")
             if self.blid.startswith(flow_unique_id):
@@ -147,6 +159,7 @@ class RoombaConfigFlow(ConfigFlow, domain=DOMAIN):
         self._abort_if_unique_id_configured()
         return await self.async_step_link()
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -197,7 +210,9 @@ class RoombaConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({vol.Optional("host"): vol.In(hosts)}),
+            data_schema=probatio.Schema(
+                {probatio.Optional("host"): probatio.In(hosts)}
+            ),
         )
 
     async def async_step_manual(
@@ -208,8 +223,8 @@ class RoombaConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_show_form(
                 step_id="manual",
                 description_placeholders={AUTH_HELP_URL_KEY: AUTH_HELP_URL_VALUE},
-                data_schema=vol.Schema(
-                    {vol.Required(CONF_HOST, default=self.host): str}
+                data_schema=probatio.Schema(
+                    {probatio.Required(CONF_HOST, default=self.host): str}
                 ),
             )
 
@@ -291,12 +306,12 @@ class RoombaConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="link_manual",
             description_placeholders={AUTH_HELP_URL_KEY: AUTH_HELP_URL_VALUE},
-            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+            data_schema=probatio.Schema({probatio.Required(CONF_PASSWORD): str}),
             errors=errors,
         )
 
 
-class RoombaOptionsFlowHandler(OptionsFlowWithConfigEntry):
+class RoombaOptionsFlowHandler(OptionsFlow):
     """Handle options."""
 
     async def async_step_init(
@@ -306,17 +321,18 @@ class RoombaOptionsFlowHandler(OptionsFlowWithConfigEntry):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
+        options = self.config_entry.options
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Optional(
+                    probatio.Optional(
                         CONF_CONTINUOUS,
-                        default=self.options.get(CONF_CONTINUOUS, DEFAULT_CONTINUOUS),
+                        default=options.get(CONF_CONTINUOUS, DEFAULT_CONTINUOUS),
                     ): bool,
-                    vol.Optional(
+                    probatio.Optional(
                         CONF_DELAY,
-                        default=self.options.get(CONF_DELAY, DEFAULT_DELAY),
+                        default=options.get(CONF_DELAY, DEFAULT_DELAY),
                     ): int,
                 }
             ),
@@ -334,7 +350,7 @@ def _async_get_roomba_discovery() -> RoombaDiscovery:
 @callback
 def _async_blid_from_hostname(hostname: str) -> str:
     """Extract the blid from the hostname."""
-    return hostname.split("-")[1].split(".")[0].upper()
+    return hostname.split("-")[1].split(".", maxsplit=1)[0].upper()
 
 
 async def _async_discover_roombas(

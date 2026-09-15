@@ -1,11 +1,9 @@
 """Provides device automations for RFXCOM RFXtrx."""
 
-from __future__ import annotations
+import probatio
 
-import voluptuous as vol
-
-from homeassistant.components.device_automation import DEVICE_TRIGGER_BASE_SCHEMA
-from homeassistant.components.device_automation.exceptions import (
+from homeassistant.components.device_automation import (
+    DEVICE_TRIGGER_BASE_SCHEMA,
     InvalidDeviceAutomationConfig,
 )
 from homeassistant.components.homeassistant.triggers import event as event_trigger
@@ -39,8 +37,8 @@ TRIGGER_TYPES = [
 ]
 TRIGGER_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend(
     {
-        vol.Required(CONF_TYPE): vol.In(TRIGGER_TYPES),
-        vol.Required(CONF_SUBTYPE): str,
+        probatio.Required(CONF_TYPE): probatio.In(TRIGGER_TYPES),
+        probatio.Required(CONF_SUBTYPE): str,
     }
 )
 
@@ -97,7 +95,7 @@ async def async_attach_trigger(
     if config[CONF_TYPE] == CONF_TYPE_COMMAND:
         event_data["values"] = {"Command": config[CONF_SUBTYPE]}
     elif config[CONF_TYPE] == CONF_TYPE_STATUS:
-        event_data["values"] = {"Status": config[CONF_SUBTYPE]}
+        event_data["values"] = {"Sensor Status": config[CONF_SUBTYPE]}
 
     event_config = event_trigger.TRIGGER_SCHEMA(
         {

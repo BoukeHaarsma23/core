@@ -1,20 +1,29 @@
 """Utilities for the LinkPlay component."""
+# pylint: disable=home-assistant-use-runtime-data  # Uses legacy hass.data[DOMAIN] pattern
 
-from typing import Final
+from aiohttp import ClientSession
+from linkplay.utils import async_create_unverified_client_session
 
-MANUFACTURER_ARTSOUND: Final[str] = "ArtSound"
-MANUFACTURER_GENERIC: Final[str] = "Generic"
-MODELS_ARTSOUND_SMART_ZONE4: Final[str] = "Smart Zone 4 AMP"
-MODELS_ARTSOUND_SMART_HYDE: Final[str] = "Smart Hyde"
-MODELS_GENERIC: Final[str] = "Generic"
+from homeassistant.const import EVENT_HOMEASSISTANT_CLOSE
+from homeassistant.core import Event, HomeAssistant, callback
+
+from .const import DATA_SESSION, DOMAIN
 
 
-def get_info_from_project(project: str) -> tuple[str, str]:
-    """Get manufacturer and model info based on given project."""
-    match project:
-        case "SMART_ZONE4_AMP":
-            return MANUFACTURER_ARTSOUND, MODELS_ARTSOUND_SMART_ZONE4
-        case "SMART_HYDE":
-            return MANUFACTURER_ARTSOUND, MODELS_ARTSOUND_SMART_HYDE
-        case _:
-            return MANUFACTURER_GENERIC, MODELS_GENERIC
+async def async_get_client_session(hass: HomeAssistant) -> ClientSession:
+    """Get a ClientSession that can be used with LinkPlay devices."""
+    hass.data.setdefault(DOMAIN, {})
+    if DATA_SESSION not in hass.data[DOMAIN]:
+        clientsession: ClientSession = await async_create_unverified_client_session()
+
+        @callback
+        def _async_close_websession(event: Event) -> None:
+            """Close websession."""
+            clientsession.detach()
+
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_CLOSE, _async_close_websession)
+        hass.data[DOMAIN][DATA_SESSION] = clientsession
+        return clientsession
+
+    session: ClientSession = hass.data[DOMAIN][DATA_SESSION]
+    return session

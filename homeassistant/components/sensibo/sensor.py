@@ -1,13 +1,11 @@
 """Sensor platform for Sensibo integration."""
 
-from __future__ import annotations
-
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
-from pysensibo.model import MotionSensor, SensiboDevice
+from pysensibo.model import MotionSensor, PureAQI, SensiboDevice
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -16,17 +14,15 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import (
-    CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
-    CONCENTRATION_PARTS_PER_BILLION,
-    CONCENTRATION_PARTS_PER_MILLION,
-    PERCENTAGE,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     EntityCategory,
+    UnitOfDensity,
     UnitOfElectricPotential,
+    UnitOfRatio,
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
 from . import SensiboConfigEntry
@@ -34,6 +30,13 @@ from .coordinator import SensiboDataUpdateCoordinator
 from .entity import SensiboDeviceBaseEntity, SensiboMotionBaseEntity
 
 PARALLEL_UPDATES = 0
+
+
+def _smart_type_name(_type: str | None) -> str | None:
+    """Return a lowercase name of smart type."""
+    if _type and _type == "feelsLike":
+        return "feelslike"
+    return _type
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -82,7 +85,7 @@ MOTION_SENSOR_TYPES: tuple[SensiboMotionSensorEntityDescription, ...] = (
     SensiboMotionSensorEntityDescription(
         key="humidity",
         device_class=SensorDeviceClass.HUMIDITY,
-        native_unit_of_measurement=PERCENTAGE,
+        native_unit_of_measurement=UnitOfRatio.PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda data: data.humidity,
     ),
@@ -94,14 +97,25 @@ MOTION_SENSOR_TYPES: tuple[SensiboMotionSensorEntityDescription, ...] = (
         value_fn=lambda data: data.temperature,
     ),
 )
+
+
+def _pure_aqi(pm25_pure: PureAQI | None) -> str | None:
+    """Return the Pure aqi name or None if unknown."""
+    if pm25_pure:
+        aqi_name = pm25_pure.name.lower()
+        if aqi_name != "unknown":
+            return aqi_name
+    return None
+
+
 PURE_SENSOR_TYPES: tuple[SensiboDeviceSensorEntityDescription, ...] = (
     SensiboDeviceSensorEntityDescription(
         key="pm25",
-        device_class=SensorDeviceClass.PM25,
-        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.pm25,
+        translation_key="pm25_pure",
+        device_class=SensorDeviceClass.ENUM,
+        value_fn=lambda data: _pure_aqi(data.pm25_pure),
         extra_fn=None,
+        options=[aqi.name.lower() for aqi in PureAQI if aqi.name != "UNKNOWN"],
     ),
     SensiboDeviceSensorEntityDescription(
         key="pure_sensitivity",
@@ -111,6 +125,7 @@ PURE_SENSOR_TYPES: tuple[SensiboDeviceSensorEntityDescription, ...] = (
     ),
     FILTER_LAST_RESET_DESCRIPTION,
 )
+
 
 DEVICE_SENSOR_TYPES: tuple[SensiboDeviceSensorEntityDescription, ...] = (
     SensiboDeviceSensorEntityDescription(
@@ -153,7 +168,7 @@ DEVICE_SENSOR_TYPES: tuple[SensiboDeviceSensorEntityDescription, ...] = (
     SensiboDeviceSensorEntityDescription(
         key="climate_react_type",
         translation_key="smart_type",
-        value_fn=lambda data: data.smart_type,
+        value_fn=lambda data: _smart_type_name(data.smart_type),
         extra_fn=None,
         entity_registry_enabled_default=False,
     ),
@@ -164,7 +179,7 @@ AIRQ_SENSOR_TYPES: tuple[SensiboDeviceSensorEntityDescription, ...] = (
     SensiboDeviceSensorEntityDescription(
         key="airq_tvoc",
         translation_key="airq_tvoc",
-        native_unit_of_measurement=CONCENTRATION_PARTS_PER_BILLION,
+        native_unit_of_measurement=UnitOfRatio.PARTS_PER_BILLION,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda data: data.tvoc,
         extra_fn=None,
@@ -173,18 +188,19 @@ AIRQ_SENSOR_TYPES: tuple[SensiboDeviceSensorEntityDescription, ...] = (
         key="airq_co2",
         translation_key="airq_co2",
         device_class=SensorDeviceClass.CO2,
-        native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
+        native_unit_of_measurement=UnitOfRatio.PARTS_PER_MILLION,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda data: data.co2,
         extra_fn=None,
     ),
+    *DEVICE_SENSOR_TYPES,
 )
 
 ELEMENT_SENSOR_TYPES: tuple[SensiboDeviceSensorEntityDescription, ...] = (
     SensiboDeviceSensorEntityDescription(
         key="pm25",
         device_class=SensorDeviceClass.PM25,
-        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        native_unit_of_measurement=UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda data: data.pm25,
         extra_fn=None,
@@ -192,7 +208,7 @@ ELEMENT_SENSOR_TYPES: tuple[SensiboDeviceSensorEntityDescription, ...] = (
     SensiboDeviceSensorEntityDescription(
         key="tvoc",
         translation_key="tvoc",
-        native_unit_of_measurement=CONCENTRATION_PARTS_PER_BILLION,
+        native_unit_of_measurement=UnitOfRatio.PARTS_PER_BILLION,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda data: data.tvoc,
         extra_fn=None,
@@ -200,14 +216,14 @@ ELEMENT_SENSOR_TYPES: tuple[SensiboDeviceSensorEntityDescription, ...] = (
     SensiboDeviceSensorEntityDescription(
         key="co2",
         device_class=SensorDeviceClass.CO2,
-        native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
+        native_unit_of_measurement=UnitOfRatio.PARTS_PER_MILLION,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda data: data.co2,
         extra_fn=None,
     ),
     SensiboDeviceSensorEntityDescription(
         key="ethanol",
-        native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
+        native_unit_of_measurement=UnitOfRatio.PARTS_PER_MILLION,
         state_class=SensorStateClass.MEASUREMENT,
         translation_key="ethanol",
         value_fn=lambda data: data.etoh,
@@ -232,31 +248,45 @@ DESCRIPTION_BY_MODELS = {
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: SensiboConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Sensibo sensor platform."""
 
     coordinator = entry.runtime_data
 
-    entities: list[SensiboMotionSensor | SensiboDeviceSensor] = []
+    added_devices: set[str] = set()
 
-    for device_id, device_data in coordinator.data.parsed.items():
-        if device_data.motion_sensors:
+    def _add_remove_devices() -> None:
+        """Handle additions of devices and sensors."""
+
+        entities: list[SensiboMotionSensor | SensiboDeviceSensor] = []
+        nonlocal added_devices
+        new_devices, _, new_added_devices = coordinator.get_devices(added_devices)
+        added_devices = new_added_devices
+
+        if new_devices:
             entities.extend(
                 SensiboMotionSensor(
                     coordinator, device_id, sensor_id, sensor_data, description
                 )
+                for device_id, device_data in coordinator.data.parsed.items()
+                if device_data.motion_sensors
                 for sensor_id, sensor_data in device_data.motion_sensors.items()
+                if sensor_id in new_devices
                 for description in MOTION_SENSOR_TYPES
             )
-    entities.extend(
-        SensiboDeviceSensor(coordinator, device_id, description)
-        for device_id, device_data in coordinator.data.parsed.items()
-        for description in DESCRIPTION_BY_MODELS.get(
-            device_data.model, DEVICE_SENSOR_TYPES
-        )
-    )
-    async_add_entities(entities)
+            entities.extend(
+                SensiboDeviceSensor(coordinator, device_id, description)
+                for device_id, device_data in coordinator.data.parsed.items()
+                if device_id in new_devices
+                for description in DESCRIPTION_BY_MODELS.get(
+                    device_data.model, DEVICE_SENSOR_TYPES
+                )
+            )
+            async_add_entities(entities)
+
+    entry.async_on_unload(coordinator.async_add_listener(_add_remove_devices))
+    _add_remove_devices()
 
 
 class SensiboMotionSensor(SensiboMotionBaseEntity, SensorEntity):
@@ -283,6 +313,7 @@ class SensiboMotionSensor(SensiboMotionBaseEntity, SensorEntity):
         self._attr_unique_id = f"{sensor_id}-{entity_description.key}"
 
     @property
+    @override
     def native_value(self) -> StateType:
         """Return value of sensor."""
         if TYPE_CHECKING:
@@ -310,11 +341,13 @@ class SensiboDeviceSensor(SensiboDeviceBaseEntity, SensorEntity):
         self._attr_unique_id = f"{device_id}-{entity_description.key}"
 
     @property
+    @override
     def native_value(self) -> StateType | datetime:
         """Return value of sensor."""
         return self.entity_description.value_fn(self.device_data)
 
     @property
+    @override
     def extra_state_attributes(self) -> Mapping[str, Any] | None:
         """Return additional attributes."""
         if self.entity_description.extra_fn is not None:

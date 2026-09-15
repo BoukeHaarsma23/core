@@ -4,24 +4,26 @@ Support for bandwidth sensors of network clients.
 Support for uptime sensors of network clients.
 """
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from functools import partial
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, override
 
-from aiounifi.interfaces.api_handlers import ItemEvent
+from aiounifi.interfaces.api_handlers import APIHandler, ItemEvent
 from aiounifi.interfaces.clients import Clients
 from aiounifi.interfaces.devices import Devices
 from aiounifi.interfaces.outlets import Outlets
 from aiounifi.interfaces.ports import Ports
 from aiounifi.interfaces.wlans import Wlans
-from aiounifi.models.api import ApiItemT
+from aiounifi.models.api import ApiItem
 from aiounifi.models.client import Client
-from aiounifi.models.device import Device, TypedDeviceUptimeStatsWanMonitor
+from aiounifi.models.device import (
+    Device,
+    TypedDeviceTemperature,
+    TypedDeviceUptimeStatsWanMonitor,
+)
 from aiounifi.models.outlet import Outlet
 from aiounifi.models.port import Port
 from aiounifi.models.wlan import Wlan
@@ -42,14 +44,14 @@ from homeassistant.const import (
 )
 from homeassistant.core import Event as core_Event, HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
-import homeassistant.util.dt as dt_util
+from homeassistant.util import dt as dt_util, slugify
 
 from . import UnifiConfigEntry
 from .const import DEVICE_STATES
+from .device_tracker import async_client_allowed_fn
 from .entity import (
-    HandlerT,
     UnifiEntity,
     UnifiEntityDescription,
     async_client_device_info_fn,
@@ -57,8 +59,11 @@ from .entity import (
     async_device_device_info_fn,
     async_wlan_available_fn,
     async_wlan_device_info_fn,
+    is_locally_administered_mac,
 )
 from .hub import UnifiHub
+
+PARALLEL_UPDATES = 0
 
 
 @callback
@@ -66,6 +71,13 @@ def async_bandwidth_sensor_allowed_fn(hub: UnifiHub, obj_id: str) -> bool:
     """Check if client is allowed."""
     if obj_id in hub.config.option_supported_clients:
         return True
+    client = hub.api.clients[obj_id]
+    if (
+        hub.config.option_ignore_local_mac
+        and not client.is_wired
+        and is_locally_administered_mac(client.mac)
+    ):
+        return False
     return hub.config.option_allow_bandwidth_sensors
 
 
@@ -74,6 +86,13 @@ def async_uptime_sensor_allowed_fn(hub: UnifiHub, obj_id: str) -> bool:
     """Check if client is allowed."""
     if obj_id in hub.config.option_supported_clients:
         return True
+    client = hub.api.clients[obj_id]
+    if (
+        hub.config.option_ignore_local_mac
+        and not client.is_wired
+        and is_locally_administered_mac(client.mac)
+    ):
+        return False
     return hub.config.option_allow_uptime_sensors
 
 
@@ -99,6 +118,20 @@ def async_client_uptime_value_fn(hub: UnifiHub, client: Client) -> datetime:
     if client.uptime < 1000000000:
         return dt_util.now() - timedelta(seconds=client.uptime)
     return dt_util.utc_from_timestamp(float(client.uptime))
+
+
+@callback
+def async_wired_client_allowed_fn(hub: UnifiHub, obj_id: str) -> bool:
+    """Check if client is wired, tracked and reports a link speed.
+
+    Gate on the tracking options so the sensor (and its client device) is only
+    created for clients the user actually tracks, instead of every wired client
+    the controller has ever seen.
+    """
+    client = hub.api.clients[obj_id]
+    if not client.is_wired or client.wired_rate_mbps <= 0:
+        return False
+    return async_client_allowed_fn(hub, obj_id)
 
 
 @callback
@@ -138,7 +171,7 @@ def async_device_clients_value_fn(hub: UnifiHub, device: Device) -> int:
 
 @callback
 def async_device_uptime_value_fn(hub: UnifiHub, device: Device) -> datetime | None:
-    """Calculate the approximate time the device started (based on uptime returned from API, in seconds)."""
+    """Calculate the approximate time the device started."""
     if device.uptime <= 0:
         # Library defaults to 0 if uptime is not provided, e.g. when offline
         return None
@@ -149,7 +182,7 @@ def async_device_uptime_value_fn(hub: UnifiHub, device: Device) -> datetime | No
 def async_uptime_value_changed_fn(
     old: StateType | date | datetime | Decimal, new: datetime | float | str | None
 ) -> bool:
-    """Reject the new uptime value if it's too similar to the old one. Avoids unwanted fluctuation."""
+    """Reject new uptime if too similar to old. Avoids fluctuation."""
     if isinstance(old, datetime) and isinstance(new, datetime):
         return new != old and abs((new - old).total_seconds()) > 120
     return old is None or (new != old)
@@ -158,15 +191,19 @@ def async_uptime_value_changed_fn(
 @callback
 def async_device_outlet_power_supported_fn(hub: UnifiHub, obj_id: str) -> bool:
     """Determine if an outlet has the power property."""
-    # At this time, an outlet_caps value of 3 is expected to indicate that the outlet
-    # supports metering
-    return hub.api.outlets[obj_id].caps == 3
+    return hub.api.outlets[obj_id].has_metering is True
 
 
 @callback
 def async_device_outlet_supported_fn(hub: UnifiHub, obj_id: str) -> bool:
     """Determine if a device supports reading overall power metrics."""
     return hub.api.devices[obj_id].outlet_ac_power_budget is not None
+
+
+@callback
+def async_device_uplink_mac_supported_fn(hub: UnifiHub, obj_id: str) -> bool:
+    """Determine if a device supports reading uplink MAC address."""
+    return "uplink_mac" in hub.api.devices[obj_id].raw.get("uplink", {})
 
 
 def device_system_stats_supported_fn(
@@ -194,9 +231,9 @@ def async_client_is_connected_fn(hub: UnifiHub, obj_id: str) -> bool:
 
 
 @callback
-def async_device_state_value_fn(hub: UnifiHub, device: Device) -> str:
+def async_device_state_value_fn(hub: UnifiHub, device: Device) -> str | None:
     """Retrieve the state of the device."""
-    return DEVICE_STATES[device.state]
+    return DEVICE_STATES.get(device.state)
 
 
 @callback
@@ -226,7 +263,7 @@ def async_device_wan_latency_value_fn(
         # Checked by async_device_wan_latency_supported_fn
         assert target
 
-    return target.get("latency_average", 0)
+    return target.get("latency_average")
 
 
 @callback
@@ -235,7 +272,7 @@ def _device_wan_latency_monitor(
 ) -> TypedDeviceUptimeStatsWanMonitor | None:
     """Return the target of the WAN latency monitor."""
     if device.uptime_stats and (uptime_stats_wan := device.uptime_stats.get(wan)):
-        for monitor in uptime_stats_wan["monitors"]:
+        for monitor in uptime_stats_wan.get("monitors", []):
             if monitor_target in monitor["target"]:
                 return monitor
     return None
@@ -247,8 +284,10 @@ def make_wan_latency_sensors() -> tuple[UnifiSensorEntityDescription, ...]:
     def make_wan_latency_entity_description(
         wan: Literal["WAN", "WAN2"], name: str, monitor_target: str
     ) -> UnifiSensorEntityDescription:
+        name_wan = f"{name} {wan}"
         return UnifiSensorEntityDescription[Devices, Device](
-            key=f"{name} {wan} latency",
+            key=f"{name_wan} latency",
+            translation_key="wan_latency",
             entity_category=EntityCategory.DIAGNOSTIC,
             native_unit_of_measurement=UnitOfTime.MILLISECONDS,
             state_class=SensorStateClass.MEASUREMENT,
@@ -257,13 +296,12 @@ def make_wan_latency_sensors() -> tuple[UnifiSensorEntityDescription, ...]:
             api_handler_fn=lambda api: api.devices,
             available_fn=async_device_available_fn,
             device_info_fn=async_device_device_info_fn,
-            name_fn=lambda _: f"{name} {wan} latency",
             object_fn=lambda api, obj_id: api.devices[obj_id],
             supported_fn=partial(
                 async_device_wan_latency_supported_fn, wan, monitor_target
             ),
-            unique_id_fn=lambda hub,
-            obj_id: f"{name.lower}_{wan.lower}_latency-{obj_id}",
+            translation_placeholders_fn=lambda _: {"target": name, "wan": wan},
+            unique_id_fn=lambda hub, obj_id: f"{slugify(name_wan)}_latency-{obj_id}",
             value_fn=partial(async_device_wan_latency_value_fn, wan, monitor_target),
         )
 
@@ -279,8 +317,89 @@ def make_wan_latency_sensors() -> tuple[UnifiSensorEntityDescription, ...]:
     )
 
 
+@callback
+def async_device_temperatures_value_fn(
+    temperature_name: str, hub: UnifiHub, device: Device
+) -> float | None:
+    """Retrieve the temperature of the device."""
+    if device.temperatures:
+        return _device_temperature(temperature_name, device.temperatures)
+    return None
+
+
+@callback
+def async_device_temperatures_available_fn(
+    temperature_name: str, hub: UnifiHub, obj_id: str
+) -> bool:
+    """Determine if a device temperature has a value."""
+    device = hub.api.devices[obj_id]
+    if not async_device_available_fn(hub, obj_id):
+        return False
+    return _device_temperature(temperature_name, device.temperatures or []) is not None
+
+
+@callback
+def async_device_temperatures_supported_fn(
+    temperature_name: str, hub: UnifiHub, obj_id: str
+) -> bool:
+    """Determine if an device have a temperatures."""
+    if (device := hub.api.devices[obj_id]) and device.temperatures:
+        return any(
+            temperature_name in temperature["name"]
+            for temperature in device.temperatures
+        )
+
+    return False
+
+
+@callback
+def _device_temperature(
+    temperature_name: str, temperatures: list[TypedDeviceTemperature]
+) -> float | None:
+    """Return the temperature of the device."""
+    for temperature in temperatures:
+        if temperature_name in temperature["name"]:
+            if (value := temperature.get("value")) is not None:
+                return value
+    return None
+
+
+def make_device_temperatur_sensors() -> tuple[UnifiSensorEntityDescription, ...]:
+    """Create device temperature sensors."""
+
+    def make_device_temperature_entity_description(
+        name: str,
+    ) -> UnifiSensorEntityDescription:
+        return UnifiSensorEntityDescription[Devices, Device](
+            key=f"Device {name} temperature",
+            translation_key="device_sub_temperature",
+            device_class=SensorDeviceClass.TEMPERATURE,
+            entity_category=EntityCategory.DIAGNOSTIC,
+            state_class=SensorStateClass.MEASUREMENT,
+            native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+            entity_registry_enabled_default=False,
+            api_handler_fn=lambda api: api.devices,
+            available_fn=partial(async_device_temperatures_available_fn, name),
+            device_info_fn=async_device_device_info_fn,
+            object_fn=lambda api, obj_id: api.devices[obj_id],
+            supported_fn=partial(async_device_temperatures_supported_fn, name),
+            translation_placeholders_fn=lambda _: {"name": name},
+            unique_id_fn=lambda hub, obj_id: f"temperature-{slugify(name)}-{obj_id}",
+            value_fn=partial(async_device_temperatures_value_fn, name),
+        )
+
+    return tuple(
+        make_device_temperature_entity_description(name)
+        for name in (
+            "CPU",
+            "Local",
+            "PHY",
+        )
+    )
+
+
 @dataclass(frozen=True, kw_only=True)
-class UnifiSensorEntityDescription(
+class UnifiSensorEntityDescription[HandlerT: APIHandler, ApiItemT: ApiItem](
     SensorEntityDescription, UnifiEntityDescription[HandlerT, ApiItemT]
 ):
     """Class describing UniFi sensor entity."""
@@ -300,16 +419,15 @@ class UnifiSensorEntityDescription(
 ENTITY_DESCRIPTIONS: tuple[UnifiSensorEntityDescription, ...] = (
     UnifiSensorEntityDescription[Clients, Client](
         key="Bandwidth sensor RX",
+        translation_key="client_bandwidth_rx",
         device_class=SensorDeviceClass.DATA_RATE,
         entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfDataRate.MEGABYTES_PER_SECOND,
-        icon="mdi:upload",
         allowed_fn=async_bandwidth_sensor_allowed_fn,
         api_handler_fn=lambda api: api.clients,
         device_info_fn=async_client_device_info_fn,
         is_connected_fn=async_client_is_connected_fn,
-        name_fn=lambda _: "RX",
         object_fn=lambda api, obj_id: api.clients[obj_id],
         supported_fn=lambda hub, _: hub.config.option_allow_bandwidth_sensors,
         unique_id_fn=lambda hub, obj_id: f"rx-{obj_id}",
@@ -317,23 +435,39 @@ ENTITY_DESCRIPTIONS: tuple[UnifiSensorEntityDescription, ...] = (
     ),
     UnifiSensorEntityDescription[Clients, Client](
         key="Bandwidth sensor TX",
+        translation_key="client_bandwidth_tx",
         device_class=SensorDeviceClass.DATA_RATE,
         entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfDataRate.MEGABYTES_PER_SECOND,
-        icon="mdi:download",
         allowed_fn=async_bandwidth_sensor_allowed_fn,
         api_handler_fn=lambda api: api.clients,
         device_info_fn=async_client_device_info_fn,
         is_connected_fn=async_client_is_connected_fn,
-        name_fn=lambda _: "TX",
         object_fn=lambda api, obj_id: api.clients[obj_id],
         supported_fn=lambda hub, _: hub.config.option_allow_bandwidth_sensors,
         unique_id_fn=lambda hub, obj_id: f"tx-{obj_id}",
         value_fn=async_client_tx_value_fn,
     ),
+    UnifiSensorEntityDescription[Clients, Client](
+        key="Wired client speed",
+        translation_key="wired_client_link_speed",
+        device_class=SensorDeviceClass.DATA_RATE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+        entity_registry_enabled_default=False,
+        allowed_fn=async_wired_client_allowed_fn,
+        api_handler_fn=lambda api: api.clients,
+        device_info_fn=async_client_device_info_fn,
+        is_connected_fn=async_client_is_connected_fn,
+        object_fn=lambda api, obj_id: api.clients[obj_id],
+        unique_id_fn=lambda hub, obj_id: f"wired_speed-{obj_id}",
+        value_fn=lambda hub, client: client.wired_rate_mbps,
+    ),
     UnifiSensorEntityDescription[Ports, Port](
         key="PoE port power sensor",
+        translation_key="port_poe_power",
         device_class=SensorDeviceClass.POWER,
         entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
@@ -342,57 +476,73 @@ ENTITY_DESCRIPTIONS: tuple[UnifiSensorEntityDescription, ...] = (
         api_handler_fn=lambda api: api.ports,
         available_fn=async_device_available_fn,
         device_info_fn=async_device_device_info_fn,
-        name_fn=lambda port: f"{port.name} PoE Power",
         object_fn=lambda api, obj_id: api.ports[obj_id],
         supported_fn=lambda hub, obj_id: bool(hub.api.ports[obj_id].port_poe),
+        translation_placeholders_fn=lambda port: {"port_name": port.name},
         unique_id_fn=lambda hub, obj_id: f"poe_power-{obj_id}",
         value_fn=lambda _, obj: obj.poe_power if obj.poe_mode != "off" else "0",
     ),
     UnifiSensorEntityDescription[Ports, Port](
         key="Port Bandwidth sensor RX",
+        translation_key="port_bandwidth_rx",
         device_class=SensorDeviceClass.DATA_RATE,
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfDataRate.BYTES_PER_SECOND,
         suggested_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
-        icon="mdi:download",
         allowed_fn=lambda hub, _: hub.config.option_allow_bandwidth_sensors,
         api_handler_fn=lambda api: api.ports,
         available_fn=async_device_available_fn,
         device_info_fn=async_device_device_info_fn,
-        name_fn=lambda port: f"{port.name} RX",
         object_fn=lambda api, obj_id: api.ports[obj_id],
+        translation_placeholders_fn=lambda port: {"port_name": port.name},
         unique_id_fn=lambda hub, obj_id: f"port_rx-{obj_id}",
         value_fn=lambda hub, port: port.rx_bytes_r,
     ),
     UnifiSensorEntityDescription[Ports, Port](
         key="Port Bandwidth sensor TX",
+        translation_key="port_bandwidth_tx",
         device_class=SensorDeviceClass.DATA_RATE,
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfDataRate.BYTES_PER_SECOND,
         suggested_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
-        icon="mdi:upload",
         allowed_fn=lambda hub, _: hub.config.option_allow_bandwidth_sensors,
         api_handler_fn=lambda api: api.ports,
         available_fn=async_device_available_fn,
         device_info_fn=async_device_device_info_fn,
-        name_fn=lambda port: f"{port.name} TX",
         object_fn=lambda api, obj_id: api.ports[obj_id],
+        translation_placeholders_fn=lambda port: {"port_name": port.name},
         unique_id_fn=lambda hub, obj_id: f"port_tx-{obj_id}",
         value_fn=lambda hub, port: port.tx_bytes_r,
     ),
+    UnifiSensorEntityDescription[Ports, Port](
+        key="Port speed",
+        translation_key="port_link_speed",
+        device_class=SensorDeviceClass.DATA_RATE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+        suggested_display_precision=0,
+        entity_registry_enabled_default=False,
+        api_handler_fn=lambda api: api.ports,
+        available_fn=async_device_available_fn,
+        device_info_fn=async_device_device_info_fn,
+        object_fn=lambda api, obj_id: api.ports[obj_id],
+        supported_fn=lambda hub, obj_id: hub.api.ports[obj_id].raw.get("speed", 0) > 0,
+        translation_placeholders_fn=lambda port: {"port_name": port.name},
+        unique_id_fn=lambda hub, obj_id: f"port_link_speed-{obj_id}",
+        value_fn=lambda hub, port: port.raw.get("speed", 0),
+    ),
     UnifiSensorEntityDescription[Clients, Client](
         key="Client uptime",
-        device_class=SensorDeviceClass.TIMESTAMP,
+        device_class=SensorDeviceClass.UPTIME,
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         allowed_fn=async_uptime_sensor_allowed_fn,
         api_handler_fn=lambda api: api.clients,
         device_info_fn=async_client_device_info_fn,
-        name_fn=lambda client: "Uptime",
         object_fn=lambda api, obj_id: api.clients[obj_id],
         supported_fn=lambda hub, _: hub.config.option_allow_uptime_sensors,
         unique_id_fn=lambda hub, obj_id: f"uptime-{obj_id}",
@@ -401,6 +551,7 @@ ENTITY_DESCRIPTIONS: tuple[UnifiSensorEntityDescription, ...] = (
     ),
     UnifiSensorEntityDescription[Wlans, Wlan](
         key="WLAN clients",
+        translation_key="wlan_clients",
         entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
         api_handler_fn=lambda api: api.wlans,
@@ -413,13 +564,13 @@ ENTITY_DESCRIPTIONS: tuple[UnifiSensorEntityDescription, ...] = (
     ),
     UnifiSensorEntityDescription[Devices, Device](
         key="Device clients",
+        translation_key="device_clients",
         entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
         entity_registry_enabled_default=False,
         api_handler_fn=lambda api: api.devices,
         available_fn=async_device_available_fn,
         device_info_fn=async_device_device_info_fn,
-        name_fn=lambda device: "Clients",
         object_fn=lambda api, obj_id: api.devices[obj_id],
         should_poll=True,
         unique_id_fn=lambda hub, obj_id: f"device_clients-{obj_id}",
@@ -427,6 +578,7 @@ ENTITY_DESCRIPTIONS: tuple[UnifiSensorEntityDescription, ...] = (
     ),
     UnifiSensorEntityDescription[Outlets, Outlet](
         key="Outlet power metering",
+        translation_key="outlet_power",
         device_class=SensorDeviceClass.POWER,
         entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
@@ -434,15 +586,16 @@ ENTITY_DESCRIPTIONS: tuple[UnifiSensorEntityDescription, ...] = (
         api_handler_fn=lambda api: api.outlets,
         available_fn=async_device_available_fn,
         device_info_fn=async_device_device_info_fn,
-        name_fn=lambda outlet: f"{outlet.name} Outlet Power",
         object_fn=lambda api, obj_id: api.outlets[obj_id],
         should_poll=True,
         supported_fn=async_device_outlet_power_supported_fn,
+        translation_placeholders_fn=lambda outlet: {"outlet_name": outlet.name},
         unique_id_fn=lambda hub, obj_id: f"outlet_power-{obj_id}",
         value_fn=lambda _, obj: obj.power if obj.relay_state else "0",
     ),
     UnifiSensorEntityDescription[Devices, Device](
         key="SmartPower AC power budget",
+        translation_key="smartpower_ac_power_budget",
         device_class=SensorDeviceClass.POWER,
         entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
@@ -451,7 +604,6 @@ ENTITY_DESCRIPTIONS: tuple[UnifiSensorEntityDescription, ...] = (
         api_handler_fn=lambda api: api.devices,
         available_fn=async_device_available_fn,
         device_info_fn=async_device_device_info_fn,
-        name_fn=lambda device: "AC Power Budget",
         object_fn=lambda api, obj_id: api.devices[obj_id],
         supported_fn=async_device_outlet_supported_fn,
         unique_id_fn=lambda hub, obj_id: f"ac_power_budget-{obj_id}",
@@ -459,6 +611,7 @@ ENTITY_DESCRIPTIONS: tuple[UnifiSensorEntityDescription, ...] = (
     ),
     UnifiSensorEntityDescription[Devices, Device](
         key="SmartPower AC power consumption",
+        translation_key="smartpower_ac_power_consumption",
         device_class=SensorDeviceClass.POWER,
         entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
@@ -467,7 +620,6 @@ ENTITY_DESCRIPTIONS: tuple[UnifiSensorEntityDescription, ...] = (
         api_handler_fn=lambda api: api.devices,
         available_fn=async_device_available_fn,
         device_info_fn=async_device_device_info_fn,
-        name_fn=lambda device: "AC Power Consumption",
         object_fn=lambda api, obj_id: api.devices[obj_id],
         supported_fn=async_device_outlet_supported_fn,
         unique_id_fn=lambda hub, obj_id: f"ac_power_conumption-{obj_id}",
@@ -475,12 +627,11 @@ ENTITY_DESCRIPTIONS: tuple[UnifiSensorEntityDescription, ...] = (
     ),
     UnifiSensorEntityDescription[Devices, Device](
         key="Device uptime",
-        device_class=SensorDeviceClass.TIMESTAMP,
+        device_class=SensorDeviceClass.UPTIME,
         entity_category=EntityCategory.DIAGNOSTIC,
         api_handler_fn=lambda api: api.devices,
         available_fn=async_device_available_fn,
         device_info_fn=async_device_device_info_fn,
-        name_fn=lambda device: "Uptime",
         object_fn=lambda api, obj_id: api.devices[obj_id],
         unique_id_fn=lambda hub, obj_id: f"device_uptime-{obj_id}",
         value_fn=async_device_uptime_value_fn,
@@ -491,23 +642,36 @@ ENTITY_DESCRIPTIONS: tuple[UnifiSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.TEMPERATURE,
         entity_category=EntityCategory.DIAGNOSTIC,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
         api_handler_fn=lambda api: api.devices,
         available_fn=async_device_available_fn,
         device_info_fn=async_device_device_info_fn,
-        name_fn=lambda device: "Temperature",
         object_fn=lambda api, obj_id: api.devices[obj_id],
         supported_fn=lambda hub, obj_id: hub.api.devices[obj_id].has_temperature,
         unique_id_fn=lambda hub, obj_id: f"device_temperature-{obj_id}",
         value_fn=lambda hub, device: device.general_temperature,
     ),
     UnifiSensorEntityDescription[Devices, Device](
+        key="Device Uplink MAC",
+        translation_key="device_uplink_mac",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        api_handler_fn=lambda api: api.devices,
+        available_fn=async_device_available_fn,
+        device_info_fn=async_device_device_info_fn,
+        object_fn=lambda api, obj_id: api.devices[obj_id],
+        unique_id_fn=lambda hub, obj_id: f"device_uplink_mac-{obj_id}",
+        supported_fn=async_device_uplink_mac_supported_fn,
+        value_fn=lambda hub, device: device.raw.get("uplink", {}).get("uplink_mac"),
+        is_connected_fn=lambda hub, obj_id: hub.api.devices[obj_id].state == 1,
+    ),
+    UnifiSensorEntityDescription[Devices, Device](
         key="Device State",
+        translation_key="device_state",
         device_class=SensorDeviceClass.ENUM,
         entity_category=EntityCategory.DIAGNOSTIC,
         api_handler_fn=lambda api: api.devices,
         available_fn=async_device_available_fn,
         device_info_fn=async_device_device_info_fn,
-        name_fn=lambda device: "State",
         object_fn=lambda api, obj_id: api.devices[obj_id],
         unique_id_fn=lambda hub, obj_id: f"device_state-{obj_id}",
         value_fn=async_device_state_value_fn,
@@ -515,13 +679,13 @@ ENTITY_DESCRIPTIONS: tuple[UnifiSensorEntityDescription, ...] = (
     ),
     UnifiSensorEntityDescription[Devices, Device](
         key="Device CPU utilization",
+        translation_key="device_cpu_utilization",
         entity_category=EntityCategory.DIAGNOSTIC,
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         api_handler_fn=lambda api: api.devices,
         available_fn=async_device_available_fn,
         device_info_fn=async_device_device_info_fn,
-        name_fn=lambda device: "CPU utilization",
         object_fn=lambda api, obj_id: api.devices[obj_id],
         supported_fn=partial(device_system_stats_supported_fn, 0),
         unique_id_fn=lambda hub, obj_id: f"cpu_utilization-{obj_id}",
@@ -529,13 +693,13 @@ ENTITY_DESCRIPTIONS: tuple[UnifiSensorEntityDescription, ...] = (
     ),
     UnifiSensorEntityDescription[Devices, Device](
         key="Device memory utilization",
+        translation_key="device_memory_utilization",
         entity_category=EntityCategory.DIAGNOSTIC,
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         api_handler_fn=lambda api: api.devices,
         available_fn=async_device_available_fn,
         device_info_fn=async_device_device_info_fn,
-        name_fn=lambda device: "Memory utilization",
         object_fn=lambda api, obj_id: api.devices[obj_id],
         supported_fn=partial(device_system_stats_supported_fn, 1),
         unique_id_fn=lambda hub, obj_id: f"memory_utilization-{obj_id}",
@@ -543,13 +707,13 @@ ENTITY_DESCRIPTIONS: tuple[UnifiSensorEntityDescription, ...] = (
     ),
 )
 
-ENTITY_DESCRIPTIONS += make_wan_latency_sensors()
+ENTITY_DESCRIPTIONS += make_wan_latency_sensors() + make_device_temperatur_sensors()
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: UnifiConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up sensors for UniFi Network integration."""
     config_entry.runtime_data.entity_loader.register_platform(
@@ -557,7 +721,9 @@ async def async_setup_entry(
     )
 
 
-class UnifiSensorEntity(UnifiEntity[HandlerT, ApiItemT], SensorEntity):
+class UnifiSensorEntity[HandlerT: APIHandler, ApiItemT: ApiItem](
+    UnifiEntity[HandlerT, ApiItemT], SensorEntity
+):
     """Base representation of a UniFi sensor."""
 
     entity_description: UnifiSensorEntityDescription[HandlerT, ApiItemT]
@@ -573,6 +739,7 @@ class UnifiSensorEntity(UnifiEntity[HandlerT, ApiItemT], SensorEntity):
             self.async_write_ha_state()
 
     @callback
+    @override
     def async_update_state(self, event: ItemEvent, obj_id: str) -> None:
         """Update entity state.
 
@@ -580,7 +747,8 @@ class UnifiSensorEntity(UnifiEntity[HandlerT, ApiItemT], SensorEntity):
         """
         description = self.entity_description
         obj = description.object_fn(self.api, self._obj_id)
-        # Update the value only if value is considered to have changed relative to its previous state
+        # Update the value only if value is considered to
+        # have changed relative to its previous state
         if description.value_changed_fn(
             self.native_value, (value := description.value_fn(self.hub, obj))
         ):
@@ -594,6 +762,7 @@ class UnifiSensorEntity(UnifiEntity[HandlerT, ApiItemT], SensorEntity):
                     dt_util.utcnow() + self.hub.config.option_detection_time,
                 )
 
+    @override
     async def async_added_to_hass(self) -> None:
         """Register callbacks."""
         await super().async_added_to_hass()
@@ -608,6 +777,7 @@ class UnifiSensorEntity(UnifiEntity[HandlerT, ApiItemT], SensorEntity):
                 )
             )
 
+    @override
     async def async_will_remove_from_hass(self) -> None:
         """Disconnect object when removed."""
         await super().async_will_remove_from_hass()

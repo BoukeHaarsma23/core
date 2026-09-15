@@ -47,7 +47,7 @@ async def test_show_set_form(hass: HomeAssistant) -> None:
     """Test that the setup form is served."""
     with patch("asyncsleepiq.AsyncSleepIQ.login"):
         result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": config_entries.SOURCE_USER}, data=None
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
 
         assert result["type"] is FlowResultType.FORM
@@ -68,7 +68,14 @@ async def test_login_failure(hass: HomeAssistant, side_effect, error) -> None:
         side_effect=side_effect,
     ):
         result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": config_entries.SOURCE_USER}, data=SLEEPIQ_CONFIG
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "user"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input=SLEEPIQ_CONFIG
         )
 
         assert result["type"] is FlowResultType.FORM
@@ -101,19 +108,7 @@ async def test_reauth_password(hass: HomeAssistant) -> None:
 
     # set up initially
     entry = await setup_platform(hass)
-    with patch(
-        "homeassistant.components.sleepiq.config_flow.AsyncSleepIQ.login",
-        side_effect=SleepIQLoginException,
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={
-                "source": config_entries.SOURCE_REAUTH,
-                "entry_id": entry.entry_id,
-                "unique_id": entry.unique_id,
-            },
-            data=entry.data,
-        )
+    result = await entry.start_reauth_flow(hass)
 
     with patch(
         "homeassistant.components.sleepiq.config_flow.AsyncSleepIQ.login",

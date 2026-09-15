@@ -1,7 +1,5 @@
 """Tests for the Bluetooth integration."""
 
-from __future__ import annotations
-
 from collections.abc import Iterator
 from contextlib import contextmanager
 from unittest.mock import patch
@@ -22,7 +20,7 @@ from homeassistant.components.bluetooth import (
     HaBluetoothConnector,
     HomeAssistantBluetoothManager,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant
 
 from . import _get_manager, generate_advertisement_data, generate_ble_device
 
@@ -92,15 +90,11 @@ class FakeBleakClient(BaseFakeBleakClient):
 
     async def connect(self, *args, **kwargs):
         """Connect."""
+
+    @property
+    def is_connected(self):
+        """Connected."""
         return True
-
-
-class FakeBleakClientFailsToConnect(BaseFakeBleakClient):
-    """Fake bleak client that fails to connect."""
-
-    async def connect(self, *args, **kwargs):
-        """Connect."""
-        return False
 
 
 class FakeBleakClientRaisesOnConnect(BaseFakeBleakClient):
@@ -109,6 +103,11 @@ class FakeBleakClientRaisesOnConnect(BaseFakeBleakClient):
     async def connect(self, *args, **kwargs):
         """Connect."""
         raise ConnectionError("Test exception")
+
+    @property
+    def is_connected(self):
+        """Not connected."""
+        return False
 
 
 def _generate_ble_device_and_adv_data(
@@ -119,7 +118,6 @@ def _generate_ble_device_and_adv_data(
         generate_ble_device(
             mac,
             "any",
-            delegate="",
             details={"path": f"/org/bluez/{interface}/dev_{mac}"},
         ),
         generate_advertisement_data(rssi=rssi),
@@ -144,16 +142,6 @@ def mock_platform_client_fixture():
         yield
 
 
-@pytest.fixture(name="mock_platform_client_that_fails_to_connect")
-def mock_platform_client_that_fails_to_connect_fixture():
-    """Fixture that mocks the platform client that fails to connect."""
-    with patch(
-        "habluetooth.wrappers.get_platform_client_backend_type",
-        return_value=FakeBleakClientFailsToConnect,
-    ):
-        yield
-
-
 @pytest.fixture(name="mock_platform_client_that_raises_on_connect")
 def mock_platform_client_that_raises_on_connect_fixture():
     """Fixture that mocks the platform client that fails to connect."""
@@ -164,7 +152,11 @@ def mock_platform_client_that_raises_on_connect_fixture():
         yield
 
 
-def _generate_scanners_with_fake_devices(hass):
+def _generate_scanners_with_fake_devices(
+    hass: HomeAssistant,
+) -> tuple[
+    dict[str, tuple[BLEDevice, AdvertisementData]], CALLBACK_TYPE, CALLBACK_TYPE
+]:
     """Generate scanners with fake devices."""
     manager = _get_manager()
     hci0_device_advs = {}
@@ -215,7 +207,8 @@ async def test_test_switch_adapters_when_out_of_slots(
     ):
         ble_device = hci0_device_advs["00:00:00:00:00:01"][0]
         client = bleak.BleakClient(ble_device)
-        assert await client.connect() is True
+        await client.connect()
+        assert client.is_connected is True
         assert allocate_slot_mock.call_count == 1
         assert release_slot_mock.call_count == 0
 
@@ -247,7 +240,8 @@ async def test_test_switch_adapters_when_out_of_slots(
     ):
         ble_device = hci0_device_advs["00:00:00:00:00:03"][0]
         client = bleak.BleakClient(ble_device)
-        assert await client.connect() is True
+        await client.connect()
+        assert client.is_connected is True
         assert release_slot_mock.call_count == 0
 
     cancel_hci0()
@@ -258,7 +252,7 @@ async def test_test_switch_adapters_when_out_of_slots(
 async def test_release_slot_on_connect_failure(
     hass: HomeAssistant,
     install_bleak_catcher,
-    mock_platform_client_that_fails_to_connect,
+    mock_platform_client_that_raises_on_connect,
 ) -> None:
     """Ensure the slot gets released on connection failure."""
     manager = _get_manager()
@@ -274,7 +268,9 @@ async def test_release_slot_on_connect_failure(
     ):
         ble_device = hci0_device_advs["00:00:00:00:00:01"][0]
         client = bleak.BleakClient(ble_device)
-        assert await client.connect() is False
+        with pytest.raises(ConnectionError):
+            await client.connect()
+        assert client.is_connected is False
         assert allocate_slot_mock.call_count == 1
         assert release_slot_mock.call_count == 1
 
@@ -313,65 +309,6 @@ async def test_release_slot_on_connect_exception(
 
 
 @pytest.mark.usefixtures("enable_bluetooth", "two_adapters")
-async def test_we_switch_adapters_on_failure(
-    hass: HomeAssistant,
-    install_bleak_catcher,
-) -> None:
-    """Ensure we try the next best adapter after a failure."""
-    hci0_device_advs, cancel_hci0, cancel_hci1 = _generate_scanners_with_fake_devices(
-        hass
-    )
-    ble_device = hci0_device_advs["00:00:00:00:00:01"][0]
-    client = bleak.BleakClient(ble_device)
-
-    class FakeBleakClientFailsHCI0Only(BaseFakeBleakClient):
-        """Fake bleak client that fails to connect."""
-
-        async def connect(self, *args, **kwargs):
-            """Connect."""
-            if "/hci0/" in self._device.details["path"]:
-                return False
-            return True
-
-    with patch(
-        "habluetooth.wrappers.get_platform_client_backend_type",
-        return_value=FakeBleakClientFailsHCI0Only,
-    ):
-        assert await client.connect() is False
-
-    with patch(
-        "habluetooth.wrappers.get_platform_client_backend_type",
-        return_value=FakeBleakClientFailsHCI0Only,
-    ):
-        assert await client.connect() is False
-
-    # After two tries we should switch to hci1
-    with patch(
-        "habluetooth.wrappers.get_platform_client_backend_type",
-        return_value=FakeBleakClientFailsHCI0Only,
-    ):
-        assert await client.connect() is True
-
-    # ..and we remember that hci1 works as long as the client doesn't change
-    with patch(
-        "habluetooth.wrappers.get_platform_client_backend_type",
-        return_value=FakeBleakClientFailsHCI0Only,
-    ):
-        assert await client.connect() is True
-
-    # If we replace the client, we should try hci0 again
-    client = bleak.BleakClient(ble_device)
-
-    with patch(
-        "habluetooth.wrappers.get_platform_client_backend_type",
-        return_value=FakeBleakClientFailsHCI0Only,
-    ):
-        assert await client.connect() is False
-    cancel_hci0()
-    cancel_hci1()
-
-
-@pytest.mark.usefixtures("enable_bluetooth", "two_adapters")
 async def test_passing_subclassed_str_as_address(
     hass: HomeAssistant,
     install_bleak_catcher,
@@ -390,13 +327,18 @@ async def test_passing_subclassed_str_as_address(
 
         async def connect(self, *args, **kwargs):
             """Connect."""
+
+        @property
+        def is_connected(self):
+            """Connected."""
             return True
 
     with patch(
         "habluetooth.wrappers.get_platform_client_backend_type",
         return_value=FakeBleakClient,
     ):
-        assert await client.connect() is True
+        await client.connect()
+        assert client.is_connected is True
 
     cancel_hci0()
     cancel_hci1()

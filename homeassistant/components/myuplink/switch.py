@@ -1,6 +1,6 @@
 """Switch entity for myUplink."""
 
-from typing import Any
+from typing import Any, override
 
 import aiohttp
 from myuplink import DevicePoint
@@ -9,13 +9,24 @@ from homeassistant.components.switch import SwitchEntity, SwitchEntityDescriptio
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import MyUplinkConfigEntry, MyUplinkDataCoordinator
+from .const import DOMAIN, F_SERIES
+from .coordinator import MyUplinkConfigEntry, MyUplinkDataCoordinator
 from .entity import MyUplinkEntity
-from .helpers import find_matching_platform, skip_entity
+from .helpers import find_matching_platform, skip_entity, transform_model_series
 
 CATEGORY_BASED_DESCRIPTIONS: dict[str, dict[str, SwitchEntityDescription]] = {
+    F_SERIES: {
+        "50004": SwitchEntityDescription(
+            key="temporary_lux",
+            translation_key="temporary_lux",
+        ),
+        "50005": SwitchEntityDescription(
+            key="boost_ventilation",
+            translation_key="boost_ventilation",
+        ),
+    },
     "NIBEF": {
         "50004": SwitchEntityDescription(
             key="temporary_lux",
@@ -37,13 +48,14 @@ def get_description(device_point: DevicePoint) -> SwitchEntityDescription | None
     2. Default to None
     """
     prefix, _, _ = device_point.category.partition(" ")
+    prefix = transform_model_series(prefix)
     return CATEGORY_BASED_DESCRIPTIONS.get(prefix, {}).get(device_point.parameter_id)
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: MyUplinkConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up myUplink switch."""
     entities: list[SwitchEntity] = []
@@ -96,15 +108,18 @@ class MyUplinkDevicePointSwitch(MyUplinkEntity, SwitchEntity):
             self.entity_description = entity_description
 
     @property
+    @override
     def is_on(self) -> bool:
         """Switch state value."""
         device_point = self.coordinator.data.points[self.device_id][self.point_id]
         return int(device_point.value) != 0
 
+    @override
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on switch."""
         await self._async_turn_switch(1)
 
+    @override
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off switch."""
         await self._async_turn_switch(0)
@@ -117,7 +132,11 @@ class MyUplinkDevicePointSwitch(MyUplinkEntity, SwitchEntity):
             )
         except aiohttp.ClientError as err:
             raise HomeAssistantError(
-                f"Failed to set state for {self.entity_id}"
+                translation_domain=DOMAIN,
+                translation_key="set_switch_error",
+                translation_placeholders={
+                    "entity": self.entity_id,
+                },
             ) from err
 
         await self.coordinator.async_request_refresh()

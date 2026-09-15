@@ -3,23 +3,24 @@
 from datetime import timedelta
 from enum import StrEnum, auto
 import logging
-from typing import Any
+from typing import Any, override
 
 from ring_doorbell import RingStickUpCam
 
 from homeassistant.components.light import ColorMode, LightEntity
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-import homeassistant.util.dt as dt_util
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
-from . import RingData
-from .const import DOMAIN
+from . import RingConfigEntry
 from .coordinator import RingDataCoordinator
 from .entity import RingEntity, exception_wrap
 
 _LOGGER = logging.getLogger(__name__)
 
+# Coordinator is used to centralize the data updates
+# Actions restricted to 1 at a time
+PARALLEL_UPDATES = 1
 
 # It takes a few seconds for the API to correctly return an update indicating
 # that the changes have been made. Once we request a change (i.e. a light
@@ -38,11 +39,11 @@ class OnOffState(StrEnum):
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: RingConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Create the lights for the Ring devices."""
-    ring_data: RingData = hass.data[DOMAIN][config_entry.entry_id]
+    ring_data = entry.runtime_data
     devices_coordinator = ring_data.devices_coordinator
 
     async_add_entities(
@@ -69,6 +70,7 @@ class RingLight(RingEntity[RingStickUpCam], LightEntity):
         self._no_updates_until = dt_util.utcnow()
 
     @callback
+    @override
     def _handle_coordinator_update(self) -> None:
         """Call update method."""
         if self._no_updates_until > dt_util.utcnow():
@@ -80,18 +82,20 @@ class RingLight(RingEntity[RingStickUpCam], LightEntity):
         super()._handle_coordinator_update()
 
     @exception_wrap
-    def _set_light(self, new_state: OnOffState) -> None:
+    async def _async_set_light(self, new_state: OnOffState) -> None:
         """Update light state, and causes Home Assistant to correctly update."""
-        self._device.lights = new_state
+        await self._device.async_set_lights(new_state)
 
         self._attr_is_on = new_state == OnOffState.ON
         self._no_updates_until = dt_util.utcnow() + SKIP_UPDATES_DELAY
-        self.schedule_update_ha_state()
+        self.async_write_ha_state()
 
-    def turn_on(self, **kwargs: Any) -> None:
+    @override
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on for 30 seconds."""
-        self._set_light(OnOffState.ON)
+        await self._async_set_light(OnOffState.ON)
 
-    def turn_off(self, **kwargs: Any) -> None:
+    @override
+    async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off."""
-        self._set_light(OnOffState.OFF)
+        await self._async_set_light(OnOffState.OFF)

@@ -1,8 +1,7 @@
 """Tests the lifx migration."""
 
-from __future__ import annotations
-
 from datetime import timedelta
+from typing import Any
 from unittest.mock import patch
 
 from homeassistant import setup
@@ -65,7 +64,7 @@ async def test_migration_device_online_end_to_end(
 
         assert migrated_entry is not None
 
-        assert device.config_entries == {migrated_entry.entry_id}
+        assert device.config_entry_id == migrated_entry.entry_id
         assert light_entity_reg.config_entry_id == migrated_entry.entry_id
         assert er.async_entries_for_config_entry(entity_registry, config_entry) == []
 
@@ -114,7 +113,7 @@ async def test_discovery_is_more_frequent_during_migration(
     class MockLifxDiscovery:
         """Mock lifx discovery."""
 
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
             """Init discovery."""
             self.bulb = bulb
             self.lights = {}
@@ -199,7 +198,7 @@ async def test_migration_device_online_end_to_end_after_downgrade(
         async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=20))
         await hass.async_block_till_done()
 
-        assert device.config_entries == {config_entry.entry_id}
+        assert device.config_entry_id == config_entry.entry_id
         assert light_entity_reg.config_entry_id == config_entry.entry_id
         assert er.async_entries_for_config_entry(entity_registry, config_entry) == []
 
@@ -282,7 +281,7 @@ async def test_migration_device_online_end_to_end_ignores_other_devices(
         assert new_entry is not None
         assert legacy_entry is None
 
-        assert device.config_entries == {legacy_config_entry.entry_id}
+        assert device.config_entry_id == legacy_config_entry.entry_id
         assert light_entity_reg.config_entry_id == legacy_config_entry.entry_id
         assert ignored_entity_reg.config_entry_id == other_domain_config_entry.entry_id
         assert garbage_entity_reg.config_entry_id == legacy_config_entry.entry_id

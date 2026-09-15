@@ -2,26 +2,57 @@
 
 from unittest.mock import MagicMock, Mock, patch
 
+import probatio
 import pytest
-import voluptuous as vol
 
 from homeassistant.components.homekit.const import (
     BRIDGE_NAME,
+    CONF_AUDIO_CODEC,
+    CONF_AUDIO_MAP,
+    CONF_AUDIO_PACKET_SIZE,
     CONF_FEATURE,
     CONF_FEATURE_LIST,
     CONF_LINKED_BATTERY_SENSOR,
+    CONF_LINKED_DOORBELL_SENSOR,
+    CONF_LINKED_MOTION_SENSOR,
+    CONF_LINKED_VALVE_DURATION,
+    CONF_LINKED_VALVE_END_TIME,
     CONF_LOW_BATTERY_THRESHOLD,
+    CONF_MAX_FPS,
+    CONF_MAX_HEIGHT,
+    CONF_MAX_WIDTH,
+    CONF_STREAM_COUNT,
+    CONF_SUPPORT_AUDIO,
     CONF_THRESHOLD_CO,
     CONF_THRESHOLD_CO2,
+    CONF_VIDEO_CODEC,
+    CONF_VIDEO_MAP,
+    CONF_VIDEO_PACKET_SIZE,
+    CONF_VIDEO_PROFILE_NAMES,
+    DEFAULT_AUDIO_CODEC,
+    DEFAULT_AUDIO_MAP,
+    DEFAULT_AUDIO_PACKET_SIZE,
     DEFAULT_CONFIG_FLOW_PORT,
+    DEFAULT_LOW_BATTERY_THRESHOLD,
+    DEFAULT_MAX_FPS,
+    DEFAULT_MAX_HEIGHT,
+    DEFAULT_MAX_WIDTH,
+    DEFAULT_STREAM_COUNT,
+    DEFAULT_SUPPORT_AUDIO,
+    DEFAULT_VIDEO_CODEC,
+    DEFAULT_VIDEO_MAP,
+    DEFAULT_VIDEO_PACKET_SIZE,
+    DEFAULT_VIDEO_PROFILE_NAMES,
     DOMAIN,
     FEATURE_ON_OFF,
     FEATURE_PLAY_PAUSE,
     TYPE_FAUCET,
+    TYPE_HEATER_COOLER,
     TYPE_OUTLET,
     TYPE_SHOWER,
     TYPE_SPRINKLER,
     TYPE_SWITCH,
+    TYPE_THERMOSTAT,
     TYPE_VALVE,
 )
 from homeassistant.components.homekit.models import HomeKitEntryData
@@ -101,10 +132,39 @@ def test_validate_entity_config() -> None:
             }
         },
         {"switch.test": {CONF_TYPE: "invalid_type"}},
+        {
+            "switch.test": {
+                CONF_TYPE: "sprinkler",
+                # Must be input_number or number entity
+                CONF_LINKED_VALVE_DURATION: "sensor.valve_duration",
+            }
+        },
+        {
+            "switch.test": {
+                CONF_TYPE: "sprinkler",
+                # Must be sensor (timestamp) entity
+                CONF_LINKED_VALVE_END_TIME: "datetime.valve_end_time",
+            }
+        },
+        {"fan.test": {CONF_TYPE: "invalid_type"}},
+        {"climate.test": {CONF_TYPE: "invalid_type"}},
+        {
+            "valve.test": {
+                # Must be input_number or number entity
+                CONF_LINKED_VALVE_DURATION: "sensor.valve_duration",
+            }
+        },
+        {
+            "valve.test": {
+                # Must be sensor (timestamp) entity
+                CONF_LINKED_VALVE_END_TIME: "datetime.valve_end_time",
+            }
+        },
+        {"valve.test": {CONF_TYPE: "invalid_type"}},
     ]
 
     for conf in configs:
-        with pytest.raises(vol.Invalid):
+        with pytest.raises(probatio.Invalid):
             vec(conf)
 
     assert vec({}) == {}
@@ -134,8 +194,20 @@ def test_validate_entity_config() -> None:
     assert vec({"lock.demo": {}}) == {
         "lock.demo": {ATTR_CODE: None, CONF_LOW_BATTERY_THRESHOLD: 20}
     }
-    assert vec({"lock.demo": {ATTR_CODE: "1234"}}) == {
-        "lock.demo": {ATTR_CODE: "1234", CONF_LOW_BATTERY_THRESHOLD: 20}
+
+    assert vec(
+        {
+            "lock.demo": {
+                ATTR_CODE: "1234",
+                CONF_LINKED_DOORBELL_SENSOR: "event.doorbell",
+            }
+        }
+    ) == {
+        "lock.demo": {
+            ATTR_CODE: "1234",
+            CONF_LOW_BATTERY_THRESHOLD: 20,
+            CONF_LINKED_DOORBELL_SENSOR: "event.doorbell",
+        }
     }
 
     assert vec({"media_player.demo": {}}) == {
@@ -172,11 +244,93 @@ def test_validate_entity_config() -> None:
     assert vec({"switch.demo": {CONF_TYPE: TYPE_VALVE}}) == {
         "switch.demo": {CONF_TYPE: TYPE_VALVE, CONF_LOW_BATTERY_THRESHOLD: 20}
     }
+    assert vec({"climate.demo": {CONF_TYPE: TYPE_HEATER_COOLER}}) == {
+        "climate.demo": {CONF_TYPE: TYPE_HEATER_COOLER, CONF_LOW_BATTERY_THRESHOLD: 20}
+    }
+    assert vec({"climate.demo": {CONF_TYPE: TYPE_THERMOSTAT}}) == {
+        "climate.demo": {CONF_TYPE: TYPE_THERMOSTAT, CONF_LOW_BATTERY_THRESHOLD: 20}
+    }
+    config = {
+        CONF_TYPE: TYPE_SPRINKLER,
+        CONF_LINKED_VALVE_DURATION: "input_number.valve_duration",
+        CONF_LINKED_VALVE_END_TIME: "sensor.valve_end_time",
+    }
+    assert vec({"switch.sprinkler": config}) == {
+        "switch.sprinkler": {
+            CONF_TYPE: TYPE_SPRINKLER,
+            CONF_LINKED_VALVE_DURATION: "input_number.valve_duration",
+            CONF_LINKED_VALVE_END_TIME: "sensor.valve_end_time",
+            CONF_LOW_BATTERY_THRESHOLD: DEFAULT_LOW_BATTERY_THRESHOLD,
+        }
+    }
+    config = {
+        CONF_LINKED_VALVE_DURATION: "number.valve_duration",
+        CONF_LINKED_VALVE_END_TIME: "sensor.valve_end_time",
+    }
+    assert vec({"valve.sprinkler": config}) == {
+        "valve.sprinkler": {
+            CONF_LINKED_VALVE_DURATION: "number.valve_duration",
+            CONF_LINKED_VALVE_END_TIME: "sensor.valve_end_time",
+            CONF_LOW_BATTERY_THRESHOLD: DEFAULT_LOW_BATTERY_THRESHOLD,
+        }
+    }
     assert vec({"sensor.co": {CONF_THRESHOLD_CO: 500}}) == {
         "sensor.co": {CONF_THRESHOLD_CO: 500, CONF_LOW_BATTERY_THRESHOLD: 20}
     }
     assert vec({"sensor.co2": {CONF_THRESHOLD_CO2: 500}}) == {
         "sensor.co2": {CONF_THRESHOLD_CO2: 500, CONF_LOW_BATTERY_THRESHOLD: 20}
+    }
+    assert vec(
+        {
+            "camera.demo": {
+                CONF_LINKED_DOORBELL_SENSOR: "event.doorbell",
+                CONF_LINKED_MOTION_SENSOR: "event.motion",
+            }
+        }
+    ) == {
+        "camera.demo": {
+            CONF_LINKED_DOORBELL_SENSOR: "event.doorbell",
+            CONF_LINKED_MOTION_SENSOR: "event.motion",
+            CONF_AUDIO_CODEC: DEFAULT_AUDIO_CODEC,
+            CONF_SUPPORT_AUDIO: DEFAULT_SUPPORT_AUDIO,
+            CONF_MAX_WIDTH: DEFAULT_MAX_WIDTH,
+            CONF_MAX_HEIGHT: DEFAULT_MAX_HEIGHT,
+            CONF_MAX_FPS: DEFAULT_MAX_FPS,
+            CONF_AUDIO_MAP: DEFAULT_AUDIO_MAP,
+            CONF_VIDEO_MAP: DEFAULT_VIDEO_MAP,
+            CONF_STREAM_COUNT: DEFAULT_STREAM_COUNT,
+            CONF_VIDEO_CODEC: DEFAULT_VIDEO_CODEC,
+            CONF_VIDEO_PROFILE_NAMES: DEFAULT_VIDEO_PROFILE_NAMES,
+            CONF_AUDIO_PACKET_SIZE: DEFAULT_AUDIO_PACKET_SIZE,
+            CONF_VIDEO_PACKET_SIZE: DEFAULT_VIDEO_PACKET_SIZE,
+            CONF_LOW_BATTERY_THRESHOLD: DEFAULT_LOW_BATTERY_THRESHOLD,
+        }
+    }
+    config = {
+        CONF_TYPE: TYPE_SPRINKLER,
+        CONF_LINKED_VALVE_DURATION: "input_number.valve_duration",
+        CONF_LINKED_VALVE_END_TIME: "sensor.valve_end_time",
+    }
+    assert vec({"valve.demo": config}) == {
+        "valve.demo": {
+            CONF_TYPE: TYPE_SPRINKLER,
+            CONF_LINKED_VALVE_DURATION: "input_number.valve_duration",
+            CONF_LINKED_VALVE_END_TIME: "sensor.valve_end_time",
+            CONF_LOW_BATTERY_THRESHOLD: DEFAULT_LOW_BATTERY_THRESHOLD,
+        }
+    }
+    config = {
+        CONF_TYPE: TYPE_SPRINKLER,
+        CONF_LINKED_VALVE_DURATION: "number.valve_duration",
+        CONF_LINKED_VALVE_END_TIME: "sensor.valve_end_time",
+    }
+    assert vec({"switch.sprinkler": config}) == {
+        "switch.sprinkler": {
+            CONF_TYPE: TYPE_SPRINKLER,
+            CONF_LINKED_VALVE_DURATION: "number.valve_duration",
+            CONF_LINKED_VALVE_END_TIME: "sensor.valve_end_time",
+            CONF_LOW_BATTERY_THRESHOLD: DEFAULT_LOW_BATTERY_THRESHOLD,
+        }
     }
 
 
@@ -206,6 +360,7 @@ def test_cleanup_name_for_homekit() -> None:
     """Ensure name sanitize works as expected."""
 
     assert cleanup_name_for_homekit("abc") == "abc"
+    assert cleanup_name_for_homekit("abc ") == "abc"
     assert cleanup_name_for_homekit("a b c") == "a b c"
     assert cleanup_name_for_homekit("ab_c") == "ab c"
     assert (
@@ -217,14 +372,16 @@ def test_cleanup_name_for_homekit() -> None:
 
 def test_temperature_to_homekit() -> None:
     """Test temperature conversion from HA to HomeKit."""
-    assert temperature_to_homekit(20.46, UnitOfTemperature.CELSIUS) == 20.5
-    assert temperature_to_homekit(92.1, UnitOfTemperature.FAHRENHEIT) == 33.4
+    assert temperature_to_homekit(20.46, UnitOfTemperature.CELSIUS) == 20.46
+    assert temperature_to_homekit(92.1, UnitOfTemperature.FAHRENHEIT) == pytest.approx(
+        33.388888888888886
+    )
 
 
 def test_temperature_to_states() -> None:
     """Test temperature conversion from HomeKit to HA."""
     assert temperature_to_states(20, UnitOfTemperature.CELSIUS) == 20.0
-    assert temperature_to_states(20.2, UnitOfTemperature.FAHRENHEIT) == 68.5
+    assert temperature_to_states(20.2, UnitOfTemperature.FAHRENHEIT) == 68.36
 
 
 def test_density_to_air_quality() -> None:

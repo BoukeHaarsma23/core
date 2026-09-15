@@ -1,10 +1,9 @@
 """DataUpdateCoordinators for awair integration."""
 
-from __future__ import annotations
-
 from asyncio import gather, timeout
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import override
 
 from aiohttp import ClientSession
 from python_awair import Awair, AwairLocal
@@ -26,6 +25,8 @@ from .const import (
     UPDATE_INTERVAL_LOCAL,
 )
 
+type AwairConfigEntry = ConfigEntry[AwairDataUpdateCoordinator]
+
 
 @dataclass
 class AwairResult:
@@ -38,17 +39,24 @@ class AwairResult:
 class AwairDataUpdateCoordinator(DataUpdateCoordinator[dict[str, AwairResult]]):
     """Define a wrapper class to update Awair data."""
 
+    config_entry: AwairConfigEntry
+
     def __init__(
         self,
         hass: HomeAssistant,
-        config_entry: ConfigEntry,
+        config_entry: AwairConfigEntry,
         update_interval: timedelta | None,
     ) -> None:
         """Set up the AwairDataUpdateCoordinator class."""
-        self._config_entry = config_entry
         self.title = config_entry.title
 
-        super().__init__(hass, LOGGER, name=DOMAIN, update_interval=update_interval)
+        super().__init__(
+            hass,
+            LOGGER,
+            config_entry=config_entry,
+            name=DOMAIN,
+            update_interval=update_interval,
+        )
 
     async def _fetch_air_data(self, device: AwairBaseDevice) -> AwairResult:
         """Fetch latest air quality data."""
@@ -62,7 +70,10 @@ class AwairCloudDataUpdateCoordinator(AwairDataUpdateCoordinator):
     """Define a wrapper class to update Awair data from Cloud API."""
 
     def __init__(
-        self, hass: HomeAssistant, config_entry: ConfigEntry, session: ClientSession
+        self,
+        hass: HomeAssistant,
+        config_entry: AwairConfigEntry,
+        session: ClientSession,
     ) -> None:
         """Set up the AwairCloudDataUpdateCoordinator class."""
         access_token = config_entry.data[CONF_ACCESS_TOKEN]
@@ -70,6 +81,7 @@ class AwairCloudDataUpdateCoordinator(AwairDataUpdateCoordinator):
 
         super().__init__(hass, config_entry, UPDATE_INTERVAL_CLOUD)
 
+    @override
     async def _async_update_data(self) -> dict[str, AwairResult]:
         """Update data via Awair client library."""
         async with timeout(API_TIMEOUT):
@@ -93,7 +105,10 @@ class AwairLocalDataUpdateCoordinator(AwairDataUpdateCoordinator):
     _device: AwairLocalDevice | None = None
 
     def __init__(
-        self, hass: HomeAssistant, config_entry: ConfigEntry, session: ClientSession
+        self,
+        hass: HomeAssistant,
+        config_entry: AwairConfigEntry,
+        session: ClientSession,
     ) -> None:
         """Set up the AwairLocalDataUpdateCoordinator class."""
         self._awair = AwairLocal(
@@ -102,6 +117,7 @@ class AwairLocalDataUpdateCoordinator(AwairDataUpdateCoordinator):
 
         super().__init__(hass, config_entry, UPDATE_INTERVAL_LOCAL)
 
+    @override
     async def _async_update_data(self) -> dict[str, AwairResult]:
         """Update data via Awair client library."""
         async with timeout(API_TIMEOUT):

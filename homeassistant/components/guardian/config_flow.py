@@ -1,26 +1,25 @@
 """Config flow for Elexa Guardian integration."""
 
-from __future__ import annotations
-
-from typing import Any
+from typing import Any, override
 
 from aioguardian import Client
 from aioguardian.errors import GuardianError
-import voluptuous as vol
+import probatio
 
-from homeassistant.components import dhcp, zeroconf
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_IP_ADDRESS, CONF_PORT
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from .const import CONF_UID, DOMAIN, LOGGER
 
 DEFAULT_PORT = 7777
 
-DATA_SCHEMA = vol.Schema(
+DATA_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_IP_ADDRESS): str,
-        vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
+        probatio.Required(CONF_IP_ADDRESS): str,
+        probatio.Required(CONF_PORT, default=DEFAULT_PORT): int,
     }
 )
 
@@ -30,7 +29,7 @@ UNIQUE_ID = "guardian_{0}"
 @callback
 def async_get_pin_from_discovery_hostname(hostname: str) -> str:
     """Get the device's 4-digit PIN from its zeroconf-discovered hostname."""
-    return hostname.split(".")[0].split("-")[1]
+    return hostname.split(".", maxsplit=1)[0].split("-")[1]
 
 
 @callback
@@ -74,6 +73,7 @@ class GuardianConfigFlow(ConfigFlow, domain=DOMAIN):
         else:
             self._abort_if_unique_id_configured()
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -100,8 +100,9 @@ class GuardianConfigFlow(ConfigFlow, domain=DOMAIN):
             title=info[CONF_UID], data={CONF_UID: info["uid"], **user_input}
         )
 
+    @override
     async def async_step_dhcp(
-        self, discovery_info: dhcp.DhcpServiceInfo
+        self, discovery_info: DhcpServiceInfo
     ) -> ConfigFlowResult:
         """Handle the configuration via dhcp."""
         self.discovery_info = {
@@ -111,10 +112,11 @@ class GuardianConfigFlow(ConfigFlow, domain=DOMAIN):
         await self._async_set_unique_id(
             async_get_pin_from_uid(discovery_info.macaddress.replace(":", "").upper())
         )
-        return await self._async_handle_discovery()
+        return await self.async_step_discovery_confirm()
 
+    @override
     async def async_step_zeroconf(
-        self, discovery_info: zeroconf.ZeroconfServiceInfo
+        self, discovery_info: ZeroconfServiceInfo
     ) -> ConfigFlowResult:
         """Handle the configuration via zeroconf."""
         self.discovery_info = {
@@ -123,17 +125,6 @@ class GuardianConfigFlow(ConfigFlow, domain=DOMAIN):
         }
         pin = async_get_pin_from_discovery_hostname(discovery_info.hostname)
         await self._async_set_unique_id(pin)
-        return await self._async_handle_discovery()
-
-    async def _async_handle_discovery(self) -> ConfigFlowResult:
-        """Handle any discovery."""
-        self.context[CONF_IP_ADDRESS] = self.discovery_info[CONF_IP_ADDRESS]
-        if any(
-            self.context[CONF_IP_ADDRESS] == flow["context"][CONF_IP_ADDRESS]
-            for flow in self._async_in_progress()
-        ):
-            return self.async_abort(reason="already_in_progress")
-
         return await self.async_step_discovery_confirm()
 
     async def async_step_discovery_confirm(

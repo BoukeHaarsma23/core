@@ -1,10 +1,9 @@
 """Cover entity platform for Tailwind."""
 
-from __future__ import annotations
-
-from typing import Any
+from typing import Any, override
 
 from gotailwind import (
+    TailwindDoorAlreadyInStateError,
     TailwindDoorDisabledError,
     TailwindDoorLockedOutError,
     TailwindDoorOperationCommand,
@@ -19,17 +18,19 @@ from homeassistant.components.cover import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .const import DOMAIN
+from .const import DOMAIN, LOGGER
+from .coordinator import TailwindConfigEntry
 from .entity import TailwindDoorEntity
-from .typing import TailwindConfigEntry
+
+PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: TailwindConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Tailwind cover based on a config entry."""
     async_add_entities(
@@ -48,12 +49,14 @@ class TailwindDoorCoverEntity(TailwindDoorEntity, CoverEntity):
     _attr_supported_features = CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE
 
     @property
+    @override
     def is_closed(self) -> bool:
         """Return if the cover is closed or not."""
         return (
             self.coordinator.data.doors[self.door_id].state == TailwindDoorState.CLOSED
         )
 
+    @override
     async def async_open_cover(self, **kwargs: Any) -> None:
         """Open the garage door.
 
@@ -77,6 +80,8 @@ class TailwindDoorCoverEntity(TailwindDoorEntity, CoverEntity):
                 translation_domain=DOMAIN,
                 translation_key="door_locked_out",
             ) from exc
+        except TailwindDoorAlreadyInStateError:
+            LOGGER.debug("Already in the requested state: %s", self.entity_id)
         except TailwindError as exc:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
@@ -86,6 +91,7 @@ class TailwindDoorCoverEntity(TailwindDoorEntity, CoverEntity):
             self._attr_is_opening = False
         await self.coordinator.async_request_refresh()
 
+    @override
     async def async_close_cover(self, **kwargs: Any) -> None:
         """Close the garage door.
 
@@ -109,6 +115,8 @@ class TailwindDoorCoverEntity(TailwindDoorEntity, CoverEntity):
                 translation_domain=DOMAIN,
                 translation_key="door_locked_out",
             ) from exc
+        except TailwindDoorAlreadyInStateError:
+            LOGGER.debug("Already in the requested state: %s", self.entity_id)
         except TailwindError as exc:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,

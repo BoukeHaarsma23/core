@@ -1,12 +1,10 @@
 """Sensor entities for the Motionblinds BLE integration."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from dataclasses import dataclass
 import logging
 from math import ceil
-from typing import Generic, TypeVar
+from typing import override
 
 from motionblindsble.const import (
     MotionBlindType,
@@ -21,23 +19,22 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     EntityCategory,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
+from . import MotionConfigEntry
 from .const import (
     ATTR_BATTERY,
     ATTR_CALIBRATION,
     ATTR_CONNECTION,
     ATTR_SIGNAL_STRENGTH,
     CONF_MAC_CODE,
-    DOMAIN,
 )
 from .entity import MotionblindsBLEEntity
 
@@ -45,11 +42,9 @@ _LOGGER = logging.getLogger(__name__)
 
 PARALLEL_UPDATES = 0
 
-_T = TypeVar("_T")
-
 
 @dataclass(frozen=True, kw_only=True)
-class MotionblindsBLESensorEntityDescription(SensorEntityDescription, Generic[_T]):
+class MotionblindsBLESensorEntityDescription[_T](SensorEntityDescription):
     """Entity description of a sensor entity with initial_value attribute."""
 
     initial_value: str | None = None
@@ -79,8 +74,9 @@ SENSORS: tuple[MotionblindsBLESensorEntityDescription, ...] = (
         options=["calibrated", "uncalibrated", "calibrating"],
         register_callback_func=lambda device: device.register_calibration_callback,
         value_func=lambda value: value.value if value else None,
-        is_supported=lambda device: device.blind_type
-        in {MotionBlindType.CURTAIN, MotionBlindType.VERTICAL},
+        is_supported=lambda device: (
+            device.blind_type in {MotionBlindType.CURTAIN, MotionBlindType.VERTICAL}
+        ),
     ),
     MotionblindsBLESensorEntityDescription[int](
         key=ATTR_SIGNAL_STRENGTH,
@@ -89,16 +85,19 @@ SENSORS: tuple[MotionblindsBLESensorEntityDescription, ...] = (
         native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
         register_callback_func=lambda device: device.register_signal_strength_callback,
         value_func=lambda value: value,
+        entity_registry_enabled_default=False,
     ),
 )
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: MotionConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up sensor entities based on a config entry."""
 
-    device: MotionDevice = hass.data[DOMAIN][entry.entry_id]
+    device = entry.runtime_data
 
     entities: list[SensorEntity] = [
         MotionblindsBLESensorEntity(device, entry, description)
@@ -109,7 +108,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class MotionblindsBLESensorEntity(MotionblindsBLEEntity, SensorEntity, Generic[_T]):
+class MotionblindsBLESensorEntity[_T](MotionblindsBLEEntity, SensorEntity):
     """Representation of a sensor entity."""
 
     entity_description: MotionblindsBLESensorEntityDescription[_T]
@@ -117,7 +116,7 @@ class MotionblindsBLESensorEntity(MotionblindsBLEEntity, SensorEntity, Generic[_
     def __init__(
         self,
         device: MotionDevice,
-        entry: ConfigEntry,
+        entry: MotionConfigEntry,
         entity_description: MotionblindsBLESensorEntityDescription[_T],
     ) -> None:
         """Initialize the sensor entity."""
@@ -126,6 +125,7 @@ class MotionblindsBLESensorEntity(MotionblindsBLEEntity, SensorEntity, Generic[_
         )
         self._attr_native_value = entity_description.initial_value
 
+    @override
     async def async_added_to_hass(self) -> None:
         """Log sensor entity information."""
         _LOGGER.debug(
@@ -148,7 +148,7 @@ class BatterySensor(MotionblindsBLEEntity, SensorEntity):
     def __init__(
         self,
         device: MotionDevice,
-        entry: ConfigEntry,
+        entry: MotionConfigEntry,
     ) -> None:
         """Initialize the sensor entity."""
         entity_description = SensorEntityDescription(
@@ -160,6 +160,7 @@ class BatterySensor(MotionblindsBLEEntity, SensorEntity):
         )
         super().__init__(device, entry, entity_description)
 
+    @override
     async def async_added_to_hass(self) -> None:
         """Register device callbacks."""
         await super().async_added_to_hass()

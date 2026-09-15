@@ -1,12 +1,10 @@
 """Provide functionality to STT."""
 
-from __future__ import annotations
-
 from abc import abstractmethod
 from collections.abc import AsyncIterable
 from dataclasses import asdict
 import logging
-from typing import Any, final
+from typing import Any, final, override
 
 from aiohttp import web
 from aiohttp.hdrs import istr
@@ -15,7 +13,7 @@ from aiohttp.web_exceptions import (
     HTTPNotFound,
     HTTPUnsupportedMediaType,
 )
-import voluptuous as vol
+import probatio
 
 from homeassistant.components import websocket_api
 from homeassistant.components.http import KEY_HASS, HomeAssistantView
@@ -30,6 +28,7 @@ from homeassistant.loader import async_suggest_report_issue
 from homeassistant.util import dt as dt_util, language as language_util
 
 from .const import (
+    DATA_COMPONENT,
     DATA_PROVIDERS,
     DOMAIN,
     AudioBitRates,
@@ -45,36 +44,53 @@ from .legacy import (
     async_get_provider,
     async_setup_legacy,
 )
-from .models import SpeechMetadata, SpeechResult
+from .models import (
+    DEFAULT_AUDIO_PROCESSING,
+    SpeechAudioProcessing,
+    SpeechMetadata,
+    SpeechResult,
+)
 
 __all__ = [
-    "async_get_provider",
-    "async_get_speech_to_text_engine",
-    "async_get_speech_to_text_entity",
+    "DOMAIN",
     "AudioBitRates",
     "AudioChannels",
     "AudioCodecs",
     "AudioFormats",
     "AudioSampleRates",
-    "DOMAIN",
     "Provider",
-    "SpeechToTextEntity",
     "SpeechMetadata",
     "SpeechResult",
     "SpeechResultState",
+    "SpeechToTextEntity",
+    "async_get_provider",
+    "async_get_speech_to_text_engine",
+    "async_get_speech_to_text_entity",
 ]
 
 _LOGGER = logging.getLogger(__name__)
 
 CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 
+# Audio is read from the request body in chunks of at most 4096 bytes because
+# line-based iteration raises LineTooLong on binary audio without newline bytes.
+# At 16 kHz/16-bit/mono, 4096 bytes represents up to 128 ms of audio.
+AUDIO_CHUNK_SIZE = 4096
+
 
 @callback
 def async_default_engine(hass: HomeAssistant) -> str | None:
     """Return the domain or entity id of the default engine."""
-    return async_default_provider(hass) or next(
-        iter(hass.states.async_entity_ids(DOMAIN)), None
-    )
+    default_entity_id: str | None = None
+
+    for entity in hass.data[DATA_COMPONENT].entities:
+        if entity.platform and entity.platform.platform_name == "cloud":
+            return entity.entity_id
+
+        if default_entity_id is None:
+            default_entity_id = entity.entity_id
+
+    return default_entity_id or async_default_provider(hass)
 
 
 @callback
@@ -82,9 +98,7 @@ def async_get_speech_to_text_entity(
     hass: HomeAssistant, entity_id: str
 ) -> SpeechToTextEntity | None:
     """Return stt entity."""
-    component: EntityComponent[SpeechToTextEntity] = hass.data[DOMAIN]
-
-    return component.get_entity(entity_id)
+    return hass.data[DATA_COMPONENT].get_entity(entity_id)
 
 
 @callback
@@ -102,13 +116,11 @@ def async_get_speech_to_text_languages(hass: HomeAssistant) -> set[str]:
     """Return a set with the union of languages supported by stt engines."""
     languages = set()
 
-    component: EntityComponent[SpeechToTextEntity] = hass.data[DOMAIN]
-    legacy_providers: dict[str, Provider] = hass.data[DATA_PROVIDERS]
-    for entity in component.entities:
+    for entity in hass.data[DATA_COMPONENT].entities:
         for language_tag in entity.supported_languages:
             languages.add(language_tag)
 
-    for engine in legacy_providers.values():
+    for engine in hass.data[DATA_PROVIDERS].values():
         for language_tag in engine.supported_languages:
             languages.add(language_tag)
 
@@ -119,7 +131,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up STT."""
     websocket_api.async_register_command(hass, websocket_list_engines)
 
-    component = hass.data[DOMAIN] = EntityComponent[SpeechToTextEntity](
+    component = hass.data[DATA_COMPONENT] = EntityComponent[SpeechToTextEntity](
         _LOGGER, DOMAIN, hass
     )
 
@@ -141,14 +153,12 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a config entry."""
-    component: EntityComponent[SpeechToTextEntity] = hass.data[DOMAIN]
-    return await component.async_setup_entry(entry)
+    return await hass.data[DATA_COMPONENT].async_setup_entry(entry)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    component: EntityComponent[SpeechToTextEntity] = hass.data[DOMAIN]
-    return await component.async_unload_entry(entry)
+    return await hass.data[DATA_COMPONENT].async_unload_entry(entry)
 
 
 class SpeechToTextEntity(RestoreEntity):
@@ -159,6 +169,7 @@ class SpeechToTextEntity(RestoreEntity):
 
     @property
     @final
+    @override
     def state(self) -> str | None:
         """Return the state of the provider entity."""
         if self.__last_processed is None:
@@ -195,6 +206,12 @@ class SpeechToTextEntity(RestoreEntity):
     def supported_channels(self) -> list[AudioChannels]:
         """Return a list of supported channels."""
 
+    @property
+    def audio_processing(self) -> SpeechAudioProcessing:
+        """Return required/preferred input audio processing settings."""
+        return DEFAULT_AUDIO_PROCESSING
+
+    @override
     async def async_internal_added_to_hass(self) -> None:
         """Call when the provider entity is added to hass."""
         await super().async_internal_added_to_hass()
@@ -279,7 +296,7 @@ class SpeechToTextView(HomeAssistantView):
 
             # Process audio stream
             result = await stt_provider.async_process_audio_stream(
-                metadata, request.content
+                metadata, request.content.iter_chunked(AUDIO_CHUNK_SIZE)
             )
         else:
             # Check format
@@ -288,7 +305,7 @@ class SpeechToTextView(HomeAssistantView):
 
             # Process audio stream
             result = await provider_entity.internal_async_process_audio_stream(
-                metadata, request.content
+                metadata, request.content.iter_chunked(AUDIO_CHUNK_SIZE)
             )
 
         # Return result
@@ -395,11 +412,11 @@ def _metadata_from_header(request: web.Request) -> SpeechMetadata:
     try:
         return SpeechMetadata(
             language=args["language"],
-            format=args["format"],
-            codec=args["codec"],
-            bit_rate=args["bit_rate"],
-            sample_rate=args["sample_rate"],
-            channel=args["channel"],
+            format=AudioFormats(args["format"]),
+            codec=AudioCodecs(args["codec"]),
+            bit_rate=AudioBitRates(int(args["bit_rate"])),
+            sample_rate=AudioSampleRates(int(args["sample_rate"])),
+            channel=AudioChannels(int(args["channel"])),
         )
     except ValueError as err:
         raise ValueError(f"Wrong format of X-Speech-Content: {err}") from err
@@ -408,8 +425,8 @@ def _metadata_from_header(request: web.Request) -> SpeechMetadata:
 @websocket_api.websocket_command(
     {
         "type": "stt/engine/list",
-        vol.Optional("language"): str,
-        vol.Optional("country"): str,
+        probatio.Optional("language"): str,
+        probatio.Optional("country"): str,
     }
 )
 @callback
@@ -417,15 +434,12 @@ def websocket_list_engines(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
 ) -> None:
     """List speech-to-text engines and, optionally, if they support a given language."""
-    component: EntityComponent[SpeechToTextEntity] = hass.data[DOMAIN]
-    legacy_providers: dict[str, Provider] = hass.data[DATA_PROVIDERS]
-
     country = msg.get("country")
     language = msg.get("language")
     providers = []
     provider_info: dict[str, Any]
 
-    for entity in component.entities:
+    for entity in hass.data[DATA_COMPONENT].entities:
         provider_info = {
             "engine_id": entity.entity_id,
             "supported_languages": entity.supported_languages,
@@ -436,9 +450,10 @@ def websocket_list_engines(
             )
         providers.append(provider_info)
 
-    for engine_id, provider in legacy_providers.items():
+    for engine_id, provider in hass.data[DATA_PROVIDERS].items():
         provider_info = {
             "engine_id": engine_id,
+            "name": provider.name,
             "supported_languages": provider.supported_languages,
         }
         if language:

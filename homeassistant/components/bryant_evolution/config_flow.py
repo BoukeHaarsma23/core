@@ -1,24 +1,21 @@
 """Config flow for Bryant Evolution integration."""
 
-from __future__ import annotations
-
 import logging
-from typing import Any
+from typing import Any, override
 
 from evolutionhttp import BryantEvolutionLocalClient
-import voluptuous as vol
+import probatio
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_FILENAME
-from homeassistant.helpers.typing import UNDEFINED
 
 from .const import CONF_SYSTEM_ZONE, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-STEP_USER_DATA_SCHEMA = vol.Schema(
+STEP_USER_DATA_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_FILENAME, default="/dev/ttyUSB0"): str,
+        probatio.Required(CONF_FILENAME, default="/dev/ttyUSB0"): str,
     }
 )
 
@@ -35,6 +32,7 @@ async def _enumerate_sz(tty: str) -> list[tuple[int, int]]:
 class BryantConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Bryant Evolution."""
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -68,20 +66,16 @@ class BryantConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             system_zone = await _enumerate_sz(user_input[CONF_FILENAME])
             if len(system_zone) != 0:
-                our_entry = self.hass.config_entries.async_get_entry(
-                    self.context["entry_id"]
-                )
-                assert our_entry is not None, "Could not find own entry"
                 return self.async_update_reload_and_abort(
-                    entry=our_entry,
+                    self._get_reconfigure_entry(),
                     data={
                         CONF_FILENAME: user_input[CONF_FILENAME],
                         CONF_SYSTEM_ZONE: system_zone,
                     },
-                    unique_id=UNDEFINED,
-                    reason="reconfigured",
                 )
             errors["base"] = "cannot_connect"
         return self.async_show_form(
-            step_id="reconfigure", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
+            step_id="reconfigure",
+            data_schema=STEP_USER_DATA_SCHEMA,
+            errors=errors,
         )

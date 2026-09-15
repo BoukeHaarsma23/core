@@ -1,5 +1,6 @@
 """The tests for the nx584 sensor platform."""
 
+from typing import Any
 from unittest import mock
 
 from nx584 import client as nx584_client
@@ -99,7 +100,9 @@ def test_nx584_sensor_setup_full_config(
     assert mock_watcher.called
 
 
-async def _test_assert_graceful_fail(hass, config):
+async def _test_assert_graceful_fail(
+    hass: HomeAssistant, config: dict[str, Any]
+) -> None:
     """Test the failing."""
     assert not await async_setup_component(hass, "nx584", config)
 
@@ -114,7 +117,9 @@ async def _test_assert_graceful_fail(hass, config):
         ({"zone_types": {"notazone": "motion"}}),
     ],
 )
-async def test_nx584_sensor_setup_bad_config(hass: HomeAssistant, config) -> None:
+async def test_nx584_sensor_setup_bad_config(
+    hass: HomeAssistant, config: dict[str, Any]
+) -> None:
     """Test the setup with bad configuration."""
     await _test_assert_graceful_fail(hass, config)
 
@@ -198,6 +203,27 @@ def test_nx584_watcher_process_zone_event(mock_update) -> None:
     watcher._process_zone_event({"zone": 1, "zone_state": False})
     assert not zone1["state"]
     assert mock_update.call_count == 1
+
+
+@mock.patch.object(nx584.NX584ZoneSensor, "schedule_update_ha_state")
+def test_nx584_watcher_process_zone_event_updates_bypass(mock_update) -> None:
+    """Test the processing of zone events updates bypass state."""
+    zone = {"number": 1, "name": "foo", "state": True, "bypassed": False}
+    zones = {1: nx584.NX584ZoneSensor(zone, "motion")}
+    watcher = nx584.NX584Watcher(None, zones)
+
+    watcher._process_zone_event(
+        {"zone": 1, "zone_state": False, "zone_flags": ["Bypass"]}
+    )
+
+    assert zone["bypassed"]
+    assert not zone["state"]
+
+    watcher._process_zone_event({"zone": 1, "zone_state": True, "zone_flags": []})
+
+    assert not zone["bypassed"]
+    assert zone["state"]
+    assert mock_update.call_count == 2
 
 
 @mock.patch.object(nx584.NX584ZoneSensor, "schedule_update_ha_state")

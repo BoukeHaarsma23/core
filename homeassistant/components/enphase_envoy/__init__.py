@@ -1,6 +1,6 @@
 """The Enphase Envoy integration."""
 
-from __future__ import annotations
+from typing import TYPE_CHECKING
 
 from pyenphase import Envoy
 
@@ -8,7 +8,7 @@ from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.httpx_client import get_async_client
+from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
 from .const import DOMAIN, PLATFORMS
 from .coordinator import EnphaseConfigEntry, EnphaseUpdateCoordinator
@@ -18,7 +18,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: EnphaseConfigEntry) -> b
     """Set up Enphase Envoy from a config entry."""
 
     host = entry.data[CONF_HOST]
-    envoy = Envoy(host, get_async_client(hass, verify_ssl=False))
+    session = async_create_clientsession(hass, verify_ssl=False)
+    envoy = Envoy(host, session)
     coordinator = EnphaseUpdateCoordinator(hass, envoy, entry)
 
     await coordinator.async_config_entry_first_refresh()
@@ -32,8 +33,60 @@ async def async_setup_entry(hass: HomeAssistant, entry: EnphaseConfigEntry) -> b
         # wait for the next discovery to find the device at its new address
         # and update the config entry so we do not mix up devices.
         raise ConfigEntryNotReady(
-            f"Unexpected device found at {host}; expected {entry.unique_id}, "
-            f"found {envoy.serial_number}"
+            translation_domain=DOMAIN,
+            translation_key="unexpected_device",
+            translation_placeholders={
+                "host": host,
+                "expected_serial": str(entry.unique_id),
+                "actual_serial": str(envoy.serial_number),
+            },
+        )
+
+    # register envoy before via_device is used
+    device_registry = dr.async_get(hass)
+    if TYPE_CHECKING:
+        assert envoy.serial_number
+    device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, envoy.serial_number)},
+        manufacturer="Enphase",
+        name=coordinator.name,
+        model=envoy.envoy_model,
+        sw_version=str(envoy.firmware),
+        hw_version=envoy.part_number,
+        serial_number=envoy.serial_number,
+    )
+
+    envoy_data = coordinator.envoy.data
+
+    # register the ACB aggregate device before the individual batteries reference
+    # it as via_device, so they nest under it in the device hierarchy
+    if envoy_data and envoy_data.acb_inventory:
+        device_registry.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, f"{envoy.serial_number}_acb")},
+            manufacturer="Enphase",
+            model="ACB",
+            name=f"ACB {envoy.serial_number}",
+            via_device_id=dr.async_get_device_id_by_identifier(
+                hass, (DOMAIN, envoy.serial_number), config_entry_id=entry.entry_id
+            ),
+        )
+
+    # register the Enpower device before the dry contact relays reference it as
+    # via_device, so they nest under it in the device hierarchy
+    if envoy_data and (enpower := envoy_data.enpower):
+        device_registry.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, enpower.serial_number)},
+            manufacturer="Enphase",
+            model="Enpower",
+            name=f"Enpower {enpower.serial_number}",
+            sw_version=str(enpower.firmware_version),
+            serial_number=enpower.serial_number,
+            via_device_id=dr.async_get_device_id_by_identifier(
+                hass, (DOMAIN, envoy.serial_number), config_entry_id=entry.entry_id
+            ),
         )
 
     entry.runtime_data = coordinator
@@ -45,13 +98,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: EnphaseConfigEntry) -> b
 
 async def async_unload_entry(hass: HomeAssistant, entry: EnphaseConfigEntry) -> bool:
     """Unload a config entry."""
-    coordinator: EnphaseUpdateCoordinator = entry.runtime_data
+    coordinator = entry.runtime_data
     coordinator.async_cancel_token_refresh()
+    coordinator.async_cancel_firmware_refresh()
+    coordinator.async_cancel_mac_verification()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
 async def async_remove_config_entry_device(
-    hass: HomeAssistant, config_entry: EnphaseConfigEntry, device_entry: dr.DeviceEntry
+    hass: HomeAssistant,
+    config_entry: EnphaseConfigEntry,
+    device_entry: dr.AnyDeviceEntry,
 ) -> bool:
     """Remove an enphase_envoy config entry from a device."""
     dev_ids = {dev_id[1] for dev_id in device_entry.identifiers if dev_id[0] == DOMAIN}
@@ -60,8 +117,22 @@ async def async_remove_config_entry_device(
     envoy_serial_num = config_entry.unique_id
     if envoy_serial_num in dev_ids:
         return False
-    if envoy_data and envoy_data.inverters:
-        for inverter in envoy_data.inverters:
-            if str(inverter) in dev_ids:
+    if envoy_data:
+        if envoy_data.inverters:
+            for inverter in envoy_data.inverters:
+                if str(inverter) in dev_ids:
+                    return False
+        if envoy_data.encharge_inventory:
+            for encharge in envoy_data.encharge_inventory:
+                if str(encharge) in dev_ids:
+                    return False
+        if envoy_data.enpower:
+            if str(envoy_data.enpower.serial_number) in dev_ids:
                 return False
+        if envoy_data.acb_inventory:
+            if f"{envoy_serial_num}_acb" in dev_ids:
+                return False
+            for acb_serial in envoy_data.acb_inventory:
+                if str(acb_serial) in dev_ids:
+                    return False
     return True

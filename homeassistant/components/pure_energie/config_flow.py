@@ -1,17 +1,15 @@
 """Config flow for Pure Energie integration."""
 
-from __future__ import annotations
-
-from typing import Any
+from typing import Any, override
 
 from gridnet import Device, GridNet, GridNetConnectionError
-import voluptuous as vol
+import probatio
 
-from homeassistant.components import zeroconf
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_NAME
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import TextSelector
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from .const import DOMAIN
 
@@ -23,6 +21,7 @@ class PureEnergieFlowHandler(ConfigFlow, domain=DOMAIN):
     discovered_host: str
     discovered_device: Device
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -49,16 +48,17 @@ class PureEnergieFlowHandler(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(CONF_HOST): TextSelector(),
+                    probatio.Required(CONF_HOST): TextSelector(),
                 }
             ),
             errors=errors or {},
         )
 
+    @override
     async def async_step_zeroconf(
-        self, discovery_info: zeroconf.ZeroconfServiceInfo
+        self, discovery_info: ZeroconfServiceInfo
     ) -> ConfigFlowResult:
         """Handle zeroconf discovery."""
         self.discovered_host = discovery_info.host

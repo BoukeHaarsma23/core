@@ -1,9 +1,11 @@
 """Test the Z-Wave JS diagnostics."""
 
 import copy
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
+from syrupy.assertion import SnapshotAssertion
 from zwave_js_server.const import CommandClass
 from zwave_js_server.event import Event
 from zwave_js_server.model.node import Node
@@ -13,7 +15,6 @@ from homeassistant.components.zwave_js.diagnostics import (
     ZwaveValueMatcher,
     async_get_device_diagnostics,
 )
-from homeassistant.components.zwave_js.discovery import async_discover_node_values
 from homeassistant.components.zwave_js.helpers import (
     get_device_id,
     get_value_id_from_unique_id,
@@ -58,10 +59,11 @@ async def test_device_diagnostics(
     integration,
     hass_client: ClientSessionGenerator,
     version_state,
+    snapshot: SnapshotAssertion,
 ) -> None:
     """Test the device level diagnostics data dump."""
-    device = device_registry.async_get_device(
-        identifiers={get_device_id(client.driver, multisensor_6)}
+    device = device_registry.async_get_device_by_identifier(
+        get_device_id(client.driver, multisensor_6), integration.entry_id
     )
     assert device
 
@@ -113,18 +115,18 @@ async def test_device_diagnostics(
     # Entities that are created outside of discovery (e.g. node status sensor and
     # ping button) as well as helper entities created from other integrations should
     # not be in dump.
-    assert len(diagnostics_data["entities"]) == len(
-        list(async_discover_node_values(multisensor_6, device, {device.id: set()}))
-    )
+    assert diagnostics_data == snapshot
+
     assert any(
-        entity.entity_id == "test.unrelated_entity"
-        for entity in er.async_entries_for_device(entity_registry, device.id)
+        entity_entry.entity_id == "test.unrelated_entity"
+        for entity_entry in er.async_entries_for_device(entity_registry, device.id)
     )
     # Explicitly check that the entity that is not part of this config entry is not
     # in the dump.
+    diagnostics_entities = cast(list[dict[str, Any]], diagnostics_data["entities"])
     assert not any(
         entity["entity_id"] == "test.unrelated_entity"
-        for entity in diagnostics_data["entities"]
+        for entity in diagnostics_entities
     )
     assert diagnostics_data["state"] == {
         **multisensor_6.data,
@@ -164,13 +166,14 @@ async def test_device_diagnostics_missing_primary_value(
     hass_client: ClientSessionGenerator,
 ) -> None:
     """Test that device diagnostics handles an entity with a missing primary value."""
-    device = device_registry.async_get_device(
-        identifiers={get_device_id(client.driver, multisensor_6)}
+    device = device_registry.async_get_device_by_identifier(
+        get_device_id(client.driver, multisensor_6), integration.entry_id
     )
     assert device
 
     entity_id = "sensor.multisensor_6_air_temperature"
     entry = entity_registry.async_get(entity_id)
+    assert entry
 
     # check that the primary value for the entity exists in the diagnostics
     diagnostics_data = await get_diagnostics_for_device(
@@ -180,9 +183,8 @@ async def test_device_diagnostics_missing_primary_value(
     value = multisensor_6.values.get(get_value_id_from_unique_id(entry.unique_id))
     assert value
 
-    air_entity = next(
-        x for x in diagnostics_data["entities"] if x["entity_id"] == entity_id
-    )
+    diagnostics_entities = cast(list[dict[str, Any]], diagnostics_data["entities"])
+    air_entity = next(x for x in diagnostics_entities if x["entity_id"] == entity_id)
 
     assert air_entity["value_id"] == value.value_id
     assert air_entity["primary_value"] == {
@@ -218,9 +220,8 @@ async def test_device_diagnostics_missing_primary_value(
         hass, hass_client, integration, device
     )
 
-    air_entity = next(
-        x for x in diagnostics_data["entities"] if x["entity_id"] == entity_id
-    )
+    diagnostics_entities = cast(list[dict[str, Any]], diagnostics_data["entities"])
+    air_entity = next(x for x in diagnostics_entities if x["entity_id"] == entity_id)
 
     assert air_entity["value_id"] == value.value_id
     assert air_entity["primary_value"] is None
@@ -258,13 +259,14 @@ async def test_device_diagnostics_secret_value(
     client.driver.controller.nodes[node.node_id] = node
     client.driver.controller.emit("node added", {"node": node})
     await hass.async_block_till_done()
-    device = device_registry.async_get_device(
-        identifiers={get_device_id(client.driver, node)}
+    device = device_registry.async_get_device_by_identifier(
+        get_device_id(client.driver, node), integration.entry_id
     )
     assert device
 
     diagnostics_data = await get_diagnostics_for_device(
         hass, hass_client, integration, device
     )
-    test_value = _find_ultraviolet_val(diagnostics_data["state"])
+    diagnostics_node_state = cast(dict[str, Any], diagnostics_data["state"])
+    test_value = _find_ultraviolet_val(diagnostics_node_state)
     assert test_value["value"] == REDACTED

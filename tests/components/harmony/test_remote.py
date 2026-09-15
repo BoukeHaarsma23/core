@@ -1,6 +1,7 @@
 """Test the Logitech Harmony Hub remote."""
 
 from datetime import timedelta
+from typing import Any
 
 from aioharmony.const import SendCommandDevice
 
@@ -292,7 +293,7 @@ async def test_async_send_command_custom_delay(
     mock_write_config,
     mock_config_entry: MockConfigEntry,
 ) -> None:
-    """Ensure calls to send remote commands properly propagate to devices with custom delays."""
+    """Ensure calls to send remote commands propagate to devices with custom delays."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         unique_id="123",
@@ -387,7 +388,9 @@ async def test_sync(
     mock_write_config.assert_called()
 
 
-async def _send_commands_and_wait(hass, service_data):
+async def _send_commands_and_wait(
+    hass: HomeAssistant, service_data: dict[str, Any]
+) -> None:
     await hass.services.async_call(
         REMOTE_DOMAIN,
         SERVICE_SEND_COMMAND,

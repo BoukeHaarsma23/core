@@ -1,10 +1,10 @@
-"""The tests for WebOS TV device triggers."""
+"""The tests for LG webOS TV device triggers."""
 
 import pytest
 
 from homeassistant.components import automation
-from homeassistant.components.device_automation import DeviceAutomationType
-from homeassistant.components.device_automation.exceptions import (
+from homeassistant.components.device_automation import (
+    DeviceAutomationType,
     InvalidDeviceAutomationConfig,
 )
 from homeassistant.components.webostv import DOMAIN, device_trigger
@@ -24,9 +24,11 @@ async def test_get_triggers(
     hass: HomeAssistant, device_registry: dr.DeviceRegistry, client
 ) -> None:
     """Test we get the expected triggers."""
-    await setup_webostv(hass)
+    entry = await setup_webostv(hass)
 
-    device = device_registry.async_get_device(identifiers={(DOMAIN, FAKE_UUID)})
+    device = device_registry.async_get_device_by_identifier(
+        (DOMAIN, FAKE_UUID), entry.entry_id
+    )
 
     turn_on_trigger = {
         "platform": "device",
@@ -49,9 +51,11 @@ async def test_if_fires_on_turn_on_request(
     client,
 ) -> None:
     """Test for turn_on and turn_off triggers firing."""
-    await setup_webostv(hass)
+    entry = await setup_webostv(hass)
 
-    device = device_registry.async_get_device(identifiers={(DOMAIN, FAKE_UUID)})
+    device = device_registry.async_get_device_by_identifier(
+        (DOMAIN, FAKE_UUID), entry.entry_id
+    )
 
     assert await async_setup_component(
         hass,
@@ -104,20 +108,20 @@ async def test_if_fires_on_turn_on_request(
     assert service_calls[2].data["id"] == 0
 
 
-async def test_failure_scenarios(
+async def test_invalid_trigger_raises(
     hass: HomeAssistant, device_registry: dr.DeviceRegistry, client
 ) -> None:
-    """Test failure scenarios."""
+    """Test invalid trigger platform or device id raises."""
     await setup_webostv(hass)
 
     # Test wrong trigger platform type
-    with pytest.raises(HomeAssistantError):
+    with pytest.raises(HomeAssistantError, match="Unhandled trigger type: wrong.type"):
         await device_trigger.async_attach_trigger(
             hass, {"type": "wrong.type", "device_id": "invalid_device_id"}, None, {}
         )
 
     # Test invalid device id
-    with pytest.raises(InvalidDeviceAutomationConfig):
+    with pytest.raises(InvalidDeviceAutomationConfig) as exc_info:
         await device_trigger.async_validate_trigger_config(
             hass,
             {
@@ -127,8 +131,38 @@ async def test_failure_scenarios(
                 "device_id": "invalid_device_id",
             },
         )
+    assert exc_info.value.translation_domain == DOMAIN
+    assert exc_info.value.translation_key == "device_not_valid"
 
-    entry = MockConfigEntry(domain="fake", state=ConfigEntryState.LOADED, data={})
+
+@pytest.mark.parametrize(
+    ("domain", "entry_state", "expected_translation_key"),
+    [
+        (
+            DOMAIN,
+            ConfigEntryState.NOT_LOADED,
+            "device_config_entry_not_loaded",
+        ),
+        (
+            "fake",
+            ConfigEntryState.LOADED,
+            "device_not_valid",
+        ),
+    ],
+)
+async def test_invalid_entry_raises(
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    client,
+    domain: str,
+    entry_state: ConfigEntryState,
+    expected_translation_key: str,
+) -> None:
+    """Test device id not loaded or from another domain raises."""
+    await setup_webostv(hass)
+
+    entry = MockConfigEntry(domain=domain, state=entry_state, data={})
+    entry.runtime_data = None
     entry.add_to_hass(hass)
 
     device = device_registry.async_get_or_create(
@@ -143,5 +177,7 @@ async def test_failure_scenarios(
     }
 
     # Test that device id from non webostv domain raises exception
-    with pytest.raises(InvalidDeviceAutomationConfig):
+    with pytest.raises(InvalidDeviceAutomationConfig) as exc_info:
         await device_trigger.async_validate_trigger_config(hass, config)
+    assert exc_info.value.translation_domain == DOMAIN
+    assert exc_info.value.translation_key == expected_translation_key

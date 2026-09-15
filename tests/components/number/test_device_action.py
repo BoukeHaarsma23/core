@@ -1,8 +1,8 @@
 """The tests for Number device actions."""
 
+from probatio import to_field_list
 import pytest
 from pytest_unordered import unordered
-import voluptuous_serialize
 
 from homeassistant.components import automation
 from homeassistant.components.device_automation import DeviceAutomationType
@@ -22,11 +22,6 @@ from tests.common import (
     async_get_device_automations,
     async_mock_service,
 )
-
-
-@pytest.fixture(autouse=True, name="stub_blueprint_populate")
-def stub_blueprint_populate_autouse(stub_blueprint_populate: None) -> None:
-    """Stub copying the blueprints to the config folder."""
 
 
 async def test_get_actions(
@@ -243,48 +238,64 @@ async def test_action_legacy(
 
 
 async def test_capabilities(
-    hass: HomeAssistant, entity_registry: er.EntityRegistry
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    entity_registry: er.EntityRegistry,
 ) -> None:
     """Test getting capabilities."""
-    entry = entity_registry.async_get_or_create(
-        DOMAIN, "test", "5678", device_id="abcdefgh"
+    config_entry = MockConfigEntry(domain="test", data={})
+    config_entry.add_to_hass(hass)
+    device_entry = device_registry.async_get_or_create(
+        config_entry_id=config_entry.entry_id,
+        connections={(dr.CONNECTION_NETWORK_MAC, "12:34:56:AB:CD:EF")},
+    )
+    entity_entry = entity_registry.async_get_or_create(
+        DOMAIN, "test", "5678", device_id=device_entry.id
     )
     capabilities = await device_action.async_get_action_capabilities(
         hass,
         {
             "domain": DOMAIN,
             "device_id": "abcdefgh",
-            "entity_id": entry.id,
+            "entity_id": entity_entry.id,
             "type": "set_value",
         },
     )
 
     assert capabilities and "extra_fields" in capabilities
 
-    assert voluptuous_serialize.convert(
+    assert to_field_list(
         capabilities["extra_fields"], custom_serializer=cv.custom_serializer
     ) == [{"name": "value", "required": True, "type": "float"}]
 
 
 async def test_capabilities_legacy(
-    hass: HomeAssistant, entity_registry: er.EntityRegistry
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    entity_registry: er.EntityRegistry,
 ) -> None:
     """Test getting capabilities."""
-    entry = entity_registry.async_get_or_create(
-        DOMAIN, "test", "5678", device_id="abcdefgh"
+    config_entry = MockConfigEntry(domain="test", data={})
+    config_entry.add_to_hass(hass)
+    device_entry = device_registry.async_get_or_create(
+        config_entry_id=config_entry.entry_id,
+        connections={(dr.CONNECTION_NETWORK_MAC, "12:34:56:AB:CD:EF")},
+    )
+    entity_entry = entity_registry.async_get_or_create(
+        DOMAIN, "test", "5678", device_id=device_entry.id
     )
     capabilities = await device_action.async_get_action_capabilities(
         hass,
         {
             "domain": DOMAIN,
             "device_id": "abcdefgh",
-            "entity_id": entry.entity_id,
+            "entity_id": entity_entry.entity_id,
             "type": "set_value",
         },
     )
 
     assert capabilities and "extra_fields" in capabilities
 
-    assert voluptuous_serialize.convert(
+    assert to_field_list(
         capabilities["extra_fields"], custom_serializer=cv.custom_serializer
     ) == [{"name": "value", "required": True, "type": "float"}]

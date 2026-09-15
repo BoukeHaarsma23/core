@@ -2,13 +2,15 @@
 
 import asyncio
 from collections.abc import AsyncGenerator, Generator
+from pathlib import Path
 from random import getrandbits
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from homeassistant.components import mqtt
+from homeassistant.components.mqtt import DOMAIN
 from homeassistant.components.mqtt.models import MessageCallbackType, ReceiveMessage
 from homeassistant.components.mqtt.util import EnsureJobAfterCooldown
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
@@ -18,7 +20,6 @@ from tests.common import MockConfigEntry
 from tests.typing import MqttMockPahoClient
 
 ENTRY_DEFAULT_BIRTH_MESSAGE = {
-    mqtt.CONF_BROKER: "mock-broker",
     mqtt.CONF_BIRTH_MESSAGE: {
         mqtt.ATTR_TOPIC: "homeassistant/status",
         mqtt.ATTR_PAYLOAD: "online",
@@ -34,19 +35,46 @@ def patch_hass_config(mock_hass_config: None) -> None:
 
 
 @pytest.fixture
+def mock_v5_protocol_check() -> bool:
+    """Fixture to mock a v5 protocol test result."""
+    return True
+
+
+@pytest.fixture(autouse=True)
+def mock_try_connection_protocol_check(
+    hass: HomeAssistant, mock_v5_protocol_check: bool
+) -> Generator[MagicMock]:
+    """Patch try_connection."""
+    with patch(
+        "homeassistant.components.mqtt.try_connection",
+        return_value=mock_v5_protocol_check,
+    ) as mock_try_connection:
+        yield mock_try_connection
+
+
+@pytest.fixture
 def temp_dir_prefix() -> str:
     """Set an alternate temp dir prefix."""
     return "test"
 
 
-@pytest.fixture
-def mock_temp_dir(temp_dir_prefix: str) -> Generator[str]:
+@pytest.fixture(autouse=True)
+async def mock_temp_dir(
+    hass: HomeAssistant, tmp_path: Path, temp_dir_prefix: str
+) -> AsyncGenerator[str]:
     """Mock the certificate temp directory."""
-    with patch(
-        # Patch temp dir name to avoid tests fail running in parallel
-        "homeassistant.components.mqtt.util.TEMP_DIR_NAME",
-        f"home-assistant-mqtt-{temp_dir_prefix}-{getrandbits(10):03x}",
-    ) as mocked_temp_dir:
+    mqtt_temp_dir = f"home-assistant-mqtt-{temp_dir_prefix}-{getrandbits(10):03x}"
+    with (
+        patch(
+            "homeassistant.components.mqtt.util.tempfile.gettempdir",
+            return_value=tmp_path,
+        ),
+        patch(
+            # Patch temp dir name to avoid tests fail running in parallel
+            "homeassistant.components.mqtt.util.TEMP_DIR_NAME",
+            mqtt_temp_dir,
+        ) as mocked_temp_dir,
+    ):
         yield mocked_temp_dir
 
 
@@ -77,6 +105,7 @@ def mock_debouncer(hass: HomeAssistant) -> Generator[asyncio.Event]:
 async def setup_with_birth_msg_client_mock(
     hass: HomeAssistant,
     mqtt_config_entry_data: dict[str, Any] | None,
+    mqtt_config_entry_options: dict[str, Any] | None,
     mqtt_client_mock: MqttMockPahoClient,
 ) -> AsyncGenerator[MqttMockPahoClient]:
     """Test sending birth message."""
@@ -87,10 +116,14 @@ async def setup_with_birth_msg_client_mock(
         patch("homeassistant.components.mqtt.client.SUBSCRIBE_COOLDOWN", 0.0),
     ):
         entry = MockConfigEntry(
-            domain=mqtt.DOMAIN, data={mqtt.CONF_BROKER: "test-broker"}
+            domain=DOMAIN,
+            data=mqtt_config_entry_data or {mqtt.CONF_BROKER: "test-broker"},
+            options=mqtt_config_entry_options or {},
+            version=mqtt.CONFIG_ENTRY_VERSION,
+            minor_version=mqtt.CONFIG_ENTRY_MINOR_VERSION,
         )
         entry.add_to_hass(hass)
-        hass.config.components.add(mqtt.DOMAIN)
+        hass.config.components.add(DOMAIN)
         assert await hass.config_entries.async_setup(entry.entry_id)
         hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
 
@@ -121,3 +154,10 @@ def record_calls(recorded_calls: list[ReceiveMessage]) -> MessageCallbackType:
         recorded_calls.append(msg)
 
     return record_calls
+
+
+@pytest.fixture
+def tag_mock() -> Generator[AsyncMock]:
+    """Fixture to mock tag."""
+    with patch("homeassistant.components.tag.async_scan_tag") as mock_tag:
+        yield mock_tag

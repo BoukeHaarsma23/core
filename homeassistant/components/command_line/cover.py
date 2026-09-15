@@ -1,12 +1,10 @@
 """Support for command line covers."""
 
-from __future__ import annotations
-
 import asyncio
 from datetime import datetime, timedelta
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, override
 
-from homeassistant.components.cover import CoverEntity
+from homeassistant.components.cover import DOMAIN as COVER_DOMAIN, CoverEntity
 from homeassistant.const import (
     CONF_COMMAND_CLOSE,
     CONF_COMMAND_OPEN,
@@ -20,12 +18,19 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.template import Template
-from homeassistant.helpers.trigger_template_entity import ManualTriggerEntity
+from homeassistant.helpers.trigger_template_entity import (
+    ManualTriggerEntity,
+    ValueTemplate,
+)
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.util import dt as dt_util, slugify
 
 from .const import CONF_COMMAND_TIMEOUT, LOGGER, TRIGGER_ENTITY_OPTIONS
-from .utils import async_call_shell_with_timeout, async_check_output_or_log
+from .utils import (
+    async_call_shell_with_timeout,
+    async_check_output_or_log,
+    create_platform_yaml_not_supported_issue,
+)
 
 SCAN_INTERVAL = timedelta(seconds=15)
 
@@ -37,17 +42,16 @@ async def async_setup_platform(
     discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
     """Set up cover controlled by shell commands."""
+    if not discovery_info:
+        create_platform_yaml_not_supported_issue(hass, COVER_DOMAIN)
+        return
 
     covers = []
-    discovery_info = cast(DiscoveryInfoType, discovery_info)
     entities: dict[str, dict[str, Any]] = {
         slugify(discovery_info[CONF_NAME]): discovery_info
     }
 
     for device_name, cover_config in entities.items():
-        if value_template := cover_config.get(CONF_VALUE_TEMPLATE):
-            value_template.hass = hass
-
         trigger_entity_config = {
             CONF_NAME: Template(cover_config.get(CONF_NAME, device_name), hass),
             **{k: v for k, v in cover_config.items() if k in TRIGGER_ENTITY_OPTIONS},
@@ -60,7 +64,7 @@ async def async_setup_platform(
                 cover_config[CONF_COMMAND_CLOSE],
                 cover_config[CONF_COMMAND_STOP],
                 cover_config.get(CONF_COMMAND_STATE),
-                value_template,
+                cover_config.get(CONF_VALUE_TEMPLATE),
                 cover_config[CONF_COMMAND_TIMEOUT],
                 cover_config.get(CONF_SCAN_INTERVAL, SCAN_INTERVAL),
             )
@@ -81,7 +85,7 @@ class CommandCover(ManualTriggerEntity, CoverEntity):
         command_close: str,
         command_stop: str,
         command_state: str | None,
-        value_template: Template | None,
+        value_template: ValueTemplate | None,
         timeout: int,
         scan_interval: timedelta,
     ) -> None:
@@ -97,6 +101,7 @@ class CommandCover(ManualTriggerEntity, CoverEntity):
         self._scan_interval = scan_interval
         self._process_updates: asyncio.Lock | None = None
 
+    @override
     async def async_added_to_hass(self) -> None:
         """Call when entity about to be added to hass."""
         await super().async_added_to_hass()
@@ -113,7 +118,7 @@ class CommandCover(ManualTriggerEntity, CoverEntity):
 
     async def _async_move_cover(self, command: str) -> bool:
         """Execute the actual commands."""
-        LOGGER.info("Running command: %s", command)
+        LOGGER.debug("Running command: %s", command)
 
         returncode = await async_call_shell_with_timeout(command, self._timeout)
         success = returncode == 0
@@ -126,6 +131,7 @@ class CommandCover(ManualTriggerEntity, CoverEntity):
         return success
 
     @property
+    @override
     def is_closed(self) -> bool | None:
         """Return if the cover is closed."""
         if self.current_cover_position is not None:
@@ -133,6 +139,7 @@ class CommandCover(ManualTriggerEntity, CoverEntity):
         return None
 
     @property
+    @override
     def current_cover_position(self) -> int | None:
         """Return current position of cover.
 
@@ -142,10 +149,10 @@ class CommandCover(ManualTriggerEntity, CoverEntity):
 
     async def _async_query_state(self) -> str | None:
         """Query for the state."""
-        if self._command_state:
-            LOGGER.info("Running state value command: %s", self._command_state)
-            return await async_check_output_or_log(self._command_state, self._timeout)
-        return None
+        if TYPE_CHECKING:
+            assert self._command_state
+        LOGGER.debug("Running state value command: %s", self._command_state)
+        return await async_check_output_or_log(self._command_state, self._timeout)
 
     async def _update_entity_state(self, now: datetime | None = None) -> None:
         """Update the state of the entity."""
@@ -153,7 +160,8 @@ class CommandCover(ManualTriggerEntity, CoverEntity):
             self._process_updates = asyncio.Lock()
         if self._process_updates.locked():
             LOGGER.warning(
-                "Updating Command Line Cover %s took longer than the scheduled update interval %s",
+                "Updating Command Line Cover %s took longer than"
+                " the scheduled update interval %s",
                 self.name,
                 self._scan_interval,
             )
@@ -166,14 +174,20 @@ class CommandCover(ManualTriggerEntity, CoverEntity):
         """Update device state."""
         if self._command_state:
             payload = str(await self._async_query_state())
+
+            variables = self._template_variables_with_value(payload)
+            if not self._render_availability_template(variables):
+                self.async_write_ha_state()
+                return
+
             if self._value_template:
-                payload = self._value_template.async_render_with_possible_json_value(
-                    payload, None
+                payload = self._value_template.async_render_as_value_template(
+                    self.entity_id, variables, None
                 )
             self._state = None
             if payload:
                 self._state = int(payload)
-            self._process_manual_data(payload)
+            self._process_manual_data(variables)
             self.async_write_ha_state()
 
     async def async_update(self) -> None:
@@ -183,16 +197,19 @@ class CommandCover(ManualTriggerEntity, CoverEntity):
         """
         await self._update_entity_state(dt_util.now())
 
+    @override
     async def async_open_cover(self, **kwargs: Any) -> None:
         """Open the cover."""
         await self._async_move_cover(self._command_open)
         await self._update_entity_state()
 
+    @override
     async def async_close_cover(self, **kwargs: Any) -> None:
         """Close the cover."""
         await self._async_move_cover(self._command_close)
         await self._update_entity_state()
 
+    @override
     async def async_stop_cover(self, **kwargs: Any) -> None:
         """Stop the cover."""
         await self._async_move_cover(self._command_stop)

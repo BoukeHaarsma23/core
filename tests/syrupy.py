@@ -1,7 +1,5 @@
 """Home Assistant extension for Syrupy."""
 
-from __future__ import annotations
-
 from contextlib import suppress
 import dataclasses
 from enum import IntFlag
@@ -10,11 +8,10 @@ from typing import Any
 
 import attr
 import attrs
+import probatio
 from syrupy.extensions.amber import AmberDataSerializer, AmberSnapshotExtension
 from syrupy.location import PyTestLocation
 from syrupy.types import PropertyFilter, PropertyMatcher, PropertyPath, SerializableData
-import voluptuous as vol
-import voluptuous_serialize
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import State
@@ -37,6 +34,17 @@ class _ANY:
 ANY = _ANY()
 
 __all__ = ["HomeAssistantSnapshotExtension"]
+
+# DeviceEntry attributes that are internal bookkeeping and should not appear in snapshots.
+# Underscore attributes (_cache, _suggested_area and the transient _pending_move /
+# _composite_subentries) are excluded separately. The composite-device migration
+# attributes below can be removed in HA Core 2027.8.
+_INTERNAL_DEVICE_ENTRY_ATTRIBUTES = (
+    "composite_device_id",
+    "composite_primary_config_entry",
+    "has_composite_identifiers",
+    "split_at",
+)
 
 
 class AreaRegistryEntrySnapshot(dict):
@@ -95,14 +103,22 @@ class HomeAssistantSnapshotSerializer(AmberDataSerializer):
             serializable_data = cls._serializable_area_registry_entry(data)
         elif isinstance(data, dr.DeviceEntry):
             serializable_data = cls._serializable_device_registry_entry(data)
+        elif isinstance(data, dr.ChildDeviceEntry):
+            serializable_data = cls._serializable_child_device_registry_entry(data)
         elif isinstance(data, er.RegistryEntry):
             serializable_data = cls._serializable_entity_registry_entry(data)
         elif isinstance(data, ir.IssueEntry):
             serializable_data = cls._serializable_issue_registry_entry(data)
         elif isinstance(data, dict) and "flow_id" in data and "handler" in data:
             serializable_data = cls._serializable_flow_result(data)
-        elif isinstance(data, vol.Schema):
-            serializable_data = voluptuous_serialize.convert(data)
+        elif isinstance(data, dict) and set(data) == {
+            "conversation_id",
+            "response",
+            "continue_conversation",
+        }:
+            serializable_data = cls._serializable_conversation_result(data)
+        elif isinstance(data, probatio.Schema):
+            serializable_data = probatio.to_field_list(data)
         elif isinstance(data, ConfigEntry):
             serializable_data = cls._serializable_config_entry(data)
         elif dataclasses.is_dataclass(type(data)):
@@ -132,6 +148,7 @@ class HomeAssistantSnapshotSerializer(AmberDataSerializer):
         """Prepare a Home Assistant area registry entry for serialization."""
         serialized = AreaRegistryEntrySnapshot(dataclasses.asdict(data) | {"id": ANY})
         serialized.pop("_json_repr")
+        serialized.pop("_cache")
         return serialized
 
     @classmethod
@@ -145,17 +162,44 @@ class HomeAssistantSnapshotSerializer(AmberDataSerializer):
         cls, data: dr.DeviceEntry
     ) -> SerializableData:
         """Prepare a Home Assistant device registry entry for serialization."""
+        # Exclude internal attributes (caches, transient move state, and the
+        # composite-device migration bookkeeping) from the snapshot
         serialized = DeviceRegistryEntrySnapshot(
-            attrs.asdict(data)
-            | {
-                "config_entries": ANY,
-                "id": ANY,
-            }
+            attr.asdict(
+                data,
+                retain_collection_types=True,
+                filter=lambda attribute, _: (
+                    not attribute.name.startswith("_")
+                    and attribute.name not in _INTERNAL_DEVICE_ENTRY_ATTRIBUTES
+                ),
+            )
+            | {"id": ANY}
         )
         if serialized["via_device_id"] is not None:
             serialized["via_device_id"] = ANY
-        if serialized["primary_config_entry"] is not None:
-            serialized["primary_config_entry"] = ANY
+
+        serialized["config_entry_id"] = ANY
+        serialized["config_subentry_id"] = ANY
+
+        return cls._remove_created_and_modified_at(serialized)
+
+    @classmethod
+    def _serializable_child_device_registry_entry(
+        cls, data: dr.ChildDeviceEntry
+    ) -> SerializableData:
+        """Prepare a Home Assistant child device registry entry for serialization."""
+        serialized = DeviceRegistryEntrySnapshot(
+            attr.asdict(
+                data,
+                retain_collection_types=True,
+                filter=lambda attribute, _: not attribute.name.startswith("_"),
+            )
+            | {"id": ANY}
+        )
+        serialized["config_entry_id"] = ANY
+        serialized["config_subentry_id"] = ANY
+        serialized["parent_device_id"] = ANY
+
         return cls._remove_created_and_modified_at(serialized)
 
     @classmethod
@@ -176,12 +220,17 @@ class HomeAssistantSnapshotSerializer(AmberDataSerializer):
             attrs.asdict(data)
             | {
                 "config_entry_id": ANY,
+                "config_subentry_id": ANY,
                 "device_id": ANY,
                 "id": ANY,
                 "options": {k: dict(v) for k, v in data.options.items()},
             }
         )
         serialized.pop("categories")
+        serialized.pop("compat_aliases")
+        serialized.pop("original_name_unprefixed")
+        serialized.pop("_cache")
+        serialized["aliases"] = er._serialize_aliases(serialized["aliases"])
         return cls._remove_created_and_modified_at(serialized)
 
     @classmethod
@@ -190,11 +239,16 @@ class HomeAssistantSnapshotSerializer(AmberDataSerializer):
         return FlowResultSnapshot(data | {"flow_id": ANY})
 
     @classmethod
+    def _serializable_conversation_result(cls, data: dict) -> SerializableData:
+        """Prepare a Home Assistant conversation result for serialization."""
+        return data | {"conversation_id": ANY}
+
+    @classmethod
     def _serializable_issue_registry_entry(
         cls, data: ir.IssueEntry
     ) -> SerializableData:
         """Prepare a Home Assistant issue registry entry for serialization."""
-        return IssueRegistryItemSnapshot(data.to_json() | {"created": ANY})
+        return IssueRegistryItemSnapshot(dataclasses.asdict(data) | {"created": ANY})
 
     @classmethod
     def _serializable_state(cls, data: State) -> SerializableData:
@@ -215,8 +269,10 @@ class _IntFlagWrapper:
         self._flag = flag
 
     def __repr__(self) -> str:
-        # 3.10: <ClimateEntityFeature.SWING_MODE|PRESET_MODE|FAN_MODE|TARGET_TEMPERATURE: 57>
-        # 3.11: <ClimateEntityFeature.TARGET_TEMPERATURE|FAN_MODE|PRESET_MODE|SWING_MODE: 57>
+        # 3.10:
+        # <ClimateEntityFeature.SWING_MODE|PRESET_MODE|FAN_MODE|TARGET_TEMPERATURE: 57>
+        # 3.11:
+        # <ClimateEntityFeature.TARGET_TEMPERATURE|FAN_MODE|PRESET_MODE|SWING_MODE: 57>
         # Syrupy: <ClimateEntityFeature: 57>
         return f"<{self._flag.__class__.__name__}: {self._flag.value}>"
 

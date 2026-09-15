@@ -1,7 +1,5 @@
 """The rest component."""
 
-from __future__ import annotations
-
 import asyncio
 from collections.abc import Coroutine
 import contextlib
@@ -9,8 +7,8 @@ from datetime import timedelta
 import logging
 from typing import Any
 
-import httpx
-import voluptuous as vol
+import aiohttp
+import probatio
 
 from homeassistant.components.binary_sensor import DOMAIN as BINARY_SENSOR_DOMAIN
 from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
@@ -77,6 +75,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def reload_service_handler(service: ServiceCall) -> None:
         """Remove all user-defined groups and load new ones from config."""
         conf = None
+        # pylint: disable-next=home-assistant-action-swallowed-exception
         with contextlib.suppress(HomeAssistantError):
             conf = await async_integration_yaml_config(hass, DOMAIN)
         if conf is None:
@@ -86,7 +85,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         await _async_process_config(hass, conf)
 
     hass.services.async_register(
-        DOMAIN, SERVICE_RELOAD, reload_service_handler, schema=vol.Schema({})
+        DOMAIN, SERVICE_RELOAD, reload_service_handler, schema=probatio.Schema({})
     )
 
     return await _async_process_config(hass, config)
@@ -180,6 +179,7 @@ def _rest_coordinator(
     return DataUpdateCoordinator(
         hass,
         _LOGGER,
+        config_entry=None,
         name="rest data",
         update_method=update_method,
         update_interval=update_interval,
@@ -202,23 +202,18 @@ def create_rest_data_from_config(hass: HomeAssistant, config: ConfigType) -> Res
     timeout: int = config[CONF_TIMEOUT]
     encoding: str = config[CONF_ENCODING]
     if resource_template is not None:
-        resource_template.hass = hass
         resource = resource_template.async_render(parse_result=False)
 
     if payload_template is not None:
-        payload_template.hass = hass
         payload = payload_template.async_render(parse_result=False)
 
     if not resource:
         raise HomeAssistantError("Resource not set for RestData")
 
-    template.attach(hass, headers)
-    template.attach(hass, params)
-
-    auth: httpx.DigestAuth | tuple[str, str] | None = None
+    auth: aiohttp.DigestAuthMiddleware | tuple[str, str] | None = None
     if username and password:
         if config.get(CONF_AUTHENTICATION) == HTTP_DIGEST_AUTHENTICATION:
-            auth = httpx.DigestAuth(username, password)
+            auth = aiohttp.DigestAuthMiddleware(username, password)
         else:
             auth = (username, password)
 

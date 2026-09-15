@@ -1,10 +1,13 @@
 """A Local To-do todo platform."""
 
+import asyncio
 import datetime
 import logging
+from typing import override
 
 from ical.calendar import Calendar
 from ical.calendar_stream import IcsCalendarStream
+from ical.exceptions import CalendarParseError
 from ical.store import TodoStore
 from ical.todo import Todo, TodoStatus
 
@@ -16,7 +19,7 @@ from homeassistant.components.todo import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.setup import SetupPhases, async_pause_setup
 from homeassistant.util import dt as dt_util
 
@@ -61,27 +64,54 @@ def _migrate_calendar(calendar: Calendar) -> bool:
     return migrated
 
 
+def _repair_legacy_crlf_newlines(content: str) -> str:
+    r"""Repair ICS content corrupted by CRLF newlines from ical <= 12.1.3.
+
+    In ical <= 12.1.3, TextEncoder escaped \n to \\n but left \r unescaped.
+    When read with Python's universal newlines mode (newline=None), any lone \r
+    before \\n was converted into \n\\n, breaking property line parsing.
+    """
+    return content.replace("\r\\n", "\\n").replace("\n\\n", "\\n").replace("\r", "")
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: LocalTodoConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the local_todo todo platform."""
 
+    name = config_entry.data[CONF_TODO_LIST_NAME]
     store = config_entry.runtime_data
     ics = await store.async_load()
 
-    with async_pause_setup(hass, SetupPhases.WAIT_IMPORT_PACKAGES):
-        # calendar_from_ics will dynamically load packages
-        # the first time it is called, so we need to do it
-        # in a separate thread to avoid blocking the event loop
-        calendar: Calendar = await hass.async_add_import_executor_job(
-            IcsCalendarStream.calendar_from_ics, ics
+    migrated = False
+    try:
+        with async_pause_setup(hass, SetupPhases.WAIT_IMPORT_PACKAGES):
+            # calendar_from_ics will dynamically load packages
+            # the first time it is called, so we need to do it
+            # in a separate thread to avoid blocking the event loop
+            calendar: Calendar = await hass.async_add_import_executor_job(
+                IcsCalendarStream.calendar_from_ics, ics
+            )
+    except CalendarParseError:
+        # Attempt to repair malformed newlines from ical <= 12.1.3 CRLF bug
+        repaired_ics = _repair_legacy_crlf_newlines(ics)
+        if repaired_ics == ics:
+            raise
+        calendar = await hass.async_add_import_executor_job(
+            IcsCalendarStream.calendar_from_ics, repaired_ics
         )
-    migrated = _migrate_calendar(calendar)
+        _LOGGER.warning(
+            "Repaired malformed iCalendar file for to-do list %s",
+            name,
+        )
+        migrated = True
+
+    if _migrate_calendar(calendar):
+        migrated = True
     calendar.prodid = PRODID
 
-    name = config_entry.data[CONF_TODO_LIST_NAME]
     entity = LocalTodoListEntity(store, calendar, name, unique_id=config_entry.entry_id)
     async_add_entities([entity], True)
 
@@ -130,7 +160,8 @@ class LocalTodoListEntity(TodoListEntity):
         """Initialize LocalTodoListEntity."""
         self._store = store
         self._calendar = calendar
-        self._attr_name = name.capitalize()
+        self._calendar_lock = asyncio.Lock()
+        self._attr_name = name
         self._attr_unique_id = unique_id
 
     def _new_todo_store(self) -> TodoStore:
@@ -152,55 +183,66 @@ class LocalTodoListEntity(TodoListEntity):
                     ),
                     due=due,
                     description=item.description,
+                    completed=item.completed,
                 )
             )
         self._attr_todo_items = todo_items
 
+    @override
     async def async_create_todo_item(self, item: TodoItem) -> None:
         """Add an item to the To-do list."""
         todo = _convert_item(item)
-        self._new_todo_store().add(todo)
-        await self.async_save()
+        async with self._calendar_lock:
+            todo_store = self._new_todo_store()
+            await self.hass.async_add_executor_job(todo_store.add, todo)
+            await self.async_save()
         await self.async_update_ha_state(force_refresh=True)
 
+    @override
     async def async_update_todo_item(self, item: TodoItem) -> None:
-        """Update an item to the To-do list."""
+        """Update an item in the To-do list."""
         todo = _convert_item(item)
-        self._new_todo_store().edit(todo.uid, todo)
-        await self.async_save()
+        async with self._calendar_lock:
+            todo_store = self._new_todo_store()
+            await self.hass.async_add_executor_job(todo_store.edit, todo.uid, todo)
+            await self.async_save()
         await self.async_update_ha_state(force_refresh=True)
 
+    @override
     async def async_delete_todo_items(self, uids: list[str]) -> None:
         """Delete an item from the To-do list."""
-        store = self._new_todo_store()
-        for uid in uids:
-            store.delete(uid)
-        await self.async_save()
+        async with self._calendar_lock:
+            todo_store = self._new_todo_store()
+            for uid in uids:
+                todo_store.delete(uid)
+            await self.async_save()
         await self.async_update_ha_state(force_refresh=True)
 
+    @override
     async def async_move_todo_item(
         self, uid: str, previous_uid: str | None = None
     ) -> None:
         """Re-order an item to the To-do list."""
         if uid == previous_uid:
             return
-        todos = self._calendar.todos
-        item_idx: dict[str, int] = {itm.uid: idx for idx, itm in enumerate(todos)}
-        if uid not in item_idx:
-            raise HomeAssistantError(
-                "Item '{uid}' not found in todo list {self.entity_id}"
-            )
-        if previous_uid and previous_uid not in item_idx:
-            raise HomeAssistantError(
-                "Item '{previous_uid}' not found in todo list {self.entity_id}"
-            )
-        dst_idx = item_idx[previous_uid] + 1 if previous_uid else 0
-        src_idx = item_idx[uid]
-        src_item = todos.pop(src_idx)
-        if dst_idx > src_idx:
-            dst_idx -= 1
-        todos.insert(dst_idx, src_item)
-        await self.async_save()
+        async with self._calendar_lock:
+            todos = self._calendar.todos
+            item_idx: dict[str, int] = {itm.uid: idx for idx, itm in enumerate(todos)}
+            if uid not in item_idx:
+                raise HomeAssistantError(
+                    f"Item '{uid}' not found in todo list {self.entity_id}"
+                )
+            if previous_uid and previous_uid not in item_idx:
+                raise HomeAssistantError(
+                    f"Item '{previous_uid}' not found in todo list {self.entity_id}"
+                )
+            dst_idx = item_idx[previous_uid] + 1 if previous_uid else 0
+            src_idx = item_idx[uid]
+            src_item = todos.pop(src_idx)
+            if dst_idx > src_idx:
+                dst_idx -= 1
+            todos.insert(dst_idx, src_item)
+            await self.async_save()
         await self.async_update_ha_state(force_refresh=True)
 
     async def async_save(self) -> None:

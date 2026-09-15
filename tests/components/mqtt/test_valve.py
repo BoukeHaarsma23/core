@@ -5,7 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
-from homeassistant.components import mqtt, valve
+from homeassistant.components import valve
+from homeassistant.components.mqtt.const import DOMAIN
 from homeassistant.components.mqtt.valve import (
     MQTT_VALVE_ATTRIBUTES_BLOCKED,
     ValveEntityFeature,
@@ -14,6 +15,7 @@ from homeassistant.components.valve import (
     ATTR_CURRENT_POSITION,
     ATTR_POSITION,
     SERVICE_SET_VALVE_POSITION,
+    ValveState,
 )
 from homeassistant.const import (
     ATTR_ASSUMED_STATE,
@@ -22,15 +24,11 @@ from homeassistant.const import (
     SERVICE_CLOSE_VALVE,
     SERVICE_OPEN_VALVE,
     SERVICE_STOP_VALVE,
-    STATE_CLOSED,
-    STATE_CLOSING,
-    STATE_OPEN,
-    STATE_OPENING,
     STATE_UNKNOWN,
 )
 from homeassistant.core import HomeAssistant
 
-from .test_common import (
+from .common import (
     help_custom_config,
     help_test_availability_when_connection_lost,
     help_test_availability_without_topic,
@@ -65,7 +63,7 @@ from tests.common import async_fire_mqtt_message
 from tests.typing import MqttMockHAClientGenerator, MqttMockPahoClient
 
 DEFAULT_CONFIG = {
-    mqtt.DOMAIN: {
+    DOMAIN: {
         valve.DOMAIN: {
             "command_topic": "command-topic",
             "state_topic": "test-topic",
@@ -75,7 +73,7 @@ DEFAULT_CONFIG = {
 }
 
 DEFAULT_CONFIG_REPORTS_POSITION = {
-    mqtt.DOMAIN: {
+    DOMAIN: {
         valve.DOMAIN: {
             "name": "test",
             "command_topic": "command-topic",
@@ -90,7 +88,7 @@ DEFAULT_CONFIG_REPORTS_POSITION = {
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "state_topic": "state-topic",
@@ -103,14 +101,14 @@ DEFAULT_CONFIG_REPORTS_POSITION = {
 @pytest.mark.parametrize(
     ("message", "asserted_state"),
     [
-        ("open", STATE_OPEN),
-        ("closed", STATE_CLOSED),
-        ("closing", STATE_CLOSING),
-        ("opening", STATE_OPENING),
-        ('{"state" : "open"}', STATE_OPEN),
-        ('{"state" : "closed"}', STATE_CLOSED),
-        ('{"state" : "closing"}', STATE_CLOSING),
-        ('{"state" : "opening"}', STATE_OPENING),
+        ("open", ValveState.OPEN),
+        ("closed", ValveState.CLOSED),
+        ("closing", ValveState.CLOSING),
+        ("opening", ValveState.OPENING),
+        ('{"state" : "open"}', ValveState.OPEN),
+        ('{"state" : "closed"}', ValveState.CLOSED),
+        ('{"state" : "closing"}', ValveState.CLOSING),
+        ('{"state" : "opening"}', ValveState.OPENING),
     ],
 )
 async def test_state_via_state_topic_no_position(
@@ -141,7 +139,7 @@ async def test_state_via_state_topic_no_position(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "state_topic": "state-topic",
@@ -155,10 +153,10 @@ async def test_state_via_state_topic_no_position(
 @pytest.mark.parametrize(
     ("message", "asserted_state"),
     [
-        ('{"state":"open"}', STATE_OPEN),
-        ('{"state":"closed"}', STATE_CLOSED),
-        ('{"state":"closing"}', STATE_CLOSING),
-        ('{"state":"opening"}', STATE_OPENING),
+        ('{"state":"open"}', ValveState.OPEN),
+        ('{"state":"closed"}', ValveState.CLOSED),
+        ('{"state":"closing"}', ValveState.CLOSING),
+        ('{"state":"opening"}', ValveState.OPENING),
     ],
 )
 async def test_state_via_state_topic_with_template(
@@ -184,7 +182,7 @@ async def test_state_via_state_topic_with_template(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "state_topic": "state-topic",
@@ -199,9 +197,9 @@ async def test_state_via_state_topic_with_template(
 @pytest.mark.parametrize(
     ("message", "asserted_state"),
     [
-        ('{"position":100}', STATE_OPEN),
-        ('{"position":50.0}', STATE_OPEN),
-        ('{"position":0}', STATE_CLOSED),
+        ('{"position":100}', ValveState.OPEN),
+        ('{"position":50.0}', ValveState.OPEN),
+        ('{"position":0}', ValveState.CLOSED),
         ('{"position":null}', STATE_UNKNOWN),
         ('{"position":"non_numeric"}', STATE_UNKNOWN),
         ('{"ignored":12}', STATE_UNKNOWN),
@@ -230,7 +228,7 @@ async def test_state_via_state_topic_with_position_template(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "state_topic": "state-topic",
@@ -245,23 +243,23 @@ async def test_state_via_state_topic_with_position_template(
     ("message", "asserted_state", "valve_position"),
     [
         ("invalid", STATE_UNKNOWN, None),
-        ("0", STATE_CLOSED, 0),
-        ("opening", STATE_OPENING, None),
-        ("50", STATE_OPEN, 50),
-        ("closing", STATE_CLOSING, None),
-        ("100", STATE_OPEN, 100),
+        ("0", ValveState.CLOSED, 0),
+        ("opening", ValveState.OPENING, None),
+        ("50", ValveState.OPEN, 50),
+        ("closing", ValveState.CLOSING, None),
+        ("100", ValveState.OPEN, 100),
         ("open", STATE_UNKNOWN, None),
         ("closed", STATE_UNKNOWN, None),
-        ("-10", STATE_CLOSED, 0),
-        ("110", STATE_OPEN, 100),
-        ('{"position": 0, "state": "opening"}', STATE_OPENING, 0),
-        ('{"position": 10, "state": "opening"}', STATE_OPENING, 10),
-        ('{"position": 50, "state": "open"}', STATE_OPEN, 50),
-        ('{"position": 100, "state": "closing"}', STATE_CLOSING, 100),
-        ('{"position": 90, "state": "closing"}', STATE_CLOSING, 90),
-        ('{"position": 0, "state": "closed"}', STATE_CLOSED, 0),
-        ('{"position": -10, "state": "closed"}', STATE_CLOSED, 0),
-        ('{"position": 110, "state": "open"}', STATE_OPEN, 100),
+        ("-10", ValveState.CLOSED, 0),
+        ("110", ValveState.OPEN, 100),
+        ('{"position": 0, "state": "opening"}', ValveState.OPENING, 0),
+        ('{"position": 10, "state": "opening"}', ValveState.OPENING, 10),
+        ('{"position": 50, "state": "open"}', ValveState.OPEN, 50),
+        ('{"position": 100, "state": "closing"}', ValveState.CLOSING, 100),
+        ('{"position": 90, "state": "closing"}', ValveState.CLOSING, 90),
+        ('{"position": 0, "state": "closed"}', ValveState.CLOSED, 0),
+        ('{"position": -10, "state": "closed"}', ValveState.CLOSED, 0),
+        ('{"position": 110, "state": "open"}', ValveState.OPEN, 100),
     ],
 )
 async def test_state_via_state_topic_through_position(
@@ -273,9 +271,10 @@ async def test_state_via_state_topic_through_position(
 ) -> None:
     """Test the controlling state via topic through position.
 
-    Test is still possible to process a `opening` or `closing` state update.
-    Additional we test json messages can be processed containing both position and state.
-    Incoming rendered positions are clamped between 0..100.
+    Test it is still possible to process a `opening` or `closing`
+    state update. Additional we test json messages can be
+    processed containing both position and state. Incoming
+    rendered positions are clamped between 0..100.
     """
     await mqtt_mock_entry()
 
@@ -294,7 +293,7 @@ async def test_state_via_state_topic_through_position(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "state_topic": "state-topic",
@@ -310,7 +309,8 @@ async def test_opening_closing_state_is_reset(
 ) -> None:
     """Test the controlling state via topic through position.
 
-    Test  a `opening` or `closing` state update is reset correctly after sequential updates.
+    Test an `opening` or `closing` state update is reset
+    correctly after sequential updates.
     """
     await mqtt_mock_entry()
 
@@ -319,18 +319,20 @@ async def test_opening_closing_state_is_reset(
     assert not state.attributes.get(ATTR_ASSUMED_STATE)
 
     messages = [
-        ('{"position": 0, "state": "opening"}', STATE_OPENING, 0),
-        ('{"position": 50, "state": "opening"}', STATE_OPENING, 50),
-        ('{"position": 60}', STATE_OPENING, 60),
-        ('{"position": 100, "state": "opening"}', STATE_OPENING, 100),
-        ('{"position": 100, "state": null}', STATE_OPEN, 100),
-        ('{"position": 90, "state": "closing"}', STATE_CLOSING, 90),
-        ('{"position": 40}', STATE_CLOSING, 40),
-        ('{"position": 0}', STATE_CLOSED, 0),
-        ('{"position": 10}', STATE_OPEN, 10),
-        ('{"position": 0, "state": "opening"}', STATE_OPENING, 0),
-        ('{"position": 0, "state": "closing"}', STATE_CLOSING, 0),
-        ('{"position": 0}', STATE_CLOSED, 0),
+        ('{"position": 0, "state": "opening"}', ValveState.OPENING, 0),
+        ('{"position": 50, "state": "opening"}', ValveState.OPENING, 50),
+        # Position-only update at intermediate position resets opening state
+        ('{"position": 60}', ValveState.OPEN, 60),
+        ('{"position": 100, "state": "opening"}', ValveState.OPENING, 100),
+        ('{"position": 100, "state": null}', ValveState.OPEN, 100),
+        ('{"position": 90, "state": "closing"}', ValveState.CLOSING, 90),
+        # Position-only update at intermediate position resets closing state
+        ('{"position": 40}', ValveState.OPEN, 40),
+        ('{"position": 0}', ValveState.CLOSED, 0),
+        ('{"position": 10}', ValveState.OPEN, 10),
+        ('{"position": 0, "state": "opening"}', ValveState.OPENING, 0),
+        ('{"position": 0, "state": "closing"}', ValveState.CLOSING, 0),
+        ('{"position": 0}', ValveState.CLOSED, 0),
     ]
 
     for message, asserted_state, valve_position in messages:
@@ -346,7 +348,7 @@ async def test_opening_closing_state_is_reset(
     [
         (
             {
-                mqtt.DOMAIN: {
+                DOMAIN: {
                     valve.DOMAIN: {
                         "name": "test",
                         "state_topic": "state-topic",
@@ -360,7 +362,7 @@ async def test_opening_closing_state_is_reset(
         ),
         (
             {
-                mqtt.DOMAIN: {
+                DOMAIN: {
                     valve.DOMAIN: {
                         "name": "test",
                         "state_topic": "state-topic",
@@ -383,7 +385,8 @@ async def test_invalid_state_updates(
 ) -> None:
     """Test the controlling state via topic through position.
 
-    Test  a `opening` or `closing` state update is reset correctly after sequential updates.
+    Test a `opening` or `closing` state update is reset
+    correctly after sequential updates.
     """
     await mqtt_mock_entry()
 
@@ -400,7 +403,7 @@ async def test_invalid_state_updates(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "state_topic": "state-topic",
@@ -416,19 +419,19 @@ async def test_invalid_state_updates(
 @pytest.mark.parametrize(
     ("message", "asserted_state", "valve_position"),
     [
-        ("-128", STATE_CLOSED, 0),
-        ("0", STATE_OPEN, 50),
-        ("127", STATE_OPEN, 100),
-        ("-130", STATE_CLOSED, 0),
-        ("130", STATE_OPEN, 100),
-        ('{"position": -128, "state": "opening"}', STATE_OPENING, 0),
-        ('{"position": -30, "state": "opening"}', STATE_OPENING, 38),
-        ('{"position": 30, "state": "open"}', STATE_OPEN, 61),
-        ('{"position": 127, "state": "closing"}', STATE_CLOSING, 100),
-        ('{"position": 100, "state": "closing"}', STATE_CLOSING, 89),
-        ('{"position": -128, "state": "closed"}', STATE_CLOSED, 0),
-        ('{"position": -130, "state": "closed"}', STATE_CLOSED, 0),
-        ('{"position": 130, "state": "open"}', STATE_OPEN, 100),
+        ("-128", ValveState.CLOSED, 0),
+        ("0", ValveState.OPEN, 50),
+        ("127", ValveState.OPEN, 100),
+        ("-130", ValveState.CLOSED, 0),
+        ("130", ValveState.OPEN, 100),
+        ('{"position": -128, "state": "opening"}', ValveState.OPENING, 0),
+        ('{"position": -30, "state": "opening"}', ValveState.OPENING, 38),
+        ('{"position": 30, "state": "open"}', ValveState.OPEN, 61),
+        ('{"position": 127, "state": "closing"}', ValveState.CLOSING, 100),
+        ('{"position": 100, "state": "closing"}', ValveState.CLOSING, 89),
+        ('{"position": -128, "state": "closed"}', ValveState.CLOSED, 0),
+        ('{"position": -130, "state": "closed"}', ValveState.CLOSED, 0),
+        ('{"position": 130, "state": "open"}', ValveState.OPEN, 100),
     ],
 )
 async def test_state_via_state_trough_position_with_alt_range(
@@ -438,10 +441,11 @@ async def test_state_via_state_trough_position_with_alt_range(
     asserted_state: str,
     valve_position: int | None,
 ) -> None:
-    """Test the controlling state via topic through position and an alternative range.
+    """Test controlling state via position with an alternative range.
 
-    Test is still possible to process a `opening` or `closing` state update.
-    Additional we test json messages can be processed containing both position and state.
+    Test is still possible to process a `opening` or `closing`
+    state update. Additional we test json messages can be
+    processed containing both position and state.
     Incoming rendered positions are clamped between 0..100.
     """
     await mqtt_mock_entry()
@@ -461,7 +465,7 @@ async def test_state_via_state_trough_position_with_alt_range(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "state_topic": "state-topic",
@@ -502,7 +506,7 @@ async def test_controlling_valve_by_state(
     )
 
     mqtt_mock.async_publish.assert_called_once_with(
-        "command-topic", asserted_message, 0, False
+        "command-topic", asserted_message, 0, False, message_expiry_interval=None
     )
 
     state = hass.states.get("valve.test")
@@ -608,7 +612,7 @@ async def test_open_close_payload_config_not_allowed(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "state_topic": "state-topic",
@@ -619,7 +623,7 @@ async def test_open_close_payload_config_not_allowed(
             }
         },
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "command_topic": "command-topic",
@@ -632,8 +636,8 @@ async def test_open_close_payload_config_not_allowed(
 @pytest.mark.parametrize(
     ("service", "asserted_message", "asserted_state"),
     [
-        (SERVICE_CLOSE_VALVE, "CLOSE", STATE_CLOSED),
-        (SERVICE_OPEN_VALVE, "OPEN", STATE_OPEN),
+        (SERVICE_CLOSE_VALVE, "CLOSE", ValveState.CLOSED),
+        (SERVICE_OPEN_VALVE, "OPEN", ValveState.OPEN),
     ],
 )
 async def test_controlling_valve_by_state_optimistic(
@@ -657,7 +661,7 @@ async def test_controlling_valve_by_state_optimistic(
     )
 
     mqtt_mock.async_publish.assert_called_once_with(
-        "command-topic", asserted_message, 0, False
+        "command-topic", asserted_message, 0, False, message_expiry_interval=None
     )
 
     state = hass.states.get("valve.test")
@@ -668,7 +672,7 @@ async def test_controlling_valve_by_state_optimistic(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "state_topic": "state-topic",
@@ -708,7 +712,7 @@ async def test_controlling_valve_by_position(
     )
 
     mqtt_mock.async_publish.assert_called_once_with(
-        "command-topic", asserted_message, 0, False
+        "command-topic", asserted_message, 0, False, message_expiry_interval=None
     )
 
     state = hass.states.get("valve.test")
@@ -719,7 +723,7 @@ async def test_controlling_valve_by_position(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "state_topic": "state-topic",
@@ -755,7 +759,7 @@ async def test_controlling_valve_by_set_valve_position(
     )
 
     mqtt_mock.async_publish.assert_called_once_with(
-        "command-topic", asserted_message, 0, False
+        "command-topic", asserted_message, 0, False, message_expiry_interval=None
     )
 
     state = hass.states.get("valve.test")
@@ -766,7 +770,7 @@ async def test_controlling_valve_by_set_valve_position(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "state_topic": "state-topic",
@@ -782,9 +786,9 @@ async def test_controlling_valve_by_set_valve_position(
 @pytest.mark.parametrize(
     ("position", "asserted_message", "asserted_position", "asserted_state"),
     [
-        (0, "0", 0, STATE_CLOSED),
-        (30, "30", 30, STATE_OPEN),
-        (100, "100", 100, STATE_OPEN),
+        (0, "0", 0, ValveState.CLOSED),
+        (30, "30", 30, ValveState.OPEN),
+        (100, "100", 100, ValveState.OPEN),
     ],
 )
 async def test_controlling_valve_optimistic_by_set_valve_position(
@@ -809,7 +813,7 @@ async def test_controlling_valve_optimistic_by_set_valve_position(
     )
 
     mqtt_mock.async_publish.assert_called_once_with(
-        "command-topic", asserted_message, 0, False
+        "command-topic", asserted_message, 0, False, message_expiry_interval=None
     )
 
     state = hass.states.get("valve.test")
@@ -821,7 +825,7 @@ async def test_controlling_valve_optimistic_by_set_valve_position(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "state_topic": "state-topic",
@@ -859,7 +863,7 @@ async def test_controlling_valve_with_alt_range_by_set_valve_position(
     )
 
     mqtt_mock.async_publish.assert_called_once_with(
-        "command-topic", asserted_message, 0, False
+        "command-topic", asserted_message, 0, False, message_expiry_interval=None
     )
 
     state = hass.states.get("valve.test")
@@ -870,7 +874,7 @@ async def test_controlling_valve_with_alt_range_by_set_valve_position(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "state_topic": "state-topic",
@@ -910,7 +914,7 @@ async def test_controlling_valve_with_alt_range_by_position(
     )
 
     mqtt_mock.async_publish.assert_called_once_with(
-        "command-topic", asserted_message, 0, False
+        "command-topic", asserted_message, 0, False, message_expiry_interval=None
     )
 
     state = hass.states.get("valve.test")
@@ -921,7 +925,7 @@ async def test_controlling_valve_with_alt_range_by_position(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "state_topic": "state-topic",
@@ -933,7 +937,7 @@ async def test_controlling_valve_with_alt_range_by_position(
             }
         },
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "command_topic": "command-topic",
@@ -947,8 +951,8 @@ async def test_controlling_valve_with_alt_range_by_position(
 @pytest.mark.parametrize(
     ("service", "asserted_message", "asserted_state", "asserted_position"),
     [
-        (SERVICE_CLOSE_VALVE, "0", STATE_CLOSED, 0),
-        (SERVICE_OPEN_VALVE, "100", STATE_OPEN, 100),
+        (SERVICE_CLOSE_VALVE, "0", ValveState.CLOSED, 0),
+        (SERVICE_OPEN_VALVE, "100", ValveState.OPEN, 100),
     ],
 )
 async def test_controlling_valve_by_position_optimistic(
@@ -974,7 +978,7 @@ async def test_controlling_valve_by_position_optimistic(
     )
 
     mqtt_mock.async_publish.assert_called_once_with(
-        "command-topic", asserted_message, 0, False
+        "command-topic", asserted_message, 0, False, message_expiry_interval=None
     )
 
     state = hass.states.get("valve.test")
@@ -986,7 +990,7 @@ async def test_controlling_valve_by_position_optimistic(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "state_topic": "state-topic",
@@ -1004,10 +1008,10 @@ async def test_controlling_valve_by_position_optimistic(
 @pytest.mark.parametrize(
     ("position", "asserted_message", "asserted_position", "asserted_state"),
     [
-        (0, "-128", 0, STATE_CLOSED),
-        (30, "-52", 30, STATE_OPEN),
-        (50, "0", 50, STATE_OPEN),
-        (100, "127", 100, STATE_OPEN),
+        (0, "-128", 0, ValveState.CLOSED),
+        (30, "-52", 30, ValveState.OPEN),
+        (50, "0", 50, ValveState.OPEN),
+        (100, "127", 100, ValveState.OPEN),
     ],
 )
 async def test_controlling_valve_optimistic_alt_range_by_set_valve_position(
@@ -1032,7 +1036,7 @@ async def test_controlling_valve_optimistic_alt_range_by_set_valve_position(
     )
 
     mqtt_mock.async_publish.assert_called_once_with(
-        "command-topic", asserted_message, 0, False
+        "command-topic", asserted_message, 0, False, message_expiry_interval=None
     )
 
     state = hass.states.get("valve.test")
@@ -1082,7 +1086,7 @@ async def test_custom_availability_payload(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "device_class": "water",
@@ -1106,7 +1110,7 @@ async def test_valid_device_class(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: {
                     "name": "test",
                     "device_class": "abc123",
@@ -1190,7 +1194,7 @@ async def test_discovery_update_attr(
     "hass_config",
     [
         {
-            mqtt.DOMAIN: {
+            DOMAIN: {
                 valve.DOMAIN: [
                     {
                         "name": "Test 1",
@@ -1393,7 +1397,7 @@ async def test_encoding_subscribable_topics(
         hass,
         mqtt_mock_entry,
         valve.DOMAIN,
-        DEFAULT_CONFIG[mqtt.DOMAIN][valve.DOMAIN],
+        DEFAULT_CONFIG[DOMAIN][valve.DOMAIN],
         topic,
         value,
         attribute,
@@ -1487,6 +1491,6 @@ async def test_value_template_fails(
     await mqtt_mock_entry()
     async_fire_mqtt_message(hass, "test-topic", '{"some_var": null }')
     assert (
-        "TypeError: unsupported operand type(s) for *: 'NoneType' and 'int' rendering template"
-        in caplog.text
+        "TypeError: unsupported operand type(s) for *:"
+        " 'NoneType' and 'int' rendering template" in caplog.text
     )

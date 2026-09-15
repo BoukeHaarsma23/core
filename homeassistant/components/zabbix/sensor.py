@@ -1,13 +1,11 @@
 """Support for Zabbix sensors."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
 import logging
-from typing import Any
+from typing import Any, override
 
-from pyzabbix import ZabbixAPI
-import voluptuous as vol
+import probatio
+from zabbix_utils import ZabbixAPI
 
 from homeassistant.components.sensor import (
     PLATFORM_SCHEMA as SENSOR_PLATFORM_SCHEMA,
@@ -15,11 +13,11 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType, StateType
 
-from .. import zabbix
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,19 +25,19 @@ _CONF_TRIGGERS = "triggers"
 _CONF_HOSTIDS = "hostids"
 _CONF_INDIVIDUAL = "individual"
 
-_ZABBIX_ID_LIST_SCHEMA = vol.Schema([int])
-_ZABBIX_TRIGGER_SCHEMA = vol.Schema(
+_ZABBIX_ID_LIST_SCHEMA = probatio.Schema([int])
+_ZABBIX_TRIGGER_SCHEMA = probatio.Schema(
     {
-        vol.Optional(_CONF_HOSTIDS, default=[]): _ZABBIX_ID_LIST_SCHEMA,
-        vol.Optional(_CONF_INDIVIDUAL, default=False): cv.boolean,
-        vol.Optional(CONF_NAME): cv.string,
+        probatio.Optional(_CONF_HOSTIDS, default=[]): _ZABBIX_ID_LIST_SCHEMA,
+        probatio.Optional(_CONF_INDIVIDUAL, default=False): cv.boolean,
+        probatio.Optional(CONF_NAME): cv.string,
     }
 )
 
 # SCAN_INTERVAL = 30
 #
 PLATFORM_SCHEMA = SENSOR_PLATFORM_SCHEMA.extend(
-    {vol.Required(_CONF_TRIGGERS): vol.Any(_ZABBIX_TRIGGER_SCHEMA, None)}
+    {probatio.Required(_CONF_TRIGGERS): probatio.Any(_ZABBIX_TRIGGER_SCHEMA, None)}
 )
 
 
@@ -52,11 +50,11 @@ def setup_platform(
     """Set up the Zabbix sensor platform."""
     sensors: list[ZabbixTriggerCountSensor] = []
 
-    if not (zapi := hass.data[zabbix.DOMAIN]):
+    if not (zapi := hass.data[DOMAIN]):
         _LOGGER.error("Zabbix integration hasn't been loaded? zapi is None")
         return
 
-    _LOGGER.info("Connected to Zabbix API Version %s", zapi.api_version())
+    _LOGGER.debug("Connected to Zabbix API Version %s", zapi.api_version())
 
     # The following code seems overly complex. Need to think about this...
     if trigger_conf := config.get(_CONF_TRIGGERS):
@@ -102,16 +100,19 @@ class ZabbixTriggerCountSensor(SensorEntity):
         self._attributes: dict[str, Any] = {}
 
     @property
+    @override
     def name(self) -> str | None:
         """Return the name of the sensor."""
         return self._name
 
     @property
+    @override
     def native_value(self) -> StateType:
         """Return the state of the sensor."""
         return self._state
 
     @property
+    @override
     def native_unit_of_measurement(self) -> str:
         """Return the units of measurement."""
         return "issues"
@@ -128,6 +129,7 @@ class ZabbixTriggerCountSensor(SensorEntity):
         self._state = len(triggers)
 
     @property
+    @override
     def extra_state_attributes(self) -> Mapping[str, Any] | None:
         """Return the state attributes of the device."""
         return self._attributes
@@ -149,6 +151,7 @@ class ZabbixSingleHostTriggerCountSensor(ZabbixTriggerCountSensor):
 
         self._attributes["Host ID"] = self._hostid
 
+    @override
     def _call_zabbix_api(self):
         return self._zapi.trigger.get(
             hostids=self._hostid,
@@ -173,6 +176,7 @@ class ZabbixMultipleHostTriggerCountSensor(ZabbixTriggerCountSensor):
             self._name = " ".join(name["name"] for name in host_names)
         self._attributes["Host IDs"] = self._hostids
 
+    @override
     def _call_zabbix_api(self):
         return self._zapi.trigger.get(
             hostids=self._hostids,

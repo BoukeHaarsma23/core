@@ -7,12 +7,13 @@ from functools import reduce
 import logging
 import operator
 from types import MappingProxyType
+from typing import Any
 from unittest import mock
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from freezegun import freeze_time
+import probatio
 import pytest
-import voluptuous as vol
 
 # Otherwise can't test just this file (import order issue)
 from homeassistant import config_entries, exceptions
@@ -41,16 +42,20 @@ from homeassistant.helpers import (
     template,
     trace,
 )
+from homeassistant.helpers.condition import Condition
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.typing import UNDEFINED
 from homeassistant.setup import async_setup_component
-import homeassistant.util.dt as dt_util
+from homeassistant.util import dt as dt_util
 
 from tests.common import (
     MockConfigEntry,
+    MockModule,
     async_capture_events,
     async_fire_time_changed,
     async_mock_service,
+    mock_integration,
+    mock_platform,
 )
 
 ENTITY_ID = "script.test"
@@ -249,7 +254,7 @@ async def test_calling_service_basic(
 
     alias = "service step"
     sequence = cv.SCRIPT_SCHEMA(
-        {"alias": alias, "service": "test.script", "data": {"hello": "world"}}
+        {"alias": alias, "action": "test.script", "data": {"hello": "world"}}
     )
     script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
 
@@ -352,13 +357,13 @@ async def test_calling_service_response_data(
         [
             {
                 "alias": "service step1",
-                "service": "test.script",
+                "action": "test.script",
                 # Store the result of the service call as a variable
                 "response_variable": "my_response",
             },
             {
                 "alias": "service step2",
-                "service": "test.script",
+                "action": "test.script",
                 "data_template": {
                     # Result of previous service call
                     "key": "{{ my_response.data }}"
@@ -441,15 +446,77 @@ async def test_service_response_data_errors(
         [
             {
                 "alias": "service step1",
-                "service": "test.script",
+                "action": "test.script",
                 **params,
             },
         ]
     )
     script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
 
-    with pytest.raises(vol.Invalid, match=expected_error):
+    with pytest.raises(probatio.Invalid, match=expected_error):
         await script_obj.async_run(context=context)
+
+
+async def test_calling_service_response_data_in_scopes(hass: HomeAssistant) -> None:
+    """Test response variable is still set after scopes end."""
+    expected_var = {"data": "value-12345"}
+
+    def mock_service(call: ServiceCall) -> ServiceResponse:
+        """Mock service call."""
+        if call.return_response:
+            return expected_var
+        return None
+
+    hass.services.async_register(
+        "test", "script", mock_service, supports_response=SupportsResponse.OPTIONAL
+    )
+
+    sequence = cv.SCRIPT_SCHEMA(
+        {
+            "parallel": [
+                {
+                    "alias": "Sequential group",
+                    "sequence": [
+                        {
+                            "alias": "variables",
+                            "variables": {"state": "off"},
+                        },
+                        {
+                            "alias": "service step1",
+                            "action": "test.script",
+                            "response_variable": "my_response",
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+
+    script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
+
+    result = await script_obj.async_run(context=Context())
+
+    assert result.variables["my_response"] == expected_var
+
+    expected_trace = {
+        "0": [{"variables": {"my_response": expected_var, "state": "off"}}],
+        "0/parallel/0/sequence/0": [{"variables": {"state": "off"}}],
+        "0/parallel/0/sequence/1": [
+            {
+                "result": {
+                    "params": {
+                        "domain": "test",
+                        "service": "script",
+                        "service_data": {},
+                        "target": {},
+                    },
+                    "running_script": False,
+                },
+                "variables": {"my_response": expected_var},
+            }
+        ],
+    }
+    assert_action_trace(expected_trace)
 
 
 async def test_data_template_with_templated_key(hass: HomeAssistant) -> None:
@@ -458,7 +525,7 @@ async def test_data_template_with_templated_key(hass: HomeAssistant) -> None:
     calls = async_mock_service(hass, "test", "script")
 
     sequence = cv.SCRIPT_SCHEMA(
-        {"service": "test.script", "data_template": {"{{ hello_var }}": "world"}}
+        {"action": "test.script", "data_template": {"{{ hello_var }}": "world"}}
     )
     script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
 
@@ -525,11 +592,11 @@ async def test_multiple_runs_no_wait(hass: HomeAssistant) -> None:
     sequence = cv.SCRIPT_SCHEMA(
         [
             {
-                "service": "test.script",
+                "action": "test.script",
                 "data_template": {"fire": "{{ fire1 }}", "listen": "{{ listen1 }}"},
             },
             {
-                "service": "test.script",
+                "action": "test.script",
                 "data_template": {"fire": "{{ fire2 }}", "listen": "{{ listen2 }}"},
             },
         ]
@@ -605,7 +672,7 @@ async def test_stop_no_wait(hass: HomeAssistant, count) -> None:
 
     hass.services.async_register("test", "script", async_simulate_long_service)
 
-    sequence = cv.SCRIPT_SCHEMA([{"service": "test.script"}, {"event": event}])
+    sequence = cv.SCRIPT_SCHEMA([{"action": "test.script"}, {"event": event}])
     script_obj = script.Script(
         hass,
         sequence,
@@ -654,7 +721,7 @@ async def test_delay_basic(hass: HomeAssistant) -> None:
 
         assert script_obj.is_running
         assert script_obj.last_action == delay_alias
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -681,7 +748,7 @@ async def test_empty_delay(hass: HomeAssistant) -> None:
     try:
         await script_obj.async_run(context=Context())
         await asyncio.wait_for(delay_started_flag.wait(), 1)
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -720,7 +787,7 @@ async def test_multiple_runs_delay(hass: HomeAssistant) -> None:
         assert script_obj.is_running
         assert len(events) == 1
         assert events[-1].data["value"] == 1
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -750,7 +817,7 @@ async def test_delay_template_ok(hass: HomeAssistant) -> None:
         await asyncio.wait_for(delay_started_flag.wait(), 1)
 
         assert script_obj.is_running
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -799,7 +866,10 @@ async def test_delay_template_invalid(
             "0": [{"result": {"event": "test_event", "event_data": {}}}],
             "1": [
                 {
-                    "error": "offset  should be format 'HH:MM', 'HH:MM:SS' or 'HH:MM:SS.F'"
+                    "error": (
+                        "offset  should be format 'HH:MM', 'HH:MM:SS' or 'HH:MM:SS.F'"
+                    ),
+                    "template_errors": ["'invalid_delay' is undefined"],
                 }
             ],
         },
@@ -817,7 +887,7 @@ async def test_delay_template_complex_ok(hass: HomeAssistant) -> None:
         hass.async_create_task(script_obj.async_run(context=Context()))
         await asyncio.wait_for(delay_started_flag.wait(), 1)
         assert script_obj.is_running
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -864,7 +934,12 @@ async def test_delay_template_complex_invalid(
     assert_action_trace(
         {
             "0": [{"result": {"event": "test_event", "event_data": {}}}],
-            "1": [{"error": "expected float for dictionary value @ data['seconds']"}],
+            "1": [
+                {
+                    "error": "expected float at 'seconds'",
+                    "template_errors": ["'invalid_delay' is undefined"],
+                }
+            ],
         },
         expected_script_execution="aborted",
     )
@@ -884,7 +959,7 @@ async def test_cancel_delay(hass: HomeAssistant) -> None:
 
         assert script_obj.is_running
         assert len(events) == 0
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -933,7 +1008,7 @@ async def test_wait_basic(hass: HomeAssistant, action_type) -> None:
 
         assert script_obj.is_running
         assert script_obj.last_action == wait_alias
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -943,18 +1018,9 @@ async def test_wait_basic(hass: HomeAssistant, action_type) -> None:
         assert not script_obj.is_running
         assert script_obj.last_action is None
 
-    if action_type == "template":
-        assert_action_trace(
-            {
-                "0": [
-                    {
-                        "result": {"wait": {"completed": True, "remaining": None}},
-                        "variables": {"wait": {"completed": True, "remaining": None}},
-                    }
-                ],
-            }
-        )
-    else:
+    expected_var = {"completed": True, "remaining": None}
+
+    if action_type == "trigger":
         expected_trigger = {
             "alias": None,
             "attribute": None,
@@ -967,23 +1033,18 @@ async def test_wait_basic(hass: HomeAssistant, action_type) -> None:
             "platform": "state",
             "to_state": ANY,
         }
-        assert_action_trace(
-            {
-                "0": [
-                    {
-                        "result": {
-                            "wait": {
-                                "trigger": expected_trigger,
-                                "remaining": None,
-                            }
-                        },
-                        "variables": {
-                            "wait": {"remaining": None, "trigger": expected_trigger}
-                        },
-                    }
-                ],
-            }
-        )
+        expected_var["trigger"] = expected_trigger
+
+    assert_action_trace(
+        {
+            "0": [
+                {
+                    "result": {"wait": expected_var},
+                    "variables": {"wait": expected_var},
+                }
+            ],
+        }
+    )
 
 
 async def test_wait_for_trigger_variables(hass: HomeAssistant) -> None:
@@ -1016,7 +1077,7 @@ async def test_wait_for_trigger_variables(hass: HomeAssistant) -> None:
         assert script_obj.last_action == wait_alias
         hass.states.async_set("switch.test", "off")
         await hass.async_block_till_done()
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -1059,28 +1120,21 @@ async def test_wait_basic_times_out(hass: HomeAssistant, action_type) -> None:
 
     assert timed_out
 
-    if action_type == "template":
-        assert_action_trace(
-            {
-                "0": [
-                    {
-                        "result": {"wait": {"completed": False, "remaining": None}},
-                        "variables": {"wait": {"completed": False, "remaining": None}},
-                    }
-                ],
-            }
-        )
-    else:
-        assert_action_trace(
-            {
-                "0": [
-                    {
-                        "result": {"wait": {"trigger": None, "remaining": None}},
-                        "variables": {"wait": {"remaining": None, "trigger": None}},
-                    }
-                ],
-            }
-        )
+    expected_var = {"completed": False, "remaining": None}
+
+    if action_type == "trigger":
+        expected_var["trigger"] = None
+
+    assert_action_trace(
+        {
+            "0": [
+                {
+                    "result": {"wait": expected_var},
+                    "variables": {"wait": expected_var},
+                }
+            ],
+        }
+    )
 
 
 @pytest.mark.parametrize("action_type", ["template", "trigger"])
@@ -1126,7 +1180,7 @@ async def test_multiple_runs_wait(hass: HomeAssistant, action_type) -> None:
         hass.async_create_task(script_obj.async_run())
         await asyncio.wait_for(wait_started_flag.wait(), 1)
         await asyncio.sleep(0)
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -1167,7 +1221,7 @@ async def test_cancel_wait(hass: HomeAssistant, action_type) -> None:
 
         assert script_obj.is_running
         assert len(events) == 0
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -1183,30 +1237,22 @@ async def test_cancel_wait(hass: HomeAssistant, action_type) -> None:
         assert not script_obj.is_running
         assert len(events) == 0
 
-    if action_type == "template":
-        assert_action_trace(
-            {
-                "0": [
-                    {
-                        "result": {"wait": {"completed": False, "remaining": None}},
-                        "variables": {"wait": {"completed": False, "remaining": None}},
-                    }
-                ],
-            },
-            expected_script_execution="cancelled",
-        )
-    else:
-        assert_action_trace(
-            {
-                "0": [
-                    {
-                        "result": {"wait": {"trigger": None, "remaining": None}},
-                        "variables": {"wait": {"remaining": None, "trigger": None}},
-                    }
-                ],
-            },
-            expected_script_execution="cancelled",
-        )
+    expected_var = {"completed": False, "remaining": None}
+
+    if action_type == "trigger":
+        expected_var["trigger"] = None
+
+    assert_action_trace(
+        {
+            "0": [
+                {
+                    "result": {"wait": expected_var},
+                    "variables": {"wait": expected_var},
+                }
+            ],
+        },
+        expected_script_execution="cancelled",
+    )
 
 
 async def test_wait_template_not_schedule(hass: HomeAssistant) -> None:
@@ -1277,7 +1323,7 @@ async def test_wait_timeout(
 
         assert script_obj.is_running
         assert len(events) == 0
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -1294,10 +1340,11 @@ async def test_wait_timeout(
         assert len(events) == 1
         assert "(timeout: 0:00:05)" in caplog.text
 
-    if action_type == "template":
-        variable_wait = {"wait": {"completed": False, "remaining": 0.0}}
-    else:
-        variable_wait = {"wait": {"trigger": None, "remaining": 0.0}}
+    variable_wait = {"wait": {"completed": False, "remaining": 0.0}}
+
+    if action_type == "trigger":
+        variable_wait["wait"]["trigger"] = None
+
     expected_trace = {
         "0": [
             {
@@ -1337,7 +1384,7 @@ async def test_wait_trigger_with_zero_timeout(
 
     try:
         await asyncio.wait_for(wait_started_flag.wait(), 1)
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
 
@@ -1345,7 +1392,7 @@ async def test_wait_trigger_with_zero_timeout(
     assert len(events) == 1
     assert "(timeout: 0:00:00)" in caplog.text
 
-    variable_wait = {"wait": {"trigger": None, "remaining": 0.0}}
+    variable_wait = {"wait": {"completed": False, "trigger": None, "remaining": 0.0}}
     expected_trace = {
         "0": [
             {
@@ -1385,7 +1432,7 @@ async def test_wait_trigger_matches_with_zero_timeout(
 
     try:
         await asyncio.wait_for(wait_started_flag.wait(), 1)
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
 
@@ -1393,7 +1440,7 @@ async def test_wait_trigger_matches_with_zero_timeout(
     assert len(events) == 1
     assert "(timeout: 0:00:00)" in caplog.text
 
-    variable_wait = {"wait": {"trigger": None, "remaining": 0.0}}
+    variable_wait = {"wait": {"completed": False, "trigger": None, "remaining": 0.0}}
     expected_trace = {
         "0": [
             {
@@ -1427,7 +1474,7 @@ async def test_wait_template_with_zero_timeout(
 
     try:
         await asyncio.wait_for(wait_started_flag.wait(), 1)
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
 
@@ -1468,7 +1515,7 @@ async def test_wait_template_matches_with_zero_timeout(
 
     try:
         await asyncio.wait_for(wait_started_flag.wait(), 1)
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
 
@@ -1523,7 +1570,7 @@ async def test_wait_continue_on_timeout(
 
         assert script_obj.is_running
         assert len(events) == 0
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -1533,12 +1580,11 @@ async def test_wait_continue_on_timeout(
         assert not script_obj.is_running
         assert len(events) == n_events
 
-    if action_type == "template":
-        result_wait = {"wait": {"completed": False, "remaining": 0.0}}
-        variable_wait = dict(result_wait)
-    else:
-        result_wait = {"wait": {"trigger": None, "remaining": 0.0}}
-        variable_wait = dict(result_wait)
+    result_wait = {"wait": {"completed": False, "remaining": 0.0}}
+    if action_type == "trigger":
+        result_wait["wait"]["trigger"] = None
+
+    variable_wait = dict(result_wait)
     expected_trace = {
         "0": [{"result": result_wait, "variables": variable_wait}],
     }
@@ -1566,7 +1612,7 @@ async def test_wait_template_variables_in(hass: HomeAssistant) -> None:
         await asyncio.wait_for(wait_started_flag.wait(), 1)
 
         assert script_obj.is_running
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -1607,7 +1653,7 @@ async def test_wait_template_with_utcnow(hass: HomeAssistant) -> None:
         match_time = start_time.replace(hour=12)
         with freeze_time(match_time):
             async_fire_time_changed(hass, match_time)
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -1708,7 +1754,7 @@ async def test_wait_variables_out(hass: HomeAssistant, mode, action_type) -> Non
 
         assert script_obj.is_running
         assert len(events) == 0
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -1733,6 +1779,90 @@ async def test_wait_variables_out(hass: HomeAssistant, mode, action_type) -> Non
             assert 0.0 < float(remaining) < 5
         else:
             assert float(remaining) == 0.0
+
+
+async def test_wait_in_sequence(hass: HomeAssistant) -> None:
+    """Test wait variable is still set after sequence ends."""
+    sequence = cv.SCRIPT_SCHEMA(
+        [
+            {
+                "alias": "Sequential group",
+                "sequence": [
+                    {
+                        "alias": "variables",
+                        "variables": {"state": "off"},
+                    },
+                    {
+                        "alias": "wait template",
+                        "wait_template": "{{ state == 'off' }}",
+                    },
+                ],
+            },
+        ]
+    )
+
+    script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
+
+    result = await script_obj.async_run(context=Context())
+
+    expected_var = {"completed": True, "remaining": None}
+
+    assert result.variables["wait"] == expected_var
+
+    expected_trace = {
+        "0": [{"variables": {"wait": expected_var, "state": "off"}}],
+        "0/sequence/0": [{"variables": {"state": "off"}}],
+        "0/sequence/1": [
+            {
+                "result": {"wait": expected_var},
+                "variables": {"wait": expected_var},
+            }
+        ],
+    }
+    assert_action_trace(expected_trace)
+
+
+async def test_wait_in_parallel(hass: HomeAssistant) -> None:
+    """Test wait variable is not set after parallel ends."""
+    sequence = cv.SCRIPT_SCHEMA(
+        {
+            "parallel": [
+                {
+                    "alias": "Sequential group",
+                    "sequence": [
+                        {
+                            "alias": "variables",
+                            "variables": {"state": "off"},
+                        },
+                        {
+                            "alias": "wait template",
+                            "wait_template": "{{ state == 'off' }}",
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+
+    script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
+
+    result = await script_obj.async_run(context=Context())
+
+    expected_var = {"completed": True, "remaining": None}
+
+    assert "wait" not in result.variables
+
+    expected_trace = {
+        "0": [{"variables": {"state": "off"}}],
+        "0/parallel/0/sequence/0": [{"variables": {"state": "off"}}],
+        "0/parallel/0/sequence/1": [
+            {
+                "result": {"wait": expected_var},
+                "variables": {"wait": expected_var},
+            }
+        ],
+    }
+    assert_action_trace(expected_trace)
 
 
 async def test_wait_for_trigger_bad(
@@ -1766,8 +1896,12 @@ async def test_wait_for_trigger_bad(
         {
             "0": [
                 {
-                    "result": {"wait": {"trigger": None, "remaining": None}},
-                    "variables": {"wait": {"remaining": None, "trigger": None}},
+                    "result": {
+                        "wait": {"completed": False, "trigger": None, "remaining": None}
+                    },
+                    "variables": {
+                        "wait": {"completed": False, "remaining": None, "trigger": None}
+                    },
                 }
             ],
         }
@@ -1807,8 +1941,12 @@ async def test_wait_for_trigger_generated_exception(
         {
             "0": [
                 {
-                    "result": {"wait": {"trigger": None, "remaining": None}},
-                    "variables": {"wait": {"remaining": None, "trigger": None}},
+                    "result": {
+                        "wait": {"completed": False, "trigger": None, "remaining": None}
+                    },
+                    "variables": {
+                        "wait": {"completed": False, "remaining": None, "trigger": None}
+                    },
                 }
             ],
         }
@@ -2164,7 +2302,7 @@ async def test_condition_created_once(async_from_config, hass: HomeAssistant) ->
     await hass.async_block_till_done()
 
     async_from_config.assert_called_once()
-    assert len(script_obj._config_cache) == 1
+    assert len(script_obj._condition_cache) == 1
 
 
 async def test_condition_all_cached(hass: HomeAssistant) -> None:
@@ -2187,7 +2325,7 @@ async def test_condition_all_cached(hass: HomeAssistant) -> None:
     await script_obj.async_run(context=Context())
     await hass.async_block_till_done()
 
-    assert len(script_obj._config_cache) == 2
+    assert len(script_obj._condition_cache) == 2
 
 
 @pytest.mark.parametrize("count", [3, script.ACTION_TRACE_NODE_MAX_LEN * 2])
@@ -2514,7 +2652,12 @@ async def test_repeat_for_each_invalid_template(
 
     assert_action_trace(
         {
-            "0": [{"error": "Repeat 'for_each' must be a list of items"}],
+            "0": [
+                {
+                    "error": "Repeat 'for_each' must be a list of items",
+                    "template_errors": ["'Muhaha' is undefined"],
+                }
+            ],
         },
         expected_script_execution="aborted",
     )
@@ -2583,7 +2726,12 @@ async def test_repeat_condition_warning(
     expected_trace[f"0/repeat/{condition}/0"] = [
         {"error": "In 'numeric_state':\n  " + expected_error}
     ]
-    expected_trace[f"0/repeat/{condition}/0/entity_id/0"] = [{"error": expected_error}]
+    expected_trace[f"0/repeat/{condition}/0/entity_id/0"] = [
+        {
+            "error": expected_error,
+            "template_errors": ["'unassigned_variable' is undefined"],
+        }
+    ]
     assert_action_trace(expected_trace)
 
 
@@ -3056,12 +3204,9 @@ async def test_repeat_limits(
 
     title_condition = condition.title()
 
-    assert f"{title_condition} condition" in caplog.text
-    assert f"in script `Test {condition}` looped 5 times" in caplog.text
-    assert (
-        f"script `Test {condition}` terminated because it looped 10 times"
-        in caplog.text
-    )
+    assert f"Test {condition}: {title_condition} condition" in caplog.text
+    assert "looped 5 times" in caplog.text
+    assert "terminated because it looped 10 times" in caplog.text
 
     assert len(events) == 10
 
@@ -3565,6 +3710,7 @@ async def test_sequence(hass: HomeAssistant, caplog: pytest.LogCaptureFixture) -
                         },
                     },
                 ],
+                "metadata": {"anything": "not used by core"},
             },
             {
                 "alias": "action 2",
@@ -3717,11 +3863,18 @@ async def test_parallel(hass: HomeAssistant, caplog: pytest.LogCaptureFixture) -
             {
                 "result": {
                     "wait": {
+                        "completed": True,
                         "remaining": None,
                         "trigger": expected_trigger,
                     }
                 },
-                "variables": {"wait": {"remaining": None, "trigger": expected_trigger}},
+                "variables": {
+                    "wait": {
+                        "completed": True,
+                        "remaining": None,
+                        "trigger": expected_trigger,
+                    }
+                },
             }
         ],
         "0/parallel/1/sequence/0": [
@@ -3889,12 +4042,11 @@ async def test_parallel_error(
     hass: HomeAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Test parallel action failure handling."""
-    await async_setup_component(hass, "homeassistant", {})
     events = async_capture_events(hass, "test_event")
     sequence = cv.SCRIPT_SCHEMA(
         {
             "parallel": [
-                {"service": "epic.failure"},
+                {"action": "epic.failure"},
             ]
         }
     )
@@ -3943,10 +4095,9 @@ async def test_last_triggered(hass: HomeAssistant) -> None:
 
 async def test_propagate_error_service_not_found(hass: HomeAssistant) -> None:
     """Test that a script aborts when a service is not found."""
-    await async_setup_component(hass, "homeassistant", {})
     event = "test_event"
     events = async_capture_events(hass, event)
-    sequence = cv.SCRIPT_SCHEMA([{"service": "test.script"}, {"event": event}])
+    sequence = cv.SCRIPT_SCHEMA([{"action": "test.script"}, {"event": event}])
     script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
 
     with pytest.raises(exceptions.ServiceNotFound):
@@ -3978,13 +4129,13 @@ async def test_propagate_error_invalid_service_data(hass: HomeAssistant) -> None
     """Test that a script aborts when we send invalid service data."""
     event = "test_event"
     events = async_capture_events(hass, event)
-    calls = async_mock_service(hass, "test", "script", vol.Schema({"text": str}))
+    calls = async_mock_service(hass, "test", "script", probatio.Schema({"text": str}))
     sequence = cv.SCRIPT_SCHEMA(
-        [{"service": "test.script", "data": {"text": 1}}, {"event": event}]
+        [{"action": "test.script", "data": {"text": 1}}, {"event": event}]
     )
     script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
 
-    with pytest.raises(vol.Invalid):
+    with pytest.raises(probatio.Invalid):
         await script_obj.async_run(context=Context())
 
     assert len(events) == 0
@@ -3994,7 +4145,7 @@ async def test_propagate_error_invalid_service_data(hass: HomeAssistant) -> None
     expected_trace = {
         "0": [
             {
-                "error": "expected str for dictionary value @ data['text']",
+                "error": "expected str at 'text'",
                 "result": {
                     "params": {
                         "domain": "test",
@@ -4022,7 +4173,7 @@ async def test_propagate_error_service_exception(hass: HomeAssistant) -> None:
 
     hass.services.async_register("test", "script", record_call)
 
-    sequence = cv.SCRIPT_SCHEMA([{"service": "test.script"}, {"event": event}])
+    sequence = cv.SCRIPT_SCHEMA([{"action": "test.script"}, {"event": event}])
     script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
 
     with pytest.raises(ValueError):
@@ -4057,44 +4208,57 @@ async def test_referenced_labels(hass: HomeAssistant) -> None:
         cv.SCRIPT_SCHEMA(
             [
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "data": {"label_id": "label_service_not_list"},
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "data": {
                         "label_id": ["label_service_list_1", "label_service_list_2"]
                     },
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "data": {"label_id": "{{ 'label_service_template' }}"},
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "target": {"label_id": "label_in_target"},
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "data_template": {"label_id": "label_in_data_template"},
                 },
-                {"service": "test.script", "data": {"without": "label_id"}},
+                {"action": "test.script", "data": {"without": "label_id"}},
+                {
+                    "condition": "light.is_on",
+                    "target": {"label_id": "label_condition_target"},
+                },
+                {
+                    "condition": "light.is_on",
+                    "target": {
+                        "label_id": ["label_condition_list_1", "label_condition_list_2"]
+                    },
+                },
                 {
                     "choose": [
                         {
                             "conditions": "{{ true == false }}",
                             "sequence": [
                                 {
-                                    "service": "test.script",
+                                    "action": "test.script",
                                     "data": {"label_id": "label_choice_1_seq"},
                                 }
                             ],
                         },
                         {
-                            "conditions": "{{ true == false }}",
+                            "conditions": {
+                                "condition": "light.is_on",
+                                "target": {"label_id": "label_choice_2_cond"},
+                            },
                             "sequence": [
                                 {
-                                    "service": "test.script",
+                                    "action": "test.script",
                                     "data": {"label_id": "label_choice_2_seq"},
                                 }
                             ],
@@ -4102,7 +4266,7 @@ async def test_referenced_labels(hass: HomeAssistant) -> None:
                     ],
                     "default": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "data": {"label_id": "label_default_seq"},
                         }
                     ],
@@ -4110,16 +4274,19 @@ async def test_referenced_labels(hass: HomeAssistant) -> None:
                 {"event": "test_event"},
                 {"delay": "{{ delay_period }}"},
                 {
-                    "if": [],
+                    "if": {
+                        "condition": "light.is_on",
+                        "target": {"label_id": "label_if_cond"},
+                    },
                     "then": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "data": {"label_id": "label_if_then"},
                         }
                     ],
                     "else": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "data": {"label_id": "label_if_else"},
                         }
                     ],
@@ -4127,10 +4294,76 @@ async def test_referenced_labels(hass: HomeAssistant) -> None:
                 {
                     "parallel": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "data": {"label_id": "label_parallel"},
                         }
                     ],
+                },
+                {
+                    "sequence": [
+                        {
+                            "action": "test.script",
+                            "data": {"label_id": "label_sequence"},
+                        }
+                    ],
+                },
+                {
+                    "repeat": {
+                        "count": 3,
+                        "sequence": [
+                            {
+                                "action": "test.script",
+                                "data": {"label_id": "label_repeat_count_seq"},
+                            }
+                        ],
+                    },
+                },
+                {
+                    "repeat": {
+                        "while": {
+                            "condition": "light.is_on",
+                            "target": {"label_id": "label_repeat_while_cond"},
+                        },
+                        "sequence": [
+                            {
+                                "action": "test.script",
+                                "data": {"label_id": "label_repeat_while_seq"},
+                            }
+                        ],
+                    },
+                },
+                {
+                    "repeat": {
+                        "until": {
+                            "condition": "light.is_on",
+                            "target": {"label_id": "label_repeat_until_cond"},
+                        },
+                        "sequence": [
+                            {
+                                "action": "test.script",
+                                "data": {"label_id": "label_repeat_until_seq"},
+                            }
+                        ],
+                    },
+                },
+                {
+                    "wait_for_trigger": {
+                        "platform": "state",
+                        "entity_id": "sensor.test",
+                        "target": {"label_id": "label_wait_trigger"},
+                    },
+                },
+                {
+                    "wait_for_trigger": {
+                        "platform": "state",
+                        "entity_id": "sensor.test",
+                        "target": {
+                            "label_id": [
+                                "label_wait_trigger_list_1",
+                                "label_wait_trigger_list_2",
+                            ]
+                        },
+                    },
                 },
             ]
         ),
@@ -4139,16 +4372,30 @@ async def test_referenced_labels(hass: HomeAssistant) -> None:
     )
     assert script_obj.referenced_labels == {
         "label_choice_1_seq",
+        "label_choice_2_cond",
         "label_choice_2_seq",
+        "label_condition_list_1",
+        "label_condition_list_2",
+        "label_condition_target",
         "label_default_seq",
+        "label_if_cond",
+        "label_if_else",
+        "label_if_then",
         "label_in_data_template",
         "label_in_target",
+        "label_parallel",
+        "label_repeat_count_seq",
+        "label_repeat_until_cond",
+        "label_repeat_until_seq",
+        "label_repeat_while_cond",
+        "label_repeat_while_seq",
+        "label_sequence",
         "label_service_list_1",
         "label_service_list_2",
         "label_service_not_list",
-        "label_if_then",
-        "label_if_else",
-        "label_parallel",
+        "label_wait_trigger",
+        "label_wait_trigger_list_1",
+        "label_wait_trigger_list_2",
     }
     # Test we cache results.
     assert script_obj.referenced_labels is script_obj.referenced_labels
@@ -4161,42 +4408,55 @@ async def test_referenced_floors(hass: HomeAssistant) -> None:
         cv.SCRIPT_SCHEMA(
             [
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "data": {"floor_id": "floor_service_not_list"},
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "data": {"floor_id": ["floor_service_list"]},
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "data": {"floor_id": "{{ 'floor_service_template' }}"},
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "target": {"floor_id": "floor_in_target"},
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "data_template": {"floor_id": "floor_in_data_template"},
                 },
-                {"service": "test.script", "data": {"without": "floor_id"}},
+                {"action": "test.script", "data": {"without": "floor_id"}},
+                {
+                    "condition": "light.is_on",
+                    "target": {"floor_id": "floor_condition_target"},
+                },
+                {
+                    "condition": "light.is_on",
+                    "target": {
+                        "floor_id": ["floor_condition_list_1", "floor_condition_list_2"]
+                    },
+                },
                 {
                     "choose": [
                         {
                             "conditions": "{{ true == false }}",
                             "sequence": [
                                 {
-                                    "service": "test.script",
+                                    "action": "test.script",
                                     "data": {"floor_id": "floor_choice_1_seq"},
                                 }
                             ],
                         },
                         {
-                            "conditions": "{{ true == false }}",
+                            "conditions": {
+                                "condition": "light.is_on",
+                                "target": {"floor_id": "floor_choice_2_cond"},
+                            },
                             "sequence": [
                                 {
-                                    "service": "test.script",
+                                    "action": "test.script",
                                     "data": {"floor_id": "floor_choice_2_seq"},
                                 }
                             ],
@@ -4204,7 +4464,7 @@ async def test_referenced_floors(hass: HomeAssistant) -> None:
                     ],
                     "default": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "data": {"floor_id": "floor_default_seq"},
                         }
                     ],
@@ -4212,16 +4472,19 @@ async def test_referenced_floors(hass: HomeAssistant) -> None:
                 {"event": "test_event"},
                 {"delay": "{{ delay_period }}"},
                 {
-                    "if": [],
+                    "if": {
+                        "condition": "light.is_on",
+                        "target": {"floor_id": "floor_if_cond"},
+                    },
                     "then": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "data": {"floor_id": "floor_if_then"},
                         }
                     ],
                     "else": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "data": {"floor_id": "floor_if_else"},
                         }
                     ],
@@ -4229,10 +4492,76 @@ async def test_referenced_floors(hass: HomeAssistant) -> None:
                 {
                     "parallel": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "data": {"floor_id": "floor_parallel"},
                         }
                     ],
+                },
+                {
+                    "sequence": [
+                        {
+                            "action": "test.script",
+                            "data": {"floor_id": "floor_sequence"},
+                        }
+                    ],
+                },
+                {
+                    "repeat": {
+                        "count": 3,
+                        "sequence": [
+                            {
+                                "action": "test.script",
+                                "data": {"floor_id": "floor_repeat_count_seq"},
+                            }
+                        ],
+                    },
+                },
+                {
+                    "repeat": {
+                        "while": {
+                            "condition": "light.is_on",
+                            "target": {"floor_id": "floor_repeat_while_cond"},
+                        },
+                        "sequence": [
+                            {
+                                "action": "test.script",
+                                "data": {"floor_id": "floor_repeat_while_seq"},
+                            }
+                        ],
+                    },
+                },
+                {
+                    "repeat": {
+                        "until": {
+                            "condition": "light.is_on",
+                            "target": {"floor_id": "floor_repeat_until_cond"},
+                        },
+                        "sequence": [
+                            {
+                                "action": "test.script",
+                                "data": {"floor_id": "floor_repeat_until_seq"},
+                            }
+                        ],
+                    },
+                },
+                {
+                    "wait_for_trigger": {
+                        "platform": "state",
+                        "entity_id": "sensor.test",
+                        "target": {"floor_id": "floor_wait_trigger"},
+                    },
+                },
+                {
+                    "wait_for_trigger": {
+                        "platform": "state",
+                        "entity_id": "sensor.test",
+                        "target": {
+                            "floor_id": [
+                                "floor_wait_trigger_list_1",
+                                "floor_wait_trigger_list_2",
+                            ]
+                        },
+                    },
                 },
             ]
         ),
@@ -4241,15 +4570,29 @@ async def test_referenced_floors(hass: HomeAssistant) -> None:
     )
     assert script_obj.referenced_floors == {
         "floor_choice_1_seq",
+        "floor_choice_2_cond",
         "floor_choice_2_seq",
+        "floor_condition_list_1",
+        "floor_condition_list_2",
+        "floor_condition_target",
         "floor_default_seq",
+        "floor_if_cond",
+        "floor_if_else",
+        "floor_if_then",
         "floor_in_data_template",
         "floor_in_target",
+        "floor_parallel",
+        "floor_repeat_count_seq",
+        "floor_repeat_until_cond",
+        "floor_repeat_until_seq",
+        "floor_repeat_while_cond",
+        "floor_repeat_while_seq",
+        "floor_sequence",
         "floor_service_list",
         "floor_service_not_list",
-        "floor_if_then",
-        "floor_if_else",
-        "floor_parallel",
+        "floor_wait_trigger",
+        "floor_wait_trigger_list_1",
+        "floor_wait_trigger_list_2",
     }
     # Test we cache results.
     assert script_obj.referenced_floors is script_obj.referenced_floors
@@ -4262,42 +4605,55 @@ async def test_referenced_areas(hass: HomeAssistant) -> None:
         cv.SCRIPT_SCHEMA(
             [
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "data": {"area_id": "area_service_not_list"},
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "data": {"area_id": ["area_service_list"]},
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "data": {"area_id": "{{ 'area_service_template' }}"},
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "target": {"area_id": "area_in_target"},
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "data_template": {"area_id": "area_in_data_template"},
                 },
-                {"service": "test.script", "data": {"without": "area_id"}},
+                {"action": "test.script", "data": {"without": "area_id"}},
+                {
+                    "condition": "light.is_on",
+                    "target": {"area_id": "area_condition_target"},
+                },
+                {
+                    "condition": "light.is_on",
+                    "target": {
+                        "area_id": ["area_condition_list_1", "area_condition_list_2"]
+                    },
+                },
                 {
                     "choose": [
                         {
                             "conditions": "{{ true == false }}",
                             "sequence": [
                                 {
-                                    "service": "test.script",
+                                    "action": "test.script",
                                     "data": {"area_id": "area_choice_1_seq"},
                                 }
                             ],
                         },
                         {
-                            "conditions": "{{ true == false }}",
+                            "conditions": {
+                                "condition": "light.is_on",
+                                "target": {"area_id": "area_choice_2_cond"},
+                            },
                             "sequence": [
                                 {
-                                    "service": "test.script",
+                                    "action": "test.script",
                                     "data": {"area_id": "area_choice_2_seq"},
                                 }
                             ],
@@ -4305,7 +4661,7 @@ async def test_referenced_areas(hass: HomeAssistant) -> None:
                     ],
                     "default": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "data": {"area_id": "area_default_seq"},
                         }
                     ],
@@ -4313,16 +4669,19 @@ async def test_referenced_areas(hass: HomeAssistant) -> None:
                 {"event": "test_event"},
                 {"delay": "{{ delay_period }}"},
                 {
-                    "if": [],
+                    "if": {
+                        "condition": "light.is_on",
+                        "target": {"area_id": "area_if_cond"},
+                    },
                     "then": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "data": {"area_id": "area_if_then"},
                         }
                     ],
                     "else": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "data": {"area_id": "area_if_else"},
                         }
                     ],
@@ -4330,10 +4689,76 @@ async def test_referenced_areas(hass: HomeAssistant) -> None:
                 {
                     "parallel": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "data": {"area_id": "area_parallel"},
                         }
                     ],
+                },
+                {
+                    "sequence": [
+                        {
+                            "action": "test.script",
+                            "data": {"area_id": "area_sequence"},
+                        }
+                    ],
+                },
+                {
+                    "repeat": {
+                        "count": 3,
+                        "sequence": [
+                            {
+                                "action": "test.script",
+                                "data": {"area_id": "area_repeat_count_seq"},
+                            }
+                        ],
+                    },
+                },
+                {
+                    "repeat": {
+                        "while": {
+                            "condition": "light.is_on",
+                            "target": {"area_id": "area_repeat_while_cond"},
+                        },
+                        "sequence": [
+                            {
+                                "action": "test.script",
+                                "data": {"area_id": "area_repeat_while_seq"},
+                            }
+                        ],
+                    },
+                },
+                {
+                    "repeat": {
+                        "until": {
+                            "condition": "light.is_on",
+                            "target": {"area_id": "area_repeat_until_cond"},
+                        },
+                        "sequence": [
+                            {
+                                "action": "test.script",
+                                "data": {"area_id": "area_repeat_until_seq"},
+                            }
+                        ],
+                    },
+                },
+                {
+                    "wait_for_trigger": {
+                        "platform": "state",
+                        "entity_id": "sensor.test",
+                        "target": {"area_id": "area_wait_trigger"},
+                    },
+                },
+                {
+                    "wait_for_trigger": {
+                        "platform": "state",
+                        "entity_id": "sensor.test",
+                        "target": {
+                            "area_id": [
+                                "area_wait_trigger_list_1",
+                                "area_wait_trigger_list_2",
+                            ]
+                        },
+                    },
                 },
             ]
         ),
@@ -4342,15 +4767,29 @@ async def test_referenced_areas(hass: HomeAssistant) -> None:
     )
     assert script_obj.referenced_areas == {
         "area_choice_1_seq",
+        "area_choice_2_cond",
         "area_choice_2_seq",
+        "area_condition_list_1",
+        "area_condition_list_2",
+        "area_condition_target",
         "area_default_seq",
+        "area_if_cond",
+        "area_if_else",
+        "area_if_then",
         "area_in_data_template",
         "area_in_target",
+        "area_parallel",
+        "area_repeat_count_seq",
+        "area_repeat_until_cond",
+        "area_repeat_until_seq",
+        "area_repeat_while_cond",
+        "area_repeat_while_seq",
+        "area_sequence",
         "area_service_list",
         "area_service_not_list",
-        "area_if_then",
-        "area_if_else",
-        "area_parallel",
+        "area_wait_trigger",
+        "area_wait_trigger_list_1",
+        "area_wait_trigger_list_2",
         # 'area_service_template',  # no area extraction from template
     }
     # Test we cache results.
@@ -4364,27 +4803,27 @@ async def test_referenced_entities(hass: HomeAssistant) -> None:
         cv.SCRIPT_SCHEMA(
             [
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "data": {"entity_id": "light.service_not_list"},
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "data": {"entity_id": ["light.service_list"]},
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "data": {"entity_id": "{{ 'light.service_template' }}"},
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "entity_id": "light.direct_entity_referenced",
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "target": {"entity_id": "light.entity_in_target"},
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "data_template": {"entity_id": "light.entity_in_data_template"},
                 },
                 {
@@ -4392,15 +4831,27 @@ async def test_referenced_entities(hass: HomeAssistant) -> None:
                     "entity_id": "sensor.condition",
                     "state": "100",
                 },
-                {"service": "test.script", "data": {"without": "entity_id"}},
+                {"action": "test.script", "data": {"without": "entity_id"}},
                 {"scene": "scene.hello"},
+                {
+                    "domain": "light",
+                    "device_id": "abcdefgh",
+                    "entity_id": "light.device_action",
+                    "type": "turn_on",
+                },
+                {
+                    "domain": "light",
+                    "device_id": "abcdefgh",
+                    "entity_id": "1234567890abcdef1234567890abcdef",
+                    "type": "turn_on",
+                },
                 {
                     "choose": [
                         {
                             "conditions": "{{ states.light.choice_1_cond == 'on' }}",
                             "sequence": [
                                 {
-                                    "service": "test.script",
+                                    "action": "test.script",
                                     "data": {"entity_id": "light.choice_1_seq"},
                                 }
                             ],
@@ -4413,7 +4864,7 @@ async def test_referenced_entities(hass: HomeAssistant) -> None:
                             },
                             "sequence": [
                                 {
-                                    "service": "test.script",
+                                    "action": "test.script",
                                     "data": {"entity_id": "light.choice_2_seq"},
                                 }
                             ],
@@ -4421,24 +4872,32 @@ async def test_referenced_entities(hass: HomeAssistant) -> None:
                     ],
                     "default": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "data": {"entity_id": "light.default_seq"},
                         }
                     ],
                 },
                 {"event": "test_event"},
+                {
+                    "event": "test_event",
+                    "event_data": {"entity_id": "light.event_data"},
+                },
+                {
+                    "event": "test_event",
+                    "event_data": {"entity_id": "not-a-valid-entity-id"},
+                },
                 {"delay": "{{ delay_period }}"},
                 {
                     "if": [],
                     "then": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "data": {"entity_id": "light.if_then"},
                         }
                     ],
                     "else": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "data": {"entity_id": "light.if_else"},
                         }
                     ],
@@ -4446,10 +4905,87 @@ async def test_referenced_entities(hass: HomeAssistant) -> None:
                 {
                     "parallel": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "data": {"entity_id": "light.parallel"},
                         }
                     ],
+                },
+                {
+                    "condition": "light.is_on",
+                    "target": {"entity_id": "light.condition_target"},
+                },
+                {
+                    "condition": "light.is_on",
+                    "target": {
+                        "entity_id": [
+                            "light.condition_list_1",
+                            "light.condition_list_2",
+                        ]
+                    },
+                },
+                {
+                    "sequence": [
+                        {
+                            "action": "test.script",
+                            "data": {"entity_id": "light.sequence"},
+                        }
+                    ],
+                },
+                {
+                    "repeat": {
+                        "count": 3,
+                        "sequence": [
+                            {
+                                "action": "test.script",
+                                "data": {"entity_id": "light.repeat_count_seq"},
+                            }
+                        ],
+                    },
+                },
+                {
+                    "repeat": {
+                        "while": {
+                            "condition": "state",
+                            "entity_id": "sensor.repeat_while_cond",
+                            "state": "100",
+                        },
+                        "sequence": [
+                            {
+                                "action": "test.script",
+                                "data": {"entity_id": "light.repeat_while_seq"},
+                            }
+                        ],
+                    },
+                },
+                {
+                    "repeat": {
+                        "until": {
+                            "condition": "state",
+                            "entity_id": "sensor.repeat_until_cond",
+                            "state": "100",
+                        },
+                        "sequence": [
+                            {
+                                "action": "test.script",
+                                "data": {"entity_id": "light.repeat_until_seq"},
+                            }
+                        ],
+                    },
+                },
+                {
+                    "wait_for_trigger": {
+                        "platform": "state",
+                        "entity_id": ["sensor.wait_trigger_state"],
+                    },
+                },
+                {
+                    "wait_for_trigger": {
+                        "platform": "state",
+                        "entity_id": [
+                            "sensor.wait_trigger_state_list_1",
+                            "sensor.wait_trigger_state_list_2",
+                        ],
+                    },
                 },
             ]
         ),
@@ -4461,18 +4997,32 @@ async def test_referenced_entities(hass: HomeAssistant) -> None:
         "light.choice_1_seq",
         "light.choice_2_cond",
         "light.choice_2_seq",
+        "light.condition_list_1",
+        "light.condition_list_2",
+        "light.condition_target",
         "light.default_seq",
+        "light.device_action",
         "light.direct_entity_referenced",
         "light.entity_in_data_template",
         "light.entity_in_target",
+        "light.event_data",
         "light.service_list",
         "light.service_not_list",
         "light.if_then",
         "light.if_else",
         "light.parallel",
+        "light.repeat_count_seq",
+        "light.repeat_until_seq",
+        "light.repeat_while_seq",
+        "light.sequence",
+        "sensor.repeat_until_cond",
+        "sensor.repeat_while_cond",
         # "light.service_template",  # no entity extraction from template
         "scene.hello",
         "sensor.condition",
+        "sensor.wait_trigger_state",
+        "sensor.wait_trigger_state_list_1",
+        "sensor.wait_trigger_state_list_2",
     }
     # Test we cache results.
     assert script_obj.referenced_entities is script_obj.referenced_entities
@@ -4491,19 +5041,32 @@ async def test_referenced_devices(hass: HomeAssistant) -> None:
                     "domain": "switch",
                 },
                 {
-                    "service": "test.script",
+                    "condition": "light.is_on",
+                    "target": {"device_id": "condition-target-dev-id"},
+                },
+                {
+                    "condition": "light.is_on",
+                    "target": {
+                        "device_id": [
+                            "condition-target-list-1",
+                            "condition-target-list-2",
+                        ]
+                    },
+                },
+                {
+                    "action": "test.script",
                     "data": {"device_id": "data-string-id"},
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "data_template": {"device_id": "data-template-string-id"},
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "target": {"device_id": "target-string-id"},
                 },
                 {
-                    "service": "test.script",
+                    "action": "test.script",
                     "target": {"device_id": ["target-list-id-1", "target-list-id-2"]},
                 },
                 {
@@ -4515,7 +5078,7 @@ async def test_referenced_devices(hass: HomeAssistant) -> None:
                             ),
                             "sequence": [
                                 {
-                                    "service": "test.script",
+                                    "action": "test.script",
                                     "target": {
                                         "device_id": "choice-1-seq-device-target"
                                     },
@@ -4530,7 +5093,7 @@ async def test_referenced_devices(hass: HomeAssistant) -> None:
                             },
                             "sequence": [
                                 {
-                                    "service": "test.script",
+                                    "action": "test.script",
                                     "target": {
                                         "device_id": "choice-2-seq-device-target"
                                     },
@@ -4540,7 +5103,7 @@ async def test_referenced_devices(hass: HomeAssistant) -> None:
                     ],
                     "default": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "target": {"device_id": "default-device-target"},
                         }
                     ],
@@ -4549,13 +5112,13 @@ async def test_referenced_devices(hass: HomeAssistant) -> None:
                     "if": [],
                     "then": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "data": {"device_id": "if-then"},
                         }
                     ],
                     "else": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "data": {"device_id": "if-else"},
                         }
                     ],
@@ -4563,10 +5126,90 @@ async def test_referenced_devices(hass: HomeAssistant) -> None:
                 {
                     "parallel": [
                         {
-                            "service": "test.script",
+                            "action": "test.script",
                             "target": {"device_id": "parallel-device"},
                         }
                     ],
+                },
+                {
+                    "sequence": [
+                        {
+                            "action": "test.script",
+                            "target": {"device_id": "sequence-device"},
+                        }
+                    ],
+                },
+                {
+                    "repeat": {
+                        "count": 3,
+                        "sequence": [
+                            {
+                                "action": "test.script",
+                                "target": {"device_id": "repeat-count-seq-device"},
+                            }
+                        ],
+                    },
+                },
+                {
+                    "repeat": {
+                        "while": {
+                            "condition": "device",
+                            "device_id": "repeat-while-cond-dev-id",
+                            "domain": "switch",
+                        },
+                        "sequence": [
+                            {
+                                "action": "test.script",
+                                "target": {"device_id": "repeat-while-seq-device"},
+                            }
+                        ],
+                    },
+                },
+                {
+                    "repeat": {
+                        "until": {
+                            "condition": "device",
+                            "device_id": "repeat-until-cond-dev-id",
+                            "domain": "switch",
+                        },
+                        "sequence": [
+                            {
+                                "action": "test.script",
+                                "target": {"device_id": "repeat-until-seq-device"},
+                            }
+                        ],
+                    },
+                },
+                {
+                    "wait_for_trigger": {
+                        "platform": "device",
+                        "device_id": "wait-trigger-device",
+                        "domain": "switch",
+                    },
+                },
+                {"event": "test_event"},
+                {
+                    "event": "test_event",
+                    "event_data": {"device_id": "event-data-device"},
+                },
+                {
+                    "wait_for_trigger": {
+                        "platform": "state",
+                        "entity_id": "sensor.test",
+                        "target": {"device_id": "wait-trigger-target"},
+                    },
+                },
+                {
+                    "wait_for_trigger": {
+                        "platform": "state",
+                        "entity_id": "sensor.test",
+                        "target": {
+                            "device_id": [
+                                "wait-trigger-target-list-1",
+                                "wait-trigger-target-list-2",
+                            ]
+                        },
+                    },
                 },
             ]
         ),
@@ -4579,9 +5222,13 @@ async def test_referenced_devices(hass: HomeAssistant) -> None:
         "choice-2-cond-dev-id",
         "choice-2-seq-device-target",
         "condition-dev-id",
+        "condition-target-dev-id",
+        "condition-target-list-1",
+        "condition-target-list-2",
         "data-string-id",
         "data-template-string-id",
         "default-device-target",
+        "event-data-device",
         "script-dev-id",
         "target-list-id-1",
         "target-list-id-2",
@@ -4589,6 +5236,16 @@ async def test_referenced_devices(hass: HomeAssistant) -> None:
         "if-then",
         "if-else",
         "parallel-device",
+        "repeat-count-seq-device",
+        "repeat-until-cond-dev-id",
+        "repeat-until-seq-device",
+        "repeat-while-cond-dev-id",
+        "repeat-while-seq-device",
+        "sequence-device",
+        "wait-trigger-device",
+        "wait-trigger-target",
+        "wait-trigger-target-list-1",
+        "wait-trigger-target-list-2",
     }
     # Test we cache results.
     assert script_obj.referenced_devices is script_obj.referenced_devices
@@ -4631,7 +5288,7 @@ async def test_script_mode_single(
 
         assert "Already running" in caplog.text
         assert script_obj.is_running
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -4768,7 +5425,7 @@ async def test_script_mode_2(
             )
             for message in messages
         )
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -4863,7 +5520,7 @@ async def test_script_mode_queued(hass: HomeAssistant) -> None:
         assert script_obj.runs == 1
         assert len(events) == 3
         assert events[2].data["value"] == 1
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -4915,7 +5572,7 @@ async def test_script_mode_queued_cancel(hass: HomeAssistant) -> None:
 
         assert not script_obj.is_running
         assert script_obj.runs == 0
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
 
@@ -4976,7 +5633,7 @@ async def test_shutdown_at(
 
         assert script_obj.is_running
         assert script_obj.last_action == delay_alias
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -5012,7 +5669,7 @@ async def test_shutdown_after(
 
         assert script_obj.is_running
         assert script_obj.last_action == delay_alias
-    except (AssertionError, TimeoutError):
+    except AssertionError, TimeoutError:
         await script_obj.async_stop()
         raise
     else:
@@ -5100,11 +5757,23 @@ async def test_set_variable(
     hass: HomeAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Test setting variables in scripts."""
-    alias = "variables step"
     sequence = cv.SCRIPT_SCHEMA(
         [
-            {"alias": alias, "variables": {"variable": "value"}},
-            {"service": "test.script", "data": {"value": "{{ variable }}"}},
+            {"alias": "variables", "variables": {"x": 1, "y": 1}},
+            {
+                "alias": "scope",
+                "sequence": [
+                    {"variables": {"y": 3, "z": 3}},
+                    {
+                        "action": "test.script",
+                        "data": {"value": "x={{ x }}, y={{ y }}, z={{ z }}"},
+                    },
+                ],
+            },
+            {
+                "action": "test.script",
+                "data": {"value": "x={{ x }}, y={{ y }}, z={{ z }}"},
+            },
         ]
     )
     script_obj = script.Script(hass, sequence, "test script", "test_domain")
@@ -5114,18 +5783,36 @@ async def test_set_variable(
     await script_obj.async_run(context=Context())
     await hass.async_block_till_done()
 
-    assert mock_calls[0].data["value"] == "value"
-    assert f"Executing step {alias}" in caplog.text
+    assert len(mock_calls) == 2
+    assert mock_calls[0].data["value"] == "x=1, y=3, z=3"
+    assert mock_calls[1].data["value"] == "x=1, y=3, z=3"
+
+    assert "Executing step variables" in caplog.text
 
     expected_trace = {
-        "0": [{"variables": {"variable": "value"}}],
-        "1": [
+        "0": [{"variables": {"x": 1, "y": 1}}],
+        "1": [{"variables": {"y": 3, "z": 3}}],
+        "1/sequence/0": [{"variables": {"y": 3, "z": 3}}],
+        "1/sequence/1": [
             {
                 "result": {
                     "params": {
                         "domain": "test",
                         "service": "script",
-                        "service_data": {"value": "value"},
+                        "service_data": {"value": "x=1, y=3, z=3"},
+                        "target": {},
+                    },
+                    "running_script": False,
+                },
+            }
+        ],
+        "2": [
+            {
+                "result": {
+                    "params": {
+                        "domain": "test",
+                        "service": "script",
+                        "service_data": {"value": "x=1, y=3, z=3"},
                         "target": {},
                     },
                     "running_script": False,
@@ -5143,9 +5830,9 @@ async def test_set_redefines_variable(
     sequence = cv.SCRIPT_SCHEMA(
         [
             {"variables": {"variable": "1"}},
-            {"service": "test.script", "data": {"value": "{{ variable }}"}},
+            {"action": "test.script", "data": {"value": "{{ variable }}"}},
             {"variables": {"variable": "{{ variable | int + 1 }}"}},
-            {"service": "test.script", "data": {"value": "{{ variable }}"}},
+            {"action": "test.script", "data": {"value": "{{ variable }}"}},
         ]
     )
     script_obj = script.Script(hass, sequence, "test script", "test_domain")
@@ -5214,7 +5901,7 @@ async def test_validate_action_config(
         }
 
     configs = {
-        cv.SCRIPT_ACTION_CALL_SERVICE: {"service": "light.turn_on"},
+        cv.SCRIPT_ACTION_CALL_SERVICE: {"action": "light.turn_on"},
         cv.SCRIPT_ACTION_DELAY: {"delay": 5},
         cv.SCRIPT_ACTION_WAIT_TEMPLATE: {
             "wait_template": "{{ states.light.kitchen.state == 'on' }}"
@@ -5304,7 +5991,7 @@ async def test_validate_action_config(
             validated_config[action_type] = await script.async_validate_action_config(
                 hass, validated_config[action_type]
             )
-        except vol.Invalid as err:
+        except probatio.Invalid as err:
             pytest.fail(f"{action_type} config invalid: {err}")
 
     # Verify non-static actions have validated
@@ -5349,7 +6036,7 @@ async def test_embedded_wait_for_trigger_in_automation(hass: HomeAssistant) -> N
                                     }
                                 ]
                             },
-                            {"service": "test.script"},
+                            {"action": "test.script"},
                         ],
                     }
                 },
@@ -5646,6 +6333,102 @@ async def test_stop_action_subscript(
     )
 
 
+@pytest.mark.parametrize(("var", "response"), [(1, "If: Then"), (2, "Testing 123")])
+@pytest.mark.parametrize(
+    ("script_mode", "max_runs"), [("single", 1), ("parallel", 2), ("queued", 2)]
+)
+async def test_stop_action_response_variables(
+    hass: HomeAssistant,
+    var: int,
+    response: str,
+    script_mode,
+    max_runs,
+) -> None:
+    """Test setting stop response_variable in a subscript."""
+    sequence = cv.SCRIPT_SCHEMA(
+        [
+            {"variables": {"output": {"value": "Testing 123"}}},
+            {
+                "if": {
+                    "condition": "template",
+                    "value_template": "{{ var == 1 }}",
+                },
+                "then": [
+                    {"variables": {"output": {"value": "If: Then"}}},
+                    {"stop": "In the name of love", "response_variable": "output"},
+                ],
+            },
+            {"stop": "In the name of love", "response_variable": "output"},
+        ]
+    )
+    script_obj = script.Script(
+        hass,
+        sequence,
+        "Test Name",
+        "test_domain",
+        script_mode=script_mode,
+        max_runs=max_runs,
+    )
+
+    run_vars = MappingProxyType({"var": var})
+    result = await script_obj.async_run(run_vars, context=Context())
+    assert result.service_response == {"value": response}
+
+
+@pytest.mark.parametrize(
+    ("var", "if_result", "choice", "response"),
+    [(1, True, "then", "If: Then"), (2, False, "else", "If: Else")],
+)
+async def test_stop_action_nested_response_variables(
+    hass: HomeAssistant,
+    var: int,
+    if_result: bool,
+    choice: str,
+    response: str,
+) -> None:
+    """Test setting stop response_variable in a subscript."""
+    sequence = cv.SCRIPT_SCHEMA(
+        [
+            {"variables": {"output": {"value": "Testing 123"}}},
+            {
+                "if": {
+                    "condition": "template",
+                    "value_template": "{{ var == 1 }}",
+                },
+                "then": [
+                    {"variables": {"output": {"value": "If: Then"}}},
+                    {"stop": "In the name of love", "response_variable": "output"},
+                ],
+                "else": [
+                    {"variables": {"output": {"value": "If: Else"}}},
+                    {"stop": "In the name of love", "response_variable": "output"},
+                ],
+            },
+        ]
+    )
+    script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
+
+    run_vars = MappingProxyType({"var": var})
+    result = await script_obj.async_run(run_vars, context=Context())
+    assert result.service_response == {"value": response}
+
+    expected_trace = {
+        "0": [
+            {
+                "variables": {"var": var, "output": {"value": "Testing 123"}},
+            }
+        ],
+        "1": [
+            {"result": {"choice": choice}, "variables": {"output": {"value": response}}}
+        ],
+        "1/if": [{"result": {"result": if_result}}],
+        "1/if/condition/0": [{"result": {"result": var == 1, "entities": []}}],
+        f"1/{choice}/0": [{"variables": {"output": {"value": response}}}],
+        f"1/{choice}/1": [{"result": {"stop": "In the name of love", "error": False}}],
+    }
+    assert_action_trace(expected_trace)
+
+
 async def test_stop_action_with_error(
     hass: HomeAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -5704,12 +6487,12 @@ async def test_continue_on_error(hass: HomeAssistant) -> None:
             {"event": "test_event"},
             {
                 "continue_on_error": True,
-                "service": "broken.service",
+                "action": "broken.service",
             },
             {"event": "test_event"},
             {
                 "continue_on_error": False,
-                "service": "broken.service",
+                "action": "broken.service",
             },
             {"event": "test_event"},
         ]
@@ -5726,6 +6509,7 @@ async def test_continue_on_error(hass: HomeAssistant) -> None:
             "0": [{"result": {"event": "test_event", "event_data": {}}}],
             "1": [
                 {
+                    "error": "It is not working!",
                     "result": {
                         "params": {
                             "domain": "broken",
@@ -5781,12 +6565,11 @@ async def test_continue_on_error_with_stop(hass: HomeAssistant) -> None:
 
 async def test_continue_on_error_automation_issue(hass: HomeAssistant) -> None:
     """Test continue on error doesn't block action automation errors."""
-    await async_setup_component(hass, "homeassistant", {})
     sequence = cv.SCRIPT_SCHEMA(
         [
             {
                 "continue_on_error": True,
-                "service": "service.not_found",
+                "action": "service.not_found",
             },
         ]
     )
@@ -5818,7 +6601,6 @@ async def test_continue_on_error_automation_issue(hass: HomeAssistant) -> None:
 
 async def test_continue_on_error_unknown_error(hass: HomeAssistant) -> None:
     """Test continue on error doesn't block unknown errors from e.g., libraries."""
-    await async_setup_component(hass, "homeassistant", {})
 
     class MyLibraryError(Exception):
         """My custom library error."""
@@ -5834,7 +6616,7 @@ async def test_continue_on_error_unknown_error(hass: HomeAssistant) -> None:
         [
             {
                 "continue_on_error": True,
-                "service": "some.service",
+                "action": "some.service",
             },
         ]
     )
@@ -5884,7 +6666,7 @@ async def test_disabled_actions(
             {
                 "alias": "Hello",
                 "enabled": enabled_value,
-                "service": "broken.service",
+                "action": "broken.service",
             },
             {
                 "alias": "World",
@@ -5914,7 +6696,6 @@ async def test_disabled_actions(
 
 async def test_enabled_error_non_limited_template(hass: HomeAssistant) -> None:
     """Test that a script aborts when an action enabled uses non-limited template."""
-    await async_setup_component(hass, "homeassistant", {})
     event = "test_event"
     events = async_capture_events(hass, event)
     sequence = cv.SCRIPT_SCHEMA(
@@ -5936,7 +6717,10 @@ async def test_enabled_error_non_limited_template(hass: HomeAssistant) -> None:
     expected_trace = {
         "0": [
             {
-                "error": "TemplateError: Use of 'states' is not supported in limited templates"
+                "error": (
+                    "TemplateError: Use of 'states' is not"
+                    " supported in limited templates"
+                )
             }
         ],
     }
@@ -6231,6 +7015,32 @@ async def test_conversation_response_not_set_subscript_if(
     assert_action_trace(expected_trace)
 
 
+async def test_conversation_response_nested_with_stop(
+    hass: HomeAssistant,
+) -> None:
+    """Test setting conversation response in a child block with a stop."""
+    sequence = cv.SCRIPT_SCHEMA(
+        [
+            {
+                "choose": {
+                    "conditions": {
+                        "condition": "template",
+                        "value_template": "{{ true }}",
+                    },
+                    "sequence": [
+                        {"set_conversation_response": "{{ 'conversation response' }}"},
+                        {"stop": "stop response"},
+                    ],
+                },
+            },
+        ]
+    )
+    script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
+
+    result = await script_obj.async_run(context=Context())
+    assert result.conversation_response == "conversation response"
+
+
 async def test_stopping_run_before_starting(
     hass: HomeAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -6255,7 +7065,7 @@ async def test_disallowed_recursion(
     context = Context()
     calls = 0
     alias = "event step"
-    sequence1 = cv.SCRIPT_SCHEMA({"alias": alias, "service": "test.call_script_2"})
+    sequence1 = cv.SCRIPT_SCHEMA({"alias": alias, "action": "test.call_script_2"})
     script1_obj = script.Script(
         hass,
         sequence1,
@@ -6265,7 +7075,7 @@ async def test_disallowed_recursion(
         running_description="test script1",
     )
 
-    sequence2 = cv.SCRIPT_SCHEMA({"alias": alias, "service": "test.call_script_3"})
+    sequence2 = cv.SCRIPT_SCHEMA({"alias": alias, "action": "test.call_script_3"})
     script2_obj = script.Script(
         hass,
         sequence2,
@@ -6275,7 +7085,7 @@ async def test_disallowed_recursion(
         running_description="test script2",
     )
 
-    sequence3 = cv.SCRIPT_SCHEMA({"alias": alias, "service": "test.call_script_1"})
+    sequence3 = cv.SCRIPT_SCHEMA({"alias": alias, "action": "test.call_script_1"})
     script3_obj = script.Script(
         hass,
         sequence3,
@@ -6315,3 +7125,413 @@ async def test_disallowed_recursion(
         "- test_domain2.Test Name2\n"
         "- test_domain3.Test Name3"
     ) in caplog.text
+
+
+async def test_calling_service_backwards_compatible(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test the calling of a service with the service instead of the action key."""
+    context = Context()
+    calls = async_mock_service(hass, "test", "script")
+
+    alias = "service step"
+    sequence = cv.SCRIPT_SCHEMA(
+        {"alias": alias, "service": "test.script", "data": {"hello": "{{ 'world' }}"}}
+    )
+    script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
+
+    await script_obj.async_run(context=context)
+    await hass.async_block_till_done()
+
+    assert len(calls) == 1
+    assert calls[0].context is context
+    assert calls[0].data.get("hello") == "world"
+    assert f"Executing step {alias}" in caplog.text
+
+    assert_action_trace(
+        {
+            "0": [
+                {
+                    "result": {
+                        "params": {
+                            "domain": "test",
+                            "service": "script",
+                            "service_data": {"hello": "world"},
+                            "target": {},
+                        },
+                        "running_script": False,
+                    }
+                }
+            ],
+        }
+    )
+
+
+async def test_enabled_sequence_in_parallel(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test to ensure sequence inside parallel follows enabled tag."""
+    event = "test_event"
+    events = async_capture_events(hass, event)
+    sequence = cv.SCRIPT_SCHEMA(
+        {
+            "parallel": [
+                {
+                    "sequence": [{"event": event, "event_data": {"value": "disabled"}}],
+                    "enabled": "false",
+                },
+                {
+                    "sequence": [{"event": event, "event_data": {"value": "enabled"}}],
+                    "enabled": "true",
+                },
+            ]
+        }
+    )
+
+    script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
+
+    await script_obj.async_run(context=Context())
+    await hass.async_block_till_done()
+
+    assert len(events) == 1
+    assert events[0].data["value"] == "enabled"
+
+    expected_trace = {
+        "0": [{"result": {"enabled": False}}],
+        "0/parallel/1/sequence/0": [
+            {"result": {"event": "test_event", "event_data": {"value": "enabled"}}}
+        ],
+    }
+    assert_action_trace(expected_trace)
+
+
+async def _setup_mock_condition_integration(hass: HomeAssistant) -> None:
+    """Set up a mock integration with conditions that track async_unload calls."""
+
+    class MockCondition(Condition):
+        def __new__(cls, *args: Any, **kwargs: Any) -> Condition:
+            """Return a mock instance that tracks async_setup and async_unload calls."""
+            mocked = mock.Mock(spec=Condition)
+            mocked.async_setup = AsyncMock()
+            mocked.async_unload = mock.Mock()
+            return mocked
+
+        @classmethod
+        async def async_validate_config(
+            cls, hass: HomeAssistant, config: dict[str, Any]
+        ) -> dict[str, Any]:
+            """Validate config."""
+            return config
+
+        def _async_check(self, **kwargs: Any) -> bool | None:
+            """Check the condition."""
+            raise NotImplementedError
+
+    async def async_get_conditions(
+        hass: HomeAssistant,
+    ) -> dict[str, type[Condition]]:
+        return {"_": MockCondition}
+
+    mock_integration(hass, MockModule("test"))
+    mock_platform(
+        hass, "test.condition", mock.Mock(async_get_conditions=async_get_conditions)
+    )
+
+
+async def test_async_unload_clears_condition_cache(hass: HomeAssistant) -> None:
+    """Test that async_unload clears _condition_cache and unloads conditions."""
+    await _setup_mock_condition_integration(hass)
+    sequence = cv.SCRIPT_SCHEMA(
+        [
+            {"condition": "test"},
+            {"event": "test_event"},
+        ]
+    )
+    script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
+
+    await script_obj.async_run(context=Context())
+    await hass.async_block_till_done()
+
+    assert len(script_obj._condition_cache) == 1
+    cached_cond = next(iter(script_obj._condition_cache.values()))
+
+    await script_obj.async_unload()
+
+    assert len(script_obj._condition_cache) == 0
+    cached_cond.async_unload.assert_called_once()
+
+
+async def test_async_unload_clears_repeat_scripts(hass: HomeAssistant) -> None:
+    """Test that async_unload unloads repeat sub-scripts."""
+    sequence = cv.SCRIPT_SCHEMA(
+        [
+            {
+                "repeat": {
+                    "count": 1,
+                    "sequence": [{"event": "test_event"}],
+                }
+            },
+        ]
+    )
+    script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
+
+    await script_obj.async_run(context=Context())
+    await hass.async_block_till_done()
+
+    assert len(script_obj._repeat_script) == 1
+    sub_script = next(iter(script_obj._repeat_script.values()))
+
+    with mock.patch.object(sub_script, "_async_unload") as unload_mock:
+        await script_obj.async_unload()
+
+    assert len(script_obj._repeat_script) == 0
+    unload_mock.assert_called_once()
+
+
+async def test_async_unload_clears_choose_data(hass: HomeAssistant) -> None:
+    """Test that async_unload unloads choose sub-scripts."""
+    sequence = cv.SCRIPT_SCHEMA(
+        [
+            {
+                "choose": [
+                    {
+                        "conditions": "{{ true }}",
+                        "sequence": [{"event": "test_event"}],
+                    }
+                ],
+                "default": [{"event": "default_event"}],
+            },
+        ]
+    )
+    script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
+
+    await script_obj.async_run(context=Context())
+    await hass.async_block_till_done()
+
+    assert len(script_obj._choose_data) == 1
+    choose_data = next(iter(script_obj._choose_data.values()))
+    _choice_conditions, choice_script = choose_data["choices"][0]
+    default_script = choose_data["default"]
+
+    with (
+        mock.patch.object(choice_script, "_async_unload") as choice_unload,
+        mock.patch.object(default_script, "_async_unload") as default_unload,
+    ):
+        await script_obj.async_unload()
+
+    assert len(script_obj._choose_data) == 0
+    choice_unload.assert_called_once()
+    default_unload.assert_called_once()
+
+
+async def test_async_unload_clears_if_data(hass: HomeAssistant) -> None:
+    """Test that async_unload unloads if/then/else sub-scripts."""
+    sequence = cv.SCRIPT_SCHEMA(
+        [
+            {
+                "if": "{{ true }}",
+                "then": [{"event": "then_event"}],
+                "else": [{"event": "else_event"}],
+            },
+        ]
+    )
+    script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
+
+    await script_obj.async_run(context=Context())
+    await hass.async_block_till_done()
+
+    assert len(script_obj._if_data) == 1
+    if_data = next(iter(script_obj._if_data.values()))
+    then_script = if_data["if_then"]
+    else_script = if_data["if_else"]
+
+    with (
+        mock.patch.object(then_script, "_async_unload") as then_unload,
+        mock.patch.object(else_script, "_async_unload") as else_unload,
+    ):
+        await script_obj.async_unload()
+
+    assert len(script_obj._if_data) == 0
+    then_unload.assert_called_once()
+    else_unload.assert_called_once()
+
+
+async def test_async_unload_clears_parallel_scripts(hass: HomeAssistant) -> None:
+    """Test that async_unload unloads parallel sub-scripts."""
+    sequence = cv.SCRIPT_SCHEMA(
+        [
+            {
+                "parallel": [
+                    {"sequence": [{"event": "test_event_1"}]},
+                    {"sequence": [{"event": "test_event_2"}]},
+                ],
+            },
+        ]
+    )
+    script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
+
+    await script_obj.async_run(context=Context())
+    await hass.async_block_till_done()
+
+    assert len(script_obj._parallel_scripts) == 1
+    parallel_scripts = next(iter(script_obj._parallel_scripts.values()))
+    assert len(parallel_scripts) == 2
+
+    with (
+        mock.patch.object(parallel_scripts[0], "_async_unload") as unload_0,
+        mock.patch.object(parallel_scripts[1], "_async_unload") as unload_1,
+    ):
+        await script_obj.async_unload()
+
+    assert len(script_obj._parallel_scripts) == 0
+    unload_0.assert_called_once()
+    unload_1.assert_called_once()
+
+
+async def test_script_del_calls_async_unload(hass: HomeAssistant) -> None:
+    """Test that __del__ calls _async_unload if not already called."""
+    sequence = cv.SCRIPT_SCHEMA([{"event": "test_event"}])
+    script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
+    unload_mock = mock.Mock(wraps=script_obj._async_unload)
+    script_obj._async_unload = unload_mock
+
+    # Pylint says we should `del script_obj`. However, that's not guaranteed
+    # to immediately call __del__.
+    script_obj.__del__()  # pylint: disable=unnecessary-dunder-call
+    unload_mock.assert_called_once()
+
+
+async def test_script_del_skips_if_already_unloaded(hass: HomeAssistant) -> None:
+    """Test that __del__ does not call _async_unload if already called."""
+    sequence = cv.SCRIPT_SCHEMA([{"event": "test_event"}])
+    script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
+    unload_mock = mock.Mock(wraps=script_obj._async_unload)
+    script_obj._async_unload = unload_mock
+
+    # First call sets the flag
+    await script_obj.async_unload()
+    unload_mock.assert_called_once()
+    unload_mock.reset_mock()
+
+    # __del__ should skip since _unloaded is True
+    # Pylint says we should `del checker`. However, that's not guaranteed
+    # to immediately call __del__.
+    script_obj.__del__()  # pylint: disable=unnecessary-dunder-call
+    unload_mock.assert_not_called()
+
+
+async def test_async_unload_stops_running_script(hass: HomeAssistant) -> None:
+    """Test that async_unload stops in-flight runs and unloads the script."""
+    sequence = cv.SCRIPT_SCHEMA(
+        [
+            {"wait_template": "{{ false }}"},
+        ]
+    )
+    script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
+
+    hass.async_create_task(script_obj.async_run(context=Context()))
+    await asyncio.sleep(0)
+
+    assert script_obj.is_running
+
+    await script_obj.async_unload()
+
+    assert not script_obj.is_running
+    assert script_obj._unloaded
+
+
+async def test_async_unload_removes_from_data_scripts(hass: HomeAssistant) -> None:
+    """Test that async_unload removes the script from hass.data[DATA_SCRIPTS]."""
+    sequence = cv.SCRIPT_SCHEMA([{"event": "test_event"}])
+    script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
+
+    all_scripts = hass.data[script.DATA_SCRIPTS]
+    assert any(s["instance"] is script_obj for s in all_scripts.values())
+
+    await script_obj.async_unload()
+
+    assert not any(s["instance"] is script_obj for s in all_scripts.values())
+
+
+async def test_async_unload_non_top_level_does_not_touch_data_scripts(
+    hass: HomeAssistant,
+) -> None:
+    """Test that async_unload on a non-top-level script doesn't touch DATA_SCRIPTS."""
+    sequence = cv.SCRIPT_SCHEMA([{"event": "test_event"}])
+    script_obj = script.Script(
+        hass, sequence, "Sub Script", "test_domain", top_level=False
+    )
+
+    all_scripts = hass.data[script.DATA_SCRIPTS]
+    count_before = len(all_scripts)
+
+    # Should not raise and should not modify DATA_SCRIPTS
+    await script_obj.async_unload()
+
+    assert len(all_scripts) == count_before
+
+
+async def test_async_run_raises_if_unloaded(hass: HomeAssistant) -> None:
+    """Test that async_run raises RuntimeError if the script has been unloaded."""
+    sequence = cv.SCRIPT_SCHEMA([{"event": "test_event"}])
+    script_obj = script.Script(hass, sequence, "Test Name", "test_domain")
+
+    await script_obj.async_unload()
+
+    with pytest.raises(
+        RuntimeError, match="Cannot run script.*after it has been unloaded"
+    ):
+        await script_obj.async_run(context=Context())
+
+
+async def test_async_unload_blocks_new_runs_during_stop(
+    hass: HomeAssistant,
+) -> None:
+    """Test that new runs are rejected once unload has started.
+
+    A run started after unload begins must be rejected immediately;
+    otherwise it would survive the stop and prevent cleanup.
+    """
+    sequence = cv.SCRIPT_SCHEMA([{"wait_template": "{{ false }}"}])
+    # Parallel mode so the script-mode check would not reject the second run;
+    # the only thing that should reject it is the _unloaded fence.
+    script_obj = script.Script(
+        hass, sequence, "Test Name", "test_domain", script_mode="parallel", max_runs=2
+    )
+    script_id = id(script_obj)
+
+    assert script_id in hass.data[script.DATA_SCRIPTS]
+
+    hass.async_create_task(script_obj.async_run(context=Context()))
+    await asyncio.sleep(0)
+    assert script_obj.is_running
+
+    # Gate async_stop so the test can act while unload is parked mid-stop,
+    # i.e. after _unloaded=True but before runs are stopped.
+    stop_started = asyncio.Event()
+    stop_release = asyncio.Event()
+    original_async_stop = script_obj.async_stop
+
+    async def gated_async_stop(*args: Any, **kwargs: Any) -> None:
+        stop_started.set()
+        await stop_release.wait()
+        await original_async_stop(*args, **kwargs)
+
+    script_obj.async_stop = gated_async_stop
+
+    unload_task = hass.async_create_task(script_obj.async_unload())
+    await stop_started.wait()
+
+    assert script_obj._unloaded
+    assert script_obj.is_running
+
+    with pytest.raises(
+        RuntimeError, match="Cannot run script.*after it has been unloaded"
+    ):
+        await script_obj.async_run(context=Context())
+
+    stop_release.set()
+    await unload_task
+
+    assert not script_obj.is_running
+    assert script_id not in hass.data[script.DATA_SCRIPTS]

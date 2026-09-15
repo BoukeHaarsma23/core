@@ -1,13 +1,11 @@
 """Provide the functionality to group entities."""
 
-from __future__ import annotations
-
 import asyncio
 from collections.abc import Collection
 import logging
 from typing import Any
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
@@ -22,14 +20,13 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv, entity_registry as er
-from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.helpers.group import (
     expand_entity_ids as _expand_entity_ids,
     get_entity_ids as _get_entity_ids,
+    get_group_entities,
 )
 from homeassistant.helpers.reload import async_reload_integration_platforms
 from homeassistant.helpers.typing import ConfigType
-from homeassistant.loader import bind_hass
 
 #
 # Below we ensure the config_flow is imported so it does not need the import
@@ -49,12 +46,13 @@ from .const import (  # noqa: F401
     ATTR_ORDER,
     ATTR_REMOVE_ENTITIES,
     CONF_HIDE_MEMBERS,
+    DATA_COMPONENT,
     DOMAIN,
     GROUP_ORDER,
     REG_KEY,
 )
 from .entity import Group, async_get_component
-from .registry import GroupIntegrationRegistry, async_setup as async_setup_registry
+from .registry import async_setup as async_setup_registry
 
 CONF_ALL = "all"
 
@@ -72,6 +70,7 @@ PLATFORMS = [
     Platform.NOTIFY,
     Platform.SENSOR,
     Platform.SWITCH,
+    Platform.VALVE,
 ]
 
 _LOGGER = logging.getLogger(__name__)
@@ -85,10 +84,10 @@ def _conf_preprocess(value: Any) -> dict[str, Any]:
     return value
 
 
-GROUP_SCHEMA = vol.All(
-    vol.Schema(
+GROUP_SCHEMA = probatio.All(
+    probatio.Schema(
         {
-            vol.Optional(CONF_ENTITIES): vol.Any(cv.entity_ids, None),
+            probatio.Optional(CONF_ENTITIES): probatio.Any(cv.entity_ids, None),
             CONF_NAME: cv.string,
             CONF_ICON: cv.icon,
             CONF_ALL: cv.boolean,
@@ -96,13 +95,16 @@ GROUP_SCHEMA = vol.All(
     )
 )
 
-CONFIG_SCHEMA = vol.Schema(
-    {DOMAIN: vol.Schema({cv.match_all: vol.All(_conf_preprocess, GROUP_SCHEMA)})},
-    extra=vol.ALLOW_EXTRA,
+CONFIG_SCHEMA = probatio.Schema(
+    {
+        DOMAIN: probatio.Schema(
+            {cv.match_all: probatio.All(_conf_preprocess, GROUP_SCHEMA)}
+        )
+    },
+    extra=probatio.ALLOW_EXTRA,
 )
 
 
-@bind_hass
 def is_on(hass: HomeAssistant, entity_id: str) -> bool:
     """Test if the group state is in its ON-state."""
     if REG_KEY not in hass.data:
@@ -110,31 +112,57 @@ def is_on(hass: HomeAssistant, entity_id: str) -> bool:
         return False
 
     if (state := hass.states.get(entity_id)) is not None:
-        registry: GroupIntegrationRegistry = hass.data[REG_KEY]
-        return state.state in registry.on_off_mapping
+        return state.state in hass.data[REG_KEY].on_off_mapping
 
     return False
 
 
 # expand_entity_ids and get_entity_ids are for backwards compatibility only
-expand_entity_ids = bind_hass(_expand_entity_ids)
-get_entity_ids = bind_hass(_get_entity_ids)
+expand_entity_ids = _expand_entity_ids
+get_entity_ids = _get_entity_ids
 
 
-@bind_hass
 def groups_with_entity(hass: HomeAssistant, entity_id: str) -> list[str]:
     """Get all groups that contain this entity.
 
     Async friendly.
     """
-    if DOMAIN not in hass.data:
-        return []
+    groups: list[str] = []
 
-    return [
-        group.entity_id
-        for group in hass.data[DOMAIN].entities
-        if entity_id in group.tracking
-    ]
+    if DOMAIN in hass.data:
+        groups.extend(
+            group.entity_id
+            for group in hass.data[DATA_COMPONENT].entities
+            if entity_id in group.tracking
+        )
+
+    groups.extend(
+        group_entity_id
+        for group_entity_id, entity in get_group_entities(hass).items()
+        if entity.group is not None
+        and entity_id in entity.group.member_entity_ids
+        and group_entity_id not in groups
+    )
+
+    # Config entry groups whose platform does not (yet) register in
+    # the group entities registry of the group helper.
+    entity_registry = er.async_get(hass)
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        members = [
+            er.async_resolve_entity_id(entity_registry, member) or member
+            for member in entry.options[CONF_ENTITIES]
+        ]
+        if entity_id not in members:
+            continue
+        groups.extend(
+            registry_entry.entity_id
+            for registry_entry in er.async_entries_for_config_entry(
+                entity_registry, entry.entry_id
+            )
+            if registry_entry.entity_id not in groups
+        )
+
+    return groups
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -142,13 +170,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(
         entry, (entry.options["group_type"],)
     )
-    entry.async_on_unload(entry.add_update_listener(config_entry_update_listener))
     return True
-
-
-async def config_entry_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Update listener, called when the config entry options are changed."""
-    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -179,10 +201,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up all groups found defined in the configuration."""
-    if DOMAIN not in hass.data:
-        hass.data[DOMAIN] = EntityComponent[Group](_LOGGER, DOMAIN, hass)
-
-    component: EntityComponent[Group] = hass.data[DOMAIN]
+    component = async_get_component(hass)
 
     await async_setup_registry(hass)
 
@@ -194,8 +213,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         - Remove group.group entities not created by service calls and set them up again
         - Reload xxx.group platforms
         """
-        if (conf := await component.async_prepare_reload(skip_reset=True)) is None:
-            return
+        conf = await component.async_prepare_reload(skip_reset=True)
 
         # Simplified + modified version of EntityPlatform.async_reset:
         # - group.group never retries setup
@@ -218,7 +236,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         await async_reload_integration_platforms(hass, DOMAIN, PLATFORMS)
 
     hass.services.async_register(
-        DOMAIN, SERVICE_RELOAD, reload_service_handler, schema=vol.Schema({})
+        DOMAIN, SERVICE_RELOAD, reload_service_handler, schema=probatio.Schema({})
     )
 
     service_lock = asyncio.Lock()
@@ -251,12 +269,15 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 mode=service.data.get(ATTR_ALL),
                 object_id=object_id,
                 order=None,
+                context=service.context,
             )
             return
 
         if group is None:
             _LOGGER.warning("%s:Group '%s' doesn't exist!", service.service, object_id)
             return
+
+        group.async_set_context(service.context)
 
         # update group
         if service.service == SERVICE_SET:
@@ -301,16 +322,16 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         DOMAIN,
         SERVICE_SET,
         locked_service_handler,
-        schema=vol.All(
-            vol.Schema(
+        schema=probatio.All(
+            probatio.Schema(
                 {
-                    vol.Required(ATTR_OBJECT_ID): cv.slug,
-                    vol.Optional(ATTR_NAME): cv.string,
-                    vol.Optional(ATTR_ICON): cv.string,
-                    vol.Optional(ATTR_ALL): cv.boolean,
-                    vol.Exclusive(ATTR_ENTITIES, "entities"): cv.entity_ids,
-                    vol.Exclusive(ATTR_ADD_ENTITIES, "entities"): cv.entity_ids,
-                    vol.Exclusive(ATTR_REMOVE_ENTITIES, "entities"): cv.entity_ids,
+                    probatio.Required(ATTR_OBJECT_ID): cv.slug,
+                    probatio.Optional(ATTR_NAME): cv.string,
+                    probatio.Optional(ATTR_ICON): cv.string,
+                    probatio.Optional(ATTR_ALL): cv.boolean,
+                    probatio.Exclusive(ATTR_ENTITIES, "entities"): cv.entity_ids,
+                    probatio.Exclusive(ATTR_ADD_ENTITIES, "entities"): cv.entity_ids,
+                    probatio.Exclusive(ATTR_REMOVE_ENTITIES, "entities"): cv.entity_ids,
                 }
             )
         ),
@@ -320,7 +341,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         DOMAIN,
         SERVICE_REMOVE,
         groups_service_handler,
-        schema=vol.Schema({vol.Required(ATTR_OBJECT_ID): cv.slug}),
+        schema=probatio.Schema({probatio.Required(ATTR_OBJECT_ID): cv.slug}),
     )
 
     return True
@@ -338,7 +359,7 @@ async def _async_process_config(hass: HomeAssistant, config: ConfigType) -> None
         entity_ids: Collection[str] = conf.get(CONF_ENTITIES) or []
         icon: str | None = conf.get(CONF_ICON)
         mode = bool(conf.get(CONF_ALL))
-        order: int = hass.data[GROUP_ORDER]
+        order = hass.data[GROUP_ORDER]
 
         # We keep track of the order when we are creating the tasks
         # in the same way that async_create_group does to make

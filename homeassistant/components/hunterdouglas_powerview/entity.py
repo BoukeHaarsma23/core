@@ -1,17 +1,18 @@
 """The powerview integration base entity."""
 
 import logging
+from typing import override
 
 from aiopvapi.resources.shade import BaseShade, ShadePosition
+from aiopvapi.resources.shade_data import PowerviewShadeData
 
-import homeassistant.helpers.device_registry as dr
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER
 from .coordinator import PowerviewShadeUpdateCoordinator
 from .model import PowerviewDeviceInfo
-from .shade_data import PowerviewShadeData
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,12 +27,12 @@ class HDEntity(CoordinatorEntity[PowerviewShadeUpdateCoordinator]):
         coordinator: PowerviewShadeUpdateCoordinator,
         device_info: PowerviewDeviceInfo,
         room_name: str,
-        unique_id: str,
+        powerview_id: str,
     ) -> None:
         """Initialize the entity."""
         super().__init__(coordinator)
         self._room_name = room_name
-        self._attr_unique_id = unique_id
+        self._attr_unique_id = f"{device_info.serial_number}_{powerview_id}"
         self._device_info = device_info
         self._configuration_url = self.coordinator.hub.url
 
@@ -41,6 +42,7 @@ class HDEntity(CoordinatorEntity[PowerviewShadeUpdateCoordinator]):
         return self.coordinator.data
 
     @property
+    @override
     def device_info(self) -> DeviceInfo:
         """Return the device_info of the device."""
         return DeviceInfo(
@@ -78,6 +80,7 @@ class ShadeEntity(HDEntity):
         return self.data.get_shade_position(self._shade.id)
 
     @property
+    @override
     def device_info(self) -> DeviceInfo:
         """Return the device_info of the device."""
         return DeviceInfo(
@@ -87,6 +90,10 @@ class ShadeEntity(HDEntity):
             manufacturer=MANUFACTURER,
             model=self._shade.type_name,
             sw_version=self._shade.firmware,
-            via_device=(DOMAIN, self._device_info.serial_number),
+            via_device_id=dr.async_get_device_id_by_identifier(
+                self.coordinator.hass,
+                (DOMAIN, self._device_info.serial_number),
+                config_entry_id=self.coordinator.config_entry.entry_id,
+            ),
             configuration_url=self._configuration_url,
         )

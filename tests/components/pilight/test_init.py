@@ -5,8 +5,8 @@ import logging
 import socket
 from unittest.mock import patch
 
+from probatio import MultipleInvalid
 import pytest
-from voluptuous import MultipleInvalid
 
 from homeassistant.components import pilight
 from homeassistant.core import HomeAssistant
@@ -40,7 +40,7 @@ class PilightDaemonSim:
         "message": {"id": 0, "unit": 0, "off": 1},
     }
 
-    def __init__(self, host, port):
+    def __init__(self, host, port) -> None:
         """Init pilight client, ignore parameters."""
 
     def send_code(self, call):
@@ -114,7 +114,7 @@ async def test_send_code_no_protocol(hass: HomeAssistant) -> None:
                 service_data={"noprotocol": "test", "value": 42},
                 blocking=True,
             )
-        assert "required key not provided @ data['protocol']" in str(excinfo.value)
+        assert "required key not provided at 'protocol'" in str(excinfo.value)
 
 
 @patch("homeassistant.components.pilight._LOGGER.error")

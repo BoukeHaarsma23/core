@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import override
 
 from airgradient import Config
 from airgradient.models import (
@@ -18,22 +19,24 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import (
-    CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
-    CONCENTRATION_PARTS_PER_MILLION,
-    PERCENTAGE,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     EntityCategory,
+    UnitOfDensity,
+    UnitOfElectricPotential,
+    UnitOfRatio,
     UnitOfTemperature,
     UnitOfTime,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
 from . import AirGradientConfigEntry
-from .const import PM_STANDARD, PM_STANDARD_REVERSE
-from .coordinator import AirGradientConfigCoordinator, AirGradientMeasurementCoordinator
+from .const import PM_STANDARD, PM_STANDARD_REVERSE, supports_config
+from .coordinator import AirGradientCoordinator
 from .entity import AirGradientEntity
+
+PARALLEL_UPDATES = 0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -47,6 +50,7 @@ class AirGradientMeasurementSensorEntityDescription(SensorEntityDescription):
 class AirGradientConfigSensorEntityDescription(SensorEntityDescription):
     """Describes AirGradient config sensor entity."""
 
+    config_key: str
     value_fn: Callable[[Config], StateType]
 
 
@@ -54,21 +58,21 @@ MEASUREMENT_SENSOR_TYPES: tuple[AirGradientMeasurementSensorEntityDescription, .
     AirGradientMeasurementSensorEntityDescription(
         key="pm01",
         device_class=SensorDeviceClass.PM1,
-        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        native_unit_of_measurement=UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda status: status.pm01,
     ),
     AirGradientMeasurementSensorEntityDescription(
         key="pm02",
         device_class=SensorDeviceClass.PM25,
-        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        native_unit_of_measurement=UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda status: status.pm02,
     ),
     AirGradientMeasurementSensorEntityDescription(
         key="pm10",
         device_class=SensorDeviceClass.PM10,
-        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        native_unit_of_measurement=UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda status: status.pm10,
     ),
@@ -82,7 +86,7 @@ MEASUREMENT_SENSOR_TYPES: tuple[AirGradientMeasurementSensorEntityDescription, .
     AirGradientMeasurementSensorEntityDescription(
         key="humidity",
         device_class=SensorDeviceClass.HUMIDITY,
-        native_unit_of_measurement=PERCENTAGE,
+        native_unit_of_measurement=UnitOfRatio.PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda status: status.relative_humidity,
     ),
@@ -110,7 +114,7 @@ MEASUREMENT_SENSOR_TYPES: tuple[AirGradientMeasurementSensorEntityDescription, .
     AirGradientMeasurementSensorEntityDescription(
         key="co2",
         device_class=SensorDeviceClass.CO2,
-        native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
+        native_unit_of_measurement=UnitOfRatio.PARTS_PER_MILLION,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda status: status.rco2,
     ),
@@ -120,6 +124,76 @@ MEASUREMENT_SENSOR_TYPES: tuple[AirGradientMeasurementSensorEntityDescription, .
         native_unit_of_measurement="particles/dL",
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda status: status.pm003_count,
+    ),
+    AirGradientMeasurementSensorEntityDescription(
+        key="pm005_count",
+        translation_key="pm005_count",
+        native_unit_of_measurement="particles/dL",
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+        value_fn=lambda status: status.pm005_count,
+    ),
+    AirGradientMeasurementSensorEntityDescription(
+        key="pm01_count",
+        translation_key="pm01_count",
+        native_unit_of_measurement="particles/dL",
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+        value_fn=lambda status: status.pm01_count,
+    ),
+    AirGradientMeasurementSensorEntityDescription(
+        key="pm02_count",
+        translation_key="pm02_count",
+        native_unit_of_measurement="particles/dL",
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+        value_fn=lambda status: status.pm02_count,
+    ),
+    AirGradientMeasurementSensorEntityDescription(
+        key="pm50_count",
+        translation_key="pm50_count",
+        native_unit_of_measurement="particles/dL",
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+        value_fn=lambda status: status.pm50_count,
+    ),
+    AirGradientMeasurementSensorEntityDescription(
+        key="pm10_count",
+        translation_key="pm10_count",
+        native_unit_of_measurement="particles/dL",
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+        value_fn=lambda status: status.pm10_count,
+    ),
+    AirGradientMeasurementSensorEntityDescription(
+        key="battery_percentage",
+        translation_key="battery_percentage",
+        device_class=SensorDeviceClass.BATTERY,
+        native_unit_of_measurement=UnitOfRatio.PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda status: status.battery_percentage,
+    ),
+    AirGradientMeasurementSensorEntityDescription(
+        key="battery_voltage",
+        translation_key="battery_voltage",
+        device_class=SensorDeviceClass.VOLTAGE,
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        entity_registry_enabled_default=False,
+        value_fn=lambda status: status.battery_voltage,
+    ),
+    AirGradientMeasurementSensorEntityDescription(
+        key="charge_voltage",
+        translation_key="charge_voltage",
+        device_class=SensorDeviceClass.VOLTAGE,
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=2,
+        entity_registry_enabled_default=False,
+        value_fn=lambda status: status.charge_voltage,
     ),
     AirGradientMeasurementSensorEntityDescription(
         key="nox_raw",
@@ -137,6 +211,15 @@ MEASUREMENT_SENSOR_TYPES: tuple[AirGradientMeasurementSensorEntityDescription, .
         entity_registry_enabled_default=False,
         value_fn=lambda status: status.raw_total_volatile_organic_component,
     ),
+    AirGradientMeasurementSensorEntityDescription(
+        key="pm02_raw",
+        translation_key="raw_pm02",
+        device_class=SensorDeviceClass.PM25,
+        native_unit_of_measurement=UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
+        value_fn=lambda status: status.raw_pm02,
+    ),
 )
 
 CONFIG_SENSOR_TYPES: tuple[AirGradientConfigSensorEntityDescription, ...] = (
@@ -146,6 +229,7 @@ CONFIG_SENSOR_TYPES: tuple[AirGradientConfigSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.DAYS,
         entity_category=EntityCategory.DIAGNOSTIC,
+        config_key="co2_automatic_baseline_calibration_days",
         value_fn=lambda config: config.co2_automatic_baseline_calibration_days,
     ),
     AirGradientConfigSensorEntityDescription(
@@ -154,6 +238,7 @@ CONFIG_SENSOR_TYPES: tuple[AirGradientConfigSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.DAYS,
         entity_category=EntityCategory.DIAGNOSTIC,
+        config_key="nox_learning_offset",
         value_fn=lambda config: config.nox_learning_offset,
     ),
     AirGradientConfigSensorEntityDescription(
@@ -162,6 +247,7 @@ CONFIG_SENSOR_TYPES: tuple[AirGradientConfigSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.DAYS,
         entity_category=EntityCategory.DIAGNOSTIC,
+        config_key="tvoc_learning_offset",
         value_fn=lambda config: config.tvoc_learning_offset,
     ),
 )
@@ -173,13 +259,15 @@ CONFIG_LED_BAR_SENSOR_TYPES: tuple[AirGradientConfigSensorEntityDescription, ...
         device_class=SensorDeviceClass.ENUM,
         options=[x.value for x in LedBarMode],
         entity_category=EntityCategory.DIAGNOSTIC,
+        config_key="led_bar_mode",
         value_fn=lambda config: config.led_bar_mode,
     ),
     AirGradientConfigSensorEntityDescription(
         key="led_bar_brightness",
         translation_key="led_bar_brightness",
-        native_unit_of_measurement=PERCENTAGE,
+        native_unit_of_measurement=UnitOfRatio.PERCENTAGE,
         entity_category=EntityCategory.DIAGNOSTIC,
+        config_key="led_bar_brightness",
         value_fn=lambda config: config.led_bar_brightness,
     ),
 )
@@ -191,6 +279,7 @@ CONFIG_DISPLAY_SENSOR_TYPES: tuple[AirGradientConfigSensorEntityDescription, ...
         device_class=SensorDeviceClass.ENUM,
         options=[x.value for x in TemperatureUnit],
         entity_category=EntityCategory.DIAGNOSTIC,
+        config_key="temperature_unit",
         value_fn=lambda config: config.temperature_unit,
     ),
     AirGradientConfigSensorEntityDescription(
@@ -199,13 +288,17 @@ CONFIG_DISPLAY_SENSOR_TYPES: tuple[AirGradientConfigSensorEntityDescription, ...
         device_class=SensorDeviceClass.ENUM,
         options=list(PM_STANDARD_REVERSE),
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda config: PM_STANDARD.get(config.pm_standard),
+        config_key="pm_standard",
+        value_fn=lambda config: (
+            PM_STANDARD.get(config.pm_standard) if config.pm_standard else None
+        ),
     ),
     AirGradientConfigSensorEntityDescription(
         key="display_brightness",
         translation_key="display_brightness",
-        native_unit_of_measurement=PERCENTAGE,
+        native_unit_of_measurement=UnitOfRatio.PERCENTAGE,
         entity_category=EntityCategory.DIAGNOSTIC,
+        config_key="display_brightness",
         value_fn=lambda config: config.display_brightness,
     ),
 )
@@ -214,11 +307,11 @@ CONFIG_DISPLAY_SENSOR_TYPES: tuple[AirGradientConfigSensorEntityDescription, ...
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: AirGradientConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up AirGradient sensor entities based on a config entry."""
 
-    coordinator = entry.runtime_data.measurement
+    coordinator = entry.runtime_data
     listener: Callable[[], None] | None = None
     not_setup: set[AirGradientMeasurementSensorEntityDescription] = set(
         MEASUREMENT_SENSOR_TYPES
@@ -232,7 +325,7 @@ async def async_setup_entry(
         not_setup = set()
         sensors = []
         for description in sensor_descriptions:
-            if description.value_fn(coordinator.data) is None:
+            if description.value_fn(coordinator.data.measures) is None:
                 not_setup.add(description)
             else:
                 sensors.append(AirGradientMeasurementSensor(coordinator, description))
@@ -247,65 +340,67 @@ async def async_setup_entry(
 
     add_entities()
 
+    config = coordinator.data.config
+    model = coordinator.data.measures.model
     entities = [
-        AirGradientConfigSensor(entry.runtime_data.config, description)
-        for description in CONFIG_SENSOR_TYPES
+        AirGradientConfigSensor(coordinator, description)
+        for description in (
+            CONFIG_SENSOR_TYPES
+            + CONFIG_LED_BAR_SENSOR_TYPES
+            + CONFIG_DISPLAY_SENSOR_TYPES
+        )
+        if supports_config(
+            model, coordinator.client.api_version, config, description.config_key
+        )
     ]
-    if "L" in coordinator.data.model:
-        entities.extend(
-            AirGradientConfigSensor(entry.runtime_data.config, description)
-            for description in CONFIG_LED_BAR_SENSOR_TYPES
-        )
-    if "I" in coordinator.data.model:
-        entities.extend(
-            AirGradientConfigSensor(entry.runtime_data.config, description)
-            for description in CONFIG_DISPLAY_SENSOR_TYPES
-        )
     async_add_entities(entities)
 
 
-class AirGradientMeasurementSensor(AirGradientEntity, SensorEntity):
+class AirGradientSensor(AirGradientEntity, SensorEntity):
+    """Defines an AirGradient sensor."""
+
+    def __init__(
+        self,
+        coordinator: AirGradientCoordinator,
+        description: SensorEntityDescription,
+    ) -> None:
+        """Initialize airgradient sensor."""
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._attr_unique_id = f"{coordinator.serial_number}-{description.key}"
+
+
+class AirGradientMeasurementSensor(AirGradientSensor):
     """Defines an AirGradient sensor."""
 
     entity_description: AirGradientMeasurementSensorEntityDescription
-    coordinator: AirGradientMeasurementCoordinator
-
-    def __init__(
-        self,
-        coordinator: AirGradientMeasurementCoordinator,
-        description: AirGradientMeasurementSensorEntityDescription,
-    ) -> None:
-        """Initialize airgradient sensor."""
-        super().__init__(coordinator)
-        self.entity_description = description
-        self._attr_unique_id = f"{coordinator.serial_number}-{description.key}"
 
     @property
+    @override
     def native_value(self) -> StateType:
         """Return the state of the sensor."""
-        return self.entity_description.value_fn(self.coordinator.data)
+        return self.entity_description.value_fn(self.coordinator.data.measures)
 
 
-class AirGradientConfigSensor(AirGradientEntity, SensorEntity):
+class AirGradientConfigSensor(AirGradientSensor):
     """Defines an AirGradient sensor."""
 
     entity_description: AirGradientConfigSensorEntityDescription
-    coordinator: AirGradientConfigCoordinator
 
     def __init__(
         self,
-        coordinator: AirGradientConfigCoordinator,
+        coordinator: AirGradientCoordinator,
         description: AirGradientConfigSensorEntityDescription,
     ) -> None:
         """Initialize airgradient sensor."""
-        super().__init__(coordinator)
-        self.entity_description = description
-        self._attr_unique_id = f"{coordinator.serial_number}-{description.key}"
+        super().__init__(coordinator, description)
         self._attr_entity_registry_enabled_default = (
-            coordinator.data.configuration_control is not ConfigurationControl.LOCAL
+            coordinator.data.config.configuration_control
+            is not ConfigurationControl.LOCAL
         )
 
     @property
+    @override
     def native_value(self) -> StateType:
         """Return the state of the sensor."""
-        return self.entity_description.value_fn(self.coordinator.data)
+        return self.entity_description.value_fn(self.coordinator.data.config)

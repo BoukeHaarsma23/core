@@ -1,22 +1,17 @@
 """Interfaces with Egardia/Woonveilig alarm control panel."""
 
-from __future__ import annotations
-
 import logging
+from typing import override
 
+from pythonegardia.egardiadevice import EgardiaDevice
 import requests
 
 from homeassistant.components.alarm_control_panel import (
     AlarmControlPanelEntity,
     AlarmControlPanelEntityFeature,
+    AlarmControlPanelState,
 )
-from homeassistant.const import (
-    STATE_ALARM_ARMED_AWAY,
-    STATE_ALARM_ARMED_HOME,
-    STATE_ALARM_ARMED_NIGHT,
-    STATE_ALARM_DISARMED,
-    STATE_ALARM_TRIGGERED,
-)
+from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
@@ -33,13 +28,13 @@ from . import (
 _LOGGER = logging.getLogger(__name__)
 
 STATES = {
-    "ARM": STATE_ALARM_ARMED_AWAY,
-    "DAY HOME": STATE_ALARM_ARMED_HOME,
-    "DISARM": STATE_ALARM_DISARMED,
-    "ARMHOME": STATE_ALARM_ARMED_HOME,
-    "HOME": STATE_ALARM_ARMED_HOME,
-    "NIGHT HOME": STATE_ALARM_ARMED_NIGHT,
-    "TRIGGERED": STATE_ALARM_TRIGGERED,
+    "ARM": AlarmControlPanelState.ARMED_AWAY,
+    "DAY HOME": AlarmControlPanelState.ARMED_HOME,
+    "DISARM": AlarmControlPanelState.DISARMED,
+    "ARMHOME": AlarmControlPanelState.ARMED_HOME,
+    "HOME": AlarmControlPanelState.ARMED_HOME,
+    "NIGHT HOME": AlarmControlPanelState.ARMED_NIGHT,
+    "TRIGGERED": AlarmControlPanelState.TRIGGERED,
 }
 
 
@@ -53,10 +48,10 @@ def setup_platform(
     if discovery_info is None:
         return
     device = EgardiaAlarm(
-        discovery_info["name"],
+        discovery_info[CONF_NAME],
         hass.data[EGARDIA_DEVICE],
         discovery_info[CONF_REPORT_SERVER_ENABLED],
-        discovery_info.get(CONF_REPORT_SERVER_CODES),
+        discovery_info[CONF_REPORT_SERVER_CODES],
         discovery_info[CONF_REPORT_SERVER_PORT],
     )
 
@@ -66,7 +61,6 @@ def setup_platform(
 class EgardiaAlarm(AlarmControlPanelEntity):
     """Representation of a Egardia alarm."""
 
-    _attr_state: str | None
     _attr_code_arm_required = False
     _attr_supported_features = (
         AlarmControlPanelEntityFeature.ARM_HOME
@@ -74,8 +68,13 @@ class EgardiaAlarm(AlarmControlPanelEntity):
     )
 
     def __init__(
-        self, name, egardiasystem, rs_enabled=False, rs_codes=None, rs_port=52010
-    ):
+        self,
+        name: str,
+        egardiasystem: EgardiaDevice,
+        rs_enabled: bool,
+        rs_codes: dict[str, list[str]],
+        rs_port: int,
+    ) -> None:
         """Initialize the Egardia alarm."""
         self._attr_name = name
         self._egardiasystem = egardiasystem
@@ -83,6 +82,7 @@ class EgardiaAlarm(AlarmControlPanelEntity):
         self._rs_codes = rs_codes
         self._rs_port = rs_port
 
+    @override
     async def async_added_to_hass(self) -> None:
         """Add Egardiaserver callback if enabled."""
         if self._rs_enabled:
@@ -90,11 +90,10 @@ class EgardiaAlarm(AlarmControlPanelEntity):
             self.hass.data[EGARDIA_SERVER].register_callback(self.handle_status_event)
 
     @property
+    @override
     def should_poll(self) -> bool:
         """Poll if no report server is enabled."""
-        if not self._rs_enabled:
-            return True
-        return False
+        return not self._rs_enabled
 
     def handle_status_event(self, event):
         """Handle the Egardia system status event."""
@@ -123,7 +122,7 @@ class EgardiaAlarm(AlarmControlPanelEntity):
             _LOGGER.debug("Not ignoring status %s", status)
             newstatus = STATES.get(status.upper())
             _LOGGER.debug("newstatus %s", newstatus)
-            self._attr_state = newstatus
+            self._attr_alarm_state = newstatus
         else:
             _LOGGER.error("Ignoring status")
 
@@ -132,30 +131,36 @@ class EgardiaAlarm(AlarmControlPanelEntity):
         status = self._egardiasystem.getstate()
         self.parsestatus(status)
 
+    @override
     def alarm_disarm(self, code: str | None = None) -> None:
         """Send disarm command."""
         try:
             self._egardiasystem.alarm_disarm()
+        # pylint: disable-next=home-assistant-action-swallowed-exception
         except requests.exceptions.RequestException as err:
             _LOGGER.error(
                 "Egardia device exception occurred when sending disarm command: %s",
                 err,
             )
 
+    @override
     def alarm_arm_home(self, code: str | None = None) -> None:
         """Send arm home command."""
         try:
             self._egardiasystem.alarm_arm_home()
+        # pylint: disable-next=home-assistant-action-swallowed-exception
         except requests.exceptions.RequestException as err:
             _LOGGER.error(
                 "Egardia device exception occurred when sending arm home command: %s",
                 err,
             )
 
+    @override
     def alarm_arm_away(self, code: str | None = None) -> None:
         """Send arm away command."""
         try:
             self._egardiasystem.alarm_arm_away()
+        # pylint: disable-next=home-assistant-action-swallowed-exception
         except requests.exceptions.RequestException as err:
             _LOGGER.error(
                 "Egardia device exception occurred when sending arm away command: %s",

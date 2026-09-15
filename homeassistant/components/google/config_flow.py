@@ -1,17 +1,19 @@
 """Config flow for Google integration."""
 
-from __future__ import annotations
-
 import asyncio
 from collections.abc import Mapping
 import logging
-from typing import Any
+from typing import Any, override
 
 from gcal_sync.api import GoogleCalendarService
 from gcal_sync.exceptions import ApiException, ApiForbiddenException
-import voluptuous as vol
+import probatio
 
-from homeassistant.config_entries import ConfigEntry, ConfigFlowResult, OptionsFlow
+from homeassistant.config_entries import (
+    SOURCE_REAUTH,
+    ConfigFlowResult,
+    OptionsFlowWithReload,
+)
 from homeassistant.core import callback
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -24,7 +26,6 @@ from .api import (
     InvalidCredential,
     OAuthError,
     async_create_device_flow,
-    get_feature_access,
 )
 from .const import (
     CONF_CALENDAR_ACCESS,
@@ -34,6 +35,7 @@ from .const import (
     CredentialType,
     FeatureAccess,
 )
+from .store import GoogleConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -74,38 +76,38 @@ class OAuth2FlowHandler(
     def __init__(self) -> None:
         """Set up instance."""
         super().__init__()
-        self._reauth_config_entry: ConfigEntry | None = None
         self._device_flow: DeviceFlow | None = None
         # First attempt is device auth, then fallback to web auth
         self._web_auth = False
 
     @property
+    @override
     def logger(self) -> logging.Logger:
         """Return logger."""
         return logging.getLogger(__name__)
 
     @property
+    def _calendar_access(self) -> FeatureAccess:
+        """Return the access the entry being authorized asks for."""
+        if self.source == SOURCE_REAUTH and (
+            reauth_options := self._get_reauth_entry().options
+        ):
+            return FeatureAccess[reauth_options[CONF_CALENDAR_ACCESS]]
+
+        return DEFAULT_FEATURE_ACCESS
+
+    @property
+    @override
     def extra_authorize_data(self) -> dict[str, Any]:
         """Extra data that needs to be appended to the authorize url."""
         return {
-            "scope": DEFAULT_FEATURE_ACCESS.scope,
+            "scope": self._calendar_access.scope,
             # Add params to ensure we get back a refresh token
             "access_type": "offline",
             "prompt": "consent",
         }
 
-    async def async_step_import(self, info: dict[str, Any]) -> ConfigFlowResult:
-        """Import existing auth into a new config entry."""
-        if self._async_current_entries():
-            return self.async_abort(reason="single_instance_allowed")
-        implementations = await config_entry_oauth2_flow.async_get_implementations(
-            self.hass, self.DOMAIN
-        )
-        assert len(implementations) == 1
-        self.flow_impl = list(implementations.values())[0]
-        self.external_data = info
-        return await super().async_step_creation(info)
-
+    @override
     async def async_step_auth(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -129,17 +131,12 @@ class OAuth2FlowHandler(
                     self.flow_impl,
                 )
                 return self.async_abort(reason="oauth_error")
-            calendar_access = get_feature_access(self.hass)
-            if self._reauth_config_entry and self._reauth_config_entry.options:
-                calendar_access = FeatureAccess[
-                    self._reauth_config_entry.options[CONF_CALENDAR_ACCESS]
-                ]
             try:
                 device_flow = await async_create_device_flow(
                     self.hass,
                     self.flow_impl.client_id,
                     self.flow_impl.client_secret,
-                    calendar_access,
+                    self._calendar_access,
                 )
             except TimeoutError as err:
                 _LOGGER.error("Timeout initializing device flow: %s", str(err))
@@ -177,6 +174,7 @@ class OAuth2FlowHandler(
             progress_task=self._exchange_finished_task,
         )
 
+    @override
     async def async_step_creation(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -185,19 +183,16 @@ class OAuth2FlowHandler(
             return self.async_abort(reason="code_expired")
         return await super().async_step_creation(user_input)
 
+    @override
     async def async_oauth_create_entry(self, data: dict) -> ConfigFlowResult:
         """Create an entry for the flow, or update existing entry."""
         data[CONF_CREDENTIAL_TYPE] = (
             CredentialType.WEB_AUTH if self._web_auth else CredentialType.DEVICE_AUTH
         )
-        if self._reauth_config_entry:
-            self.hass.config_entries.async_update_entry(
-                self._reauth_config_entry, data=data
+        if self.source == SOURCE_REAUTH:
+            return self.async_update_reload_and_abort(
+                self._get_reauth_entry(), data=data
             )
-            await self.hass.config_entries.async_reload(
-                self._reauth_config_entry.entry_id
-            )
-            return self.async_abort(reason="reauth_successful")
         calendar_service = GoogleCalendarService(
             AccessTokenAuthImpl(
                 async_get_clientsession(self.hass), data["token"]["access_token"]
@@ -207,10 +202,16 @@ class OAuth2FlowHandler(
             primary_calendar = await calendar_service.async_get_calendar("primary")
         except ApiForbiddenException as err:
             _LOGGER.error(
-                "Error reading primary calendar, make sure Google Calendar API is enabled: %s",
+                "Error reading primary calendar, make sure"
+                " Google Calendar API is enabled: %s",
                 err,
             )
-            return self.async_abort(reason="api_disabled")
+            return self.async_abort(
+                reason="calendar_api_disabled",
+                description_placeholders={
+                    "calendar_api_url": "https://console.cloud.google.com/apis/library/calendar-json.googleapis.com"
+                },
+            )
         except ApiException as err:
             _LOGGER.error("Error reading primary calendar: %s", err)
             return self.async_abort(reason="cannot_connect")
@@ -226,7 +227,7 @@ class OAuth2FlowHandler(
             title=primary_calendar.id,
             data=data,
             options={
-                CONF_CALENDAR_ACCESS: get_feature_access(self.hass).name,
+                CONF_CALENDAR_ACCESS: DEFAULT_FEATURE_ACCESS.name,
             },
         )
 
@@ -234,9 +235,6 @@ class OAuth2FlowHandler(
         self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
         """Perform reauth upon an API authentication error."""
-        self._reauth_config_entry = self.hass.config_entries.async_get_entry(
-            self.context["entry_id"]
-        )
         self._web_auth = entry_data.get(CONF_CREDENTIAL_TYPE) == CredentialType.WEB_AUTH
         return await self.async_step_reauth_confirm()
 
@@ -250,19 +248,16 @@ class OAuth2FlowHandler(
 
     @staticmethod
     @callback
+    @override
     def async_get_options_flow(
-        config_entry: ConfigEntry,
-    ) -> OptionsFlow:
+        config_entry: GoogleConfigEntry,
+    ) -> OptionsFlowHandler:
         """Create an options flow."""
-        return OptionsFlowHandler(config_entry)
+        return OptionsFlowHandler()
 
 
-class OptionsFlowHandler(OptionsFlow):
+class OptionsFlowHandler(OptionsFlowWithReload):
     """Google Calendar options flow."""
-
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -273,12 +268,12 @@ class OptionsFlowHandler(OptionsFlow):
 
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(
+                    probatio.Required(
                         CONF_CALENDAR_ACCESS,
                         default=self.config_entry.options.get(CONF_CALENDAR_ACCESS),
-                    ): vol.In(
+                    ): probatio.In(
                         {
                             "read_write": "Read/Write access (can create events)",
                             "read_only": "Read-only access",

@@ -1,21 +1,24 @@
 """Test ZHA lock."""
 
+from collections.abc import Callable, Coroutine
 from unittest.mock import patch
 
 import pytest
+from zigpy.device import Device
 from zigpy.profiles import zha
 from zigpy.zcl import Cluster
 from zigpy.zcl.clusters import closures, general
 import zigpy.zcl.foundation as zcl_f
 
-from homeassistant.components.lock import DOMAIN as LOCK_DOMAIN
+from homeassistant.components.lock import DOMAIN as LOCK_DOMAIN, LockState
+from homeassistant.components.zha import DOMAIN
 from homeassistant.components.zha.helpers import (
     ZHADeviceProxy,
     ZHAGatewayProxy,
     get_zha_gateway,
     get_zha_gateway_proxy,
 )
-from homeassistant.const import STATE_LOCKED, STATE_UNLOCKED, Platform
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
 from .common import find_entity_id, send_attributes_report
@@ -36,7 +39,11 @@ def lock_platform_only():
         yield
 
 
-async def test_lock(hass: HomeAssistant, setup_zha, zigpy_device_mock) -> None:
+async def test_lock(
+    hass: HomeAssistant,
+    setup_zha: Callable[..., Coroutine[None]],
+    zigpy_device_mock: Callable[..., Device],
+) -> None:
     """Test ZHA lock platform."""
 
     await setup_zha()
@@ -65,7 +72,7 @@ async def test_lock(hass: HomeAssistant, setup_zha, zigpy_device_mock) -> None:
     cluster = zigpy_device.endpoints[1].door_lock
     assert entity_id is not None
 
-    assert hass.states.get(entity_id).state == STATE_UNLOCKED
+    assert hass.states.get(entity_id).state == LockState.UNLOCKED
 
     # set state to locked
     await send_attributes_report(
@@ -73,7 +80,7 @@ async def test_lock(hass: HomeAssistant, setup_zha, zigpy_device_mock) -> None:
         cluster,
         {closures.DoorLock.AttributeDefs.lock_state.id: closures.LockState.Locked},
     )
-    assert hass.states.get(entity_id).state == STATE_LOCKED
+    assert hass.states.get(entity_id).state == LockState.LOCKED
 
     # set state to unlocked
     await send_attributes_report(
@@ -81,7 +88,7 @@ async def test_lock(hass: HomeAssistant, setup_zha, zigpy_device_mock) -> None:
         cluster,
         {closures.DoorLock.AttributeDefs.lock_state.id: closures.LockState.Unlocked},
     )
-    assert hass.states.get(entity_id).state == STATE_UNLOCKED
+    assert hass.states.get(entity_id).state == LockState.UNLOCKED
 
     # lock from HA
     await async_lock(hass, cluster, entity_id)
@@ -137,7 +144,7 @@ async def async_set_user_code(hass: HomeAssistant, cluster: Cluster, entity_id: 
     with patch("zigpy.zcl.Cluster.request", return_value=[zcl_f.Status.SUCCESS]):
         # set lock code via service call
         await hass.services.async_call(
-            "zha",
+            DOMAIN,
             "set_lock_user_code",
             {"entity_id": entity_id, "code_slot": 3, "user_code": "13246579"},
             blocking=True,
@@ -161,7 +168,7 @@ async def async_clear_user_code(hass: HomeAssistant, cluster: Cluster, entity_id
     with patch("zigpy.zcl.Cluster.request", return_value=[zcl_f.Status.SUCCESS]):
         # set lock code via service call
         await hass.services.async_call(
-            "zha",
+            DOMAIN,
             "clear_lock_user_code",
             {
                 "entity_id": entity_id,
@@ -183,7 +190,7 @@ async def async_enable_user_code(hass: HomeAssistant, cluster: Cluster, entity_i
     with patch("zigpy.zcl.Cluster.request", return_value=[zcl_f.Status.SUCCESS]):
         # set lock code via service call
         await hass.services.async_call(
-            "zha",
+            DOMAIN,
             "enable_lock_user_code",
             {
                 "entity_id": entity_id,
@@ -208,7 +215,7 @@ async def async_disable_user_code(
     with patch("zigpy.zcl.Cluster.request", return_value=[zcl_f.Status.SUCCESS]):
         # set lock code via service call
         await hass.services.async_call(
-            "zha",
+            DOMAIN,
             "disable_lock_user_code",
             {
                 "entity_id": entity_id,

@@ -8,9 +8,10 @@ import pytest
 
 from homeassistant import config_entries
 from homeassistant.components import mailgun, webhook
-from homeassistant.config import async_process_ha_core_config
+from homeassistant.components.mailgun import DOMAIN
 from homeassistant.const import CONF_API_KEY, CONF_DOMAIN
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.core_config import async_process_ha_core_config
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.setup import async_setup_component
 
@@ -29,7 +30,7 @@ async def http_client(
 
 
 @pytest.fixture
-async def webhook_id_with_api_key(hass):
+async def webhook_id_with_api_key(hass: HomeAssistant) -> str:
     """Initialize the Mailgun component and get the webhook_id."""
     await async_setup_component(
         hass,
@@ -42,7 +43,7 @@ async def webhook_id_with_api_key(hass):
         {"internal_url": "http://example.local:8123"},
     )
     result = await hass.config_entries.flow.async_init(
-        "mailgun", context={"source": config_entries.SOURCE_USER}
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
     assert result["type"] is FlowResultType.FORM, result
 
@@ -53,7 +54,7 @@ async def webhook_id_with_api_key(hass):
 
 
 @pytest.fixture
-async def webhook_id_without_api_key(hass):
+async def webhook_id_without_api_key(hass: HomeAssistant) -> str:
     """Initialize the Mailgun component and get the webhook_id w/o API key."""
     await async_setup_component(hass, mailgun.DOMAIN, {})
 
@@ -62,7 +63,7 @@ async def webhook_id_without_api_key(hass):
         {"internal_url": "http://example.local:8123"},
     )
     result = await hass.config_entries.flow.async_init(
-        "mailgun", context={"source": config_entries.SOURCE_USER}
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
     assert result["type"] is FlowResultType.FORM, result
 
@@ -73,7 +74,7 @@ async def webhook_id_without_api_key(hass):
 
 
 @pytest.fixture
-async def mailgun_events(hass):
+async def mailgun_events(hass: HomeAssistant) -> list[Event]:
     """Return a list of mailgun_events triggered."""
     events = []
 

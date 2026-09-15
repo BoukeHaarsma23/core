@@ -1,12 +1,17 @@
 """Support for powerwall sensors."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Generic, TypeVar
+from operator import attrgetter, methodcaller
+from typing import TYPE_CHECKING, override
 
-from tesla_powerwall import GridState, MeterResponse, MeterType
+from tesla_powerwall import (
+    BatteryResponse,
+    GridState,
+    MeterResponse,
+    MeterType,
+    OperationMode,
+)
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -25,23 +30,21 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import Entity
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import POWERWALL_COORDINATOR
+from .coordinator import PowerwallConfigEntry, PowerwallData, PowerwallRuntimeData
 from .entity import BatteryEntity, PowerWallEntity
-from .models import BatteryResponse, PowerwallConfigEntry, PowerwallRuntimeData
 
 _METER_DIRECTION_EXPORT = "export"
 _METER_DIRECTION_IMPORT = "import"
 
-_ValueParamT = TypeVar("_ValueParamT")
-_ValueT = TypeVar("_ValueT", bound=float | int | str | None)
+type _ValueType = float | int | str | None
 
 
 @dataclass(frozen=True, kw_only=True)
-class PowerwallSensorEntityDescription(
-    SensorEntityDescription,
-    Generic[_ValueParamT, _ValueT],
+class PowerwallSensorEntityDescription[_ValueParamT, _ValueT: _ValueType](
+    SensorEntityDescription
 ):
     """Describes Powerwall entity."""
 
@@ -56,11 +59,6 @@ def _get_meter_power(meter: MeterResponse) -> float:
 def _get_meter_frequency(meter: MeterResponse) -> float:
     """Get the current value in Hz."""
     return round(meter.frequency, 1)
-
-
-def _get_meter_total_current(meter: MeterResponse) -> float:
-    """Get the current value in A."""
-    return meter.get_instant_total_current()
 
 
 def _get_meter_average_voltage(meter: MeterResponse) -> float:
@@ -93,7 +91,7 @@ POWERWALL_INSTANT_SENSORS = (
         device_class=SensorDeviceClass.CURRENT,
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
         entity_registry_enabled_default=False,
-        value_fn=_get_meter_total_current,
+        value_fn=methodcaller("get_instant_total_current"),
     ),
     PowerwallSensorEntityDescription[MeterResponse, float](
         key="instant_voltage",
@@ -132,7 +130,7 @@ BATTERY_INSTANT_SENSORS: list[PowerwallSensorEntityDescription] = [
         native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
         suggested_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=1,
-        value_fn=lambda battery_data: battery_data.capacity,
+        value_fn=attrgetter("capacity"),
     ),
     PowerwallSensorEntityDescription[BatteryResponse, float | None](
         key="battery_instant_voltage",
@@ -170,7 +168,7 @@ BATTERY_INSTANT_SENSORS: list[PowerwallSensorEntityDescription] = [
         state_class=SensorStateClass.MEASUREMENT,
         device_class=SensorDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.WATT,
-        value_fn=lambda battery_data: battery_data.p_out,
+        value_fn=attrgetter("p_out"),
     ),
     PowerwallSensorEntityDescription[BatteryResponse, float | None](
         key="battery_export",
@@ -181,7 +179,7 @@ BATTERY_INSTANT_SENSORS: list[PowerwallSensorEntityDescription] = [
         native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
         suggested_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=0,
-        value_fn=lambda battery_data: battery_data.energy_discharged,
+        value_fn=attrgetter("energy_discharged"),
     ),
     PowerwallSensorEntityDescription[BatteryResponse, float | None](
         key="battery_import",
@@ -192,7 +190,7 @@ BATTERY_INSTANT_SENSORS: list[PowerwallSensorEntityDescription] = [
         native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
         suggested_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=0,
-        value_fn=lambda battery_data: battery_data.energy_charged,
+        value_fn=attrgetter("energy_charged"),
     ),
     PowerwallSensorEntityDescription[BatteryResponse, int](
         key="battery_remaining",
@@ -203,7 +201,7 @@ BATTERY_INSTANT_SENSORS: list[PowerwallSensorEntityDescription] = [
         native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
         suggested_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=1,
-        value_fn=lambda battery_data: battery_data.energy_remaining,
+        value_fn=attrgetter("energy_remaining"),
     ),
     PowerwallSensorEntityDescription[BatteryResponse, str](
         key="grid_state",
@@ -216,13 +214,34 @@ BATTERY_INSTANT_SENSORS: list[PowerwallSensorEntityDescription] = [
 ]
 
 
+POWERWALL_MAX_POWER_SENSORS = (
+    PowerwallSensorEntityDescription[PowerwallData, int | None](
+        key="max_charge_power",
+        translation_key="max_charge_power",
+        state_class=SensorStateClass.MEASUREMENT,
+        device_class=SensorDeviceClass.POWER,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        value_fn=attrgetter("max_charge_power"),
+    ),
+    PowerwallSensorEntityDescription[PowerwallData, int | None](
+        key="max_discharge_power",
+        translation_key="max_discharge_power",
+        state_class=SensorStateClass.MEASUREMENT,
+        device_class=SensorDeviceClass.POWER,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        value_fn=attrgetter("max_discharge_power"),
+    ),
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: PowerwallConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the powerwall sensors."""
     powerwall_data = entry.runtime_data
+    base_info = powerwall_data["base_info"]
     coordinator = powerwall_data[POWERWALL_COORDINATOR]
     assert coordinator is not None
     data = coordinator.data
@@ -230,8 +249,17 @@ async def async_setup_entry(
         PowerWallChargeSensor(powerwall_data),
     ]
 
-    if data.backup_reserve is not None:
+    if not base_info.restricted and data.backup_reserve is not None:
         entities.append(PowerWallBackupReserveSensor(powerwall_data))
+
+    entities.extend(
+        PowerWallMaxPowerSensor(powerwall_data, description)
+        for description in POWERWALL_MAX_POWER_SENSORS
+        if description.value_fn(data) is not None
+    )
+
+    if data.operation_mode is not None:
+        entities.append(PowerWallOperationModeSensor(powerwall_data))
 
     for meter in data.meters.meters:
         entities.append(PowerWallExportSensor(powerwall_data, meter))
@@ -241,11 +269,12 @@ async def async_setup_entry(
             for description in POWERWALL_INSTANT_SENSORS
         )
 
-    for battery in data.batteries.values():
-        entities.extend(
-            PowerWallBatterySensor(powerwall_data, battery, description)
-            for description in BATTERY_INSTANT_SENSORS
-        )
+    if not base_info.restricted:
+        for battery in data.batteries.values():
+            entities.extend(
+                PowerWallBatterySensor(powerwall_data, battery, description)
+                for description in BATTERY_INSTANT_SENSORS
+            )
 
     async_add_entities(entities)
 
@@ -257,16 +286,19 @@ class PowerWallChargeSensor(PowerWallEntity, SensorEntity):
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_suggested_display_precision = 0
 
     @property
+    @override
     def unique_id(self) -> str:
-        """Device Uniqueid."""
+        """Device Unique ID."""
         return f"{self.base_unique_id}_charge"
 
     @property
-    def native_value(self) -> int:
+    @override
+    def native_value(self) -> float:
         """Get the current value in percentage."""
-        return round(self.data.charge)
+        return self.data.charge
 
 
 class PowerWallEnergySensor(PowerWallEntity, SensorEntity):
@@ -288,6 +320,7 @@ class PowerWallEnergySensor(PowerWallEntity, SensorEntity):
         self._attr_unique_id = f"{self.base_unique_id}_{meter.value}_{description.key}"
 
     @property
+    @override
     def native_value(self) -> float | None:
         """Get the current value."""
         meter = self.data.meters.get_meter(self._meter)
@@ -303,14 +336,15 @@ class PowerWallBackupReserveSensor(PowerWallEntity, SensorEntity):
     _attr_translation_key = "backup_reserve"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = PERCENTAGE
-    _attr_device_class = SensorDeviceClass.BATTERY
 
     @property
+    @override
     def unique_id(self) -> str:
-        """Device Uniqueid."""
+        """Device Unique ID."""
         return f"{self.base_unique_id}_backup_reserve"
 
     @property
+    @override
     def native_value(self) -> int | None:
         """Get the current value in percentage."""
         if self.data.backup_reserve is None:
@@ -318,10 +352,54 @@ class PowerWallBackupReserveSensor(PowerWallEntity, SensorEntity):
         return round(self.data.backup_reserve)
 
 
+class PowerWallMaxPowerSensor(PowerWallEntity, SensorEntity):
+    """Representation of a Powerwall instantaneous max power sensor."""
+
+    entity_description: PowerwallSensorEntityDescription[PowerwallData, int | None]
+
+    def __init__(
+        self,
+        powerwall_data: PowerwallRuntimeData,
+        description: PowerwallSensorEntityDescription[PowerwallData, int | None],
+    ) -> None:
+        """Initialize the sensor."""
+        self.entity_description = description
+        super().__init__(powerwall_data)
+        self._attr_unique_id = f"{self.base_unique_id}_{description.key}"
+
+    @property
+    @override
+    def native_value(self) -> int | None:
+        """Get the current value in watts."""
+        return self.entity_description.value_fn(self.data)
+
+
+class PowerWallOperationModeSensor(PowerWallEntity, SensorEntity):
+    """Representation of the Powerwall operation mode."""
+
+    _attr_translation_key = "operation_mode"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = [mode.value for mode in OperationMode]
+
+    @property
+    @override
+    def unique_id(self) -> str:
+        """Device Unique ID."""
+        return f"{self.base_unique_id}_operation_mode"
+
+    @property
+    @override
+    def native_value(self) -> str | None:
+        """Get the current operation mode."""
+        if self.data.operation_mode is None:
+            return None
+        return self.data.operation_mode.value
+
+
 class PowerWallEnergyDirectionSensor(PowerWallEntity, SensorEntity):
     """Representation of an Powerwall Direction Energy sensor."""
 
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_device_class = SensorDeviceClass.ENERGY
 
@@ -338,6 +416,7 @@ class PowerWallEnergyDirectionSensor(PowerWallEntity, SensorEntity):
         self._attr_unique_id = f"{self.base_unique_id}_{meter.value}_{meter_direction}"
 
     @property
+    @override
     def available(self) -> bool:
         """Check if the reading is actually available.
 
@@ -365,6 +444,7 @@ class PowerWallExportSensor(PowerWallEnergyDirectionSensor):
         super().__init__(powerwall_data, meter, _METER_DIRECTION_EXPORT)
 
     @property
+    @override
     def native_value(self) -> float | None:
         """Get the current value in kWh."""
         meter = self.meter
@@ -385,6 +465,7 @@ class PowerWallImportSensor(PowerWallEnergyDirectionSensor):
         super().__init__(powerwall_data, meter, _METER_DIRECTION_IMPORT)
 
     @property
+    @override
     def native_value(self) -> float | None:
         """Get the current value in kWh."""
         meter = self.meter
@@ -393,7 +474,7 @@ class PowerWallImportSensor(PowerWallEnergyDirectionSensor):
         return meter.get_energy_imported()
 
 
-class PowerWallBatterySensor(BatteryEntity, SensorEntity, Generic[_ValueT]):
+class PowerWallBatterySensor[_ValueT: _ValueType](BatteryEntity, SensorEntity):
     """Representation of an Powerwall Battery sensor."""
 
     entity_description: PowerwallSensorEntityDescription[BatteryResponse, _ValueT]
@@ -411,6 +492,7 @@ class PowerWallBatterySensor(BatteryEntity, SensorEntity, Generic[_ValueT]):
         self._attr_unique_id = f"{self.base_unique_id}_{description.key}"
 
     @property
+    @override
     def native_value(self) -> float | int | str | None:
         """Get the current value."""
         return self.entity_description.value_fn(self.battery_data)

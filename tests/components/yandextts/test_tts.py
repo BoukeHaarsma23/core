@@ -9,7 +9,7 @@ import pytest
 from homeassistant.components import tts
 from homeassistant.components.media_player import (
     ATTR_MEDIA_CONTENT_ID,
-    DOMAIN as DOMAIN_MP,
+    DOMAIN as MP_DOMAIN,
     SERVICE_PLAY_MEDIA,
 )
 from homeassistant.core import HomeAssistant
@@ -29,9 +29,8 @@ def tts_mutagen_mock_fixture_autouse(tts_mutagen_mock: MagicMock) -> None:
 
 
 @pytest.fixture(autouse=True)
-def mock_tts_cache_dir_autouse(mock_tts_cache_dir: Path) -> Path:
+def mock_tts_cache_dir_autouse(mock_tts_cache_dir: Path) -> None:
     """Mock the TTS cache dir with empty dir."""
-    return mock_tts_cache_dir
 
 
 async def test_setup_component(hass: HomeAssistant) -> None:
@@ -58,7 +57,7 @@ async def test_service_say(
     hass_client: ClientSessionGenerator,
 ) -> None:
     """Test service call say."""
-    calls = async_mock_service(hass, DOMAIN_MP, SERVICE_PLAY_MEDIA)
+    calls = async_mock_service(hass, MP_DOMAIN, SERVICE_PLAY_MEDIA)
 
     url_param = {
         "text": "HomeAssistant",
@@ -98,7 +97,7 @@ async def test_service_say_russian_config(
     hass_client: ClientSessionGenerator,
 ) -> None:
     """Test service call say."""
-    calls = async_mock_service(hass, DOMAIN_MP, SERVICE_PLAY_MEDIA)
+    calls = async_mock_service(hass, MP_DOMAIN, SERVICE_PLAY_MEDIA)
 
     url_param = {
         "text": "HomeAssistant",
@@ -145,7 +144,7 @@ async def test_service_say_russian_service(
     hass_client: ClientSessionGenerator,
 ) -> None:
     """Test service call say."""
-    calls = async_mock_service(hass, DOMAIN_MP, SERVICE_PLAY_MEDIA)
+    calls = async_mock_service(hass, MP_DOMAIN, SERVICE_PLAY_MEDIA)
 
     url_param = {
         "text": "HomeAssistant",
@@ -189,7 +188,7 @@ async def test_service_say_timeout(
     hass_client: ClientSessionGenerator,
 ) -> None:
     """Test service call say."""
-    calls = async_mock_service(hass, DOMAIN_MP, SERVICE_PLAY_MEDIA)
+    calls = async_mock_service(hass, MP_DOMAIN, SERVICE_PLAY_MEDIA)
 
     url_param = {
         "text": "HomeAssistant",
@@ -224,7 +223,7 @@ async def test_service_say_timeout(
     assert len(calls) == 1
     assert (
         await retrieve_media(hass, hass_client, calls[0].data[ATTR_MEDIA_CONTENT_ID])
-        == HTTPStatus.NOT_FOUND
+        == HTTPStatus.INTERNAL_SERVER_ERROR
     )
 
     assert len(aioclient_mock.mock_calls) == 1
@@ -236,7 +235,7 @@ async def test_service_say_http_error(
     hass_client: ClientSessionGenerator,
 ) -> None:
     """Test service call say."""
-    calls = async_mock_service(hass, DOMAIN_MP, SERVICE_PLAY_MEDIA)
+    calls = async_mock_service(hass, MP_DOMAIN, SERVICE_PLAY_MEDIA)
 
     url_param = {
         "text": "HomeAssistant",
@@ -270,7 +269,7 @@ async def test_service_say_http_error(
     assert len(calls) == 1
     assert (
         await retrieve_media(hass, hass_client, calls[0].data[ATTR_MEDIA_CONTENT_ID])
-        == HTTPStatus.NOT_FOUND
+        == HTTPStatus.INTERNAL_SERVER_ERROR
     )
 
 
@@ -280,7 +279,7 @@ async def test_service_say_specified_speaker(
     hass_client: ClientSessionGenerator,
 ) -> None:
     """Test service call say."""
-    calls = async_mock_service(hass, DOMAIN_MP, SERVICE_PLAY_MEDIA)
+    calls = async_mock_service(hass, MP_DOMAIN, SERVICE_PLAY_MEDIA)
 
     url_param = {
         "text": "HomeAssistant",
@@ -326,7 +325,7 @@ async def test_service_say_specified_emotion(
     hass_client: ClientSessionGenerator,
 ) -> None:
     """Test service call say."""
-    calls = async_mock_service(hass, DOMAIN_MP, SERVICE_PLAY_MEDIA)
+    calls = async_mock_service(hass, MP_DOMAIN, SERVICE_PLAY_MEDIA)
 
     url_param = {
         "text": "HomeAssistant",
@@ -372,7 +371,7 @@ async def test_service_say_specified_low_speed(
     hass_client: ClientSessionGenerator,
 ) -> None:
     """Test service call say."""
-    calls = async_mock_service(hass, DOMAIN_MP, SERVICE_PLAY_MEDIA)
+    calls = async_mock_service(hass, MP_DOMAIN, SERVICE_PLAY_MEDIA)
 
     url_param = {
         "text": "HomeAssistant",
@@ -414,7 +413,7 @@ async def test_service_say_specified_speed(
     hass_client: ClientSessionGenerator,
 ) -> None:
     """Test service call say."""
-    calls = async_mock_service(hass, DOMAIN_MP, SERVICE_PLAY_MEDIA)
+    calls = async_mock_service(hass, MP_DOMAIN, SERVICE_PLAY_MEDIA)
 
     url_param = {
         "text": "HomeAssistant",
@@ -454,7 +453,7 @@ async def test_service_say_specified_options(
     hass_client: ClientSessionGenerator,
 ) -> None:
     """Test service call say with options."""
-    calls = async_mock_service(hass, DOMAIN_MP, SERVICE_PLAY_MEDIA)
+    calls = async_mock_service(hass, MP_DOMAIN, SERVICE_PLAY_MEDIA)
 
     url_param = {
         "text": "HomeAssistant",

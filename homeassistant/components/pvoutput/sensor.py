@@ -1,9 +1,8 @@
 """Support for getting collected information from PVOutput."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import override
 
 from pvo import Status, System
 
@@ -13,7 +12,6 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     UnitOfElectricPotential,
     UnitOfEnergy,
@@ -22,11 +20,13 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_SYSTEM_ID, DOMAIN
-from .coordinator import PVOutputDataUpdateCoordinator
+from .coordinator import PvOutputConfigEntry, PVOutputDataUpdateCoordinator
+
+PARALLEL_UPDATES = 0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -97,11 +97,11 @@ SENSORS: tuple[PVOutputSensorEntityDescription, ...] = (
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: PvOutputConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up a PVOutput sensors based on a config entry."""
-    coordinator: PVOutputDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data
     system = await coordinator.pvoutput.system()
 
     async_add_entities(
@@ -144,6 +144,7 @@ class PVOutputSensorEntity(
         )
 
     @property
+    @override
     def native_value(self) -> int | float | None:
         """Return the state of the device."""
         return self.entity_description.value_fn(self.coordinator.data)

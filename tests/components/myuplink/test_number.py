@@ -4,19 +4,21 @@ from unittest.mock import MagicMock
 
 from aiohttp import ClientError
 import pytest
+from syrupy.assertion import SnapshotAssertion
 
-from homeassistant.components.number import SERVICE_SET_VALUE
+from homeassistant.components.number import DOMAIN as NUMBER_DOMAIN, SERVICE_SET_VALUE
 from homeassistant.const import ATTR_ENTITY_ID, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 
-TEST_PLATFORM = Platform.NUMBER
-pytestmark = pytest.mark.parametrize("platforms", [(TEST_PLATFORM,)])
+from tests.common import MockConfigEntry, snapshot_platform
 
-ENTITY_ID = "number.gotham_city_degree_minutes"
-ENTITY_FRIENDLY_NAME = "Gotham City Degree minutes"
-ENTITY_UID = "robin-r-1234-20240201-123456-aa-bb-cc-dd-ee-ff-40940"
+pytestmark = pytest.mark.parametrize("platforms", [(Platform.NUMBER,)])
+
+ENTITY_ID = "number.gotham_city_heating_offset_climate_system_1"
+ENTITY_FRIENDLY_NAME = "Gotham City Heating offset climate system 1"
+ENTITY_UID = "robin-r-1234-20240201-123456-aa-bb-cc-dd-ee-ff-47011"
 
 
 async def test_entity_registry(
@@ -31,25 +33,6 @@ async def test_entity_registry(
     assert entry.unique_id == ENTITY_UID
 
 
-async def test_attributes(
-    hass: HomeAssistant,
-    mock_myuplink_client: MagicMock,
-    setup_platform: None,
-) -> None:
-    """Test the switch attributes are correct."""
-
-    state = hass.states.get(ENTITY_ID)
-    assert state.state == "-875.0"
-    assert state.attributes == {
-        "friendly_name": ENTITY_FRIENDLY_NAME,
-        "min": -3000,
-        "max": 3000,
-        "mode": "auto",
-        "step": 1.0,
-        "unit_of_measurement": "DM",
-    }
-
-
 async def test_set_value(
     hass: HomeAssistant,
     mock_myuplink_client: MagicMock,
@@ -58,9 +41,9 @@ async def test_set_value(
     """Test the value of the number entity can be set."""
 
     await hass.services.async_call(
-        TEST_PLATFORM,
+        NUMBER_DOMAIN,
         SERVICE_SET_VALUE,
-        {ATTR_ENTITY_ID: ENTITY_ID, "value": -125},
+        {ATTR_ENTITY_ID: ENTITY_ID, "value": 1},
         blocking=True,
     )
     await hass.async_block_till_done()
@@ -77,9 +60,9 @@ async def test_api_failure(
     mock_myuplink_client.async_set_device_points.side_effect = ClientError
     with pytest.raises(HomeAssistantError):
         await hass.services.async_call(
-            TEST_PLATFORM,
+            NUMBER_DOMAIN,
             SERVICE_SET_VALUE,
-            {ATTR_ENTITY_ID: ENTITY_ID, "value": -125},
+            {ATTR_ENTITY_ID: ENTITY_ID, "value": 1},
             blocking=True,
         )
     mock_myuplink_client.async_set_device_points.assert_called_once()
@@ -99,3 +82,16 @@ async def test_entity_registry_smo20(
 
     entry = entity_registry.async_get("number.gotham_city_change_in_curve")
     assert entry.unique_id == "robin-r-1234-20240201-123456-aa-bb-cc-dd-ee-ff-47028"
+
+
+async def test_number_states(
+    hass: HomeAssistant,
+    mock_myuplink_client: MagicMock,
+    mock_config_entry: MockConfigEntry,
+    snapshot: SnapshotAssertion,
+    entity_registry: er.EntityRegistry,
+    setup_platform: None,
+) -> None:
+    """Test number entity state."""
+
+    await snapshot_platform(hass, entity_registry, snapshot, mock_config_entry.entry_id)

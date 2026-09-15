@@ -5,8 +5,8 @@ from unittest.mock import patch
 import pytest
 
 from homeassistant.components.cast import DOMAIN, home_assistant_cast
-from homeassistant.config import async_process_ha_core_config
 from homeassistant.core import HomeAssistant
+from homeassistant.core_config import async_process_ha_core_config
 from homeassistant.exceptions import HomeAssistantError
 
 from tests.common import MockConfigEntry, async_mock_signal
@@ -23,7 +23,7 @@ async def test_service_show_view(hass: HomeAssistant) -> None:
     # No valid URL
     with pytest.raises(HomeAssistantError):
         await hass.services.async_call(
-            "cast",
+            DOMAIN,
             "show_lovelace_view",
             {"entity_id": "media_player.kitchen", "view_path": "mock_path"},
             blocking=True,
@@ -35,7 +35,7 @@ async def test_service_show_view(hass: HomeAssistant) -> None:
         {"external_url": "https://example.com"},
     )
     await hass.services.async_call(
-        "cast",
+        DOMAIN,
         "show_lovelace_view",
         {"entity_id": "media_player.kitchen", "view_path": "mock_path"},
         blocking=True,
@@ -65,7 +65,7 @@ async def test_service_show_view_dashboard(hass: HomeAssistant) -> None:
     calls = async_mock_signal(hass, home_assistant_cast.SIGNAL_HASS_CAST_SHOW_VIEW)
 
     await hass.services.async_call(
-        "cast",
+        DOMAIN,
         "show_lovelace_view",
         {
             "entity_id": "media_player.kitchen",
@@ -101,7 +101,7 @@ async def test_use_cloud_url(hass: HomeAssistant) -> None:
         return_value="https://something.nabu.casa",
     ):
         await hass.services.async_call(
-            "cast",
+            DOMAIN,
             "show_lovelace_view",
             {"entity_id": "media_player.kitchen", "view_path": "mock_path"},
             blocking=True,
@@ -117,7 +117,7 @@ async def test_remove_entry(hass: HomeAssistant) -> None:
     """Test removing config entry removes user."""
     entry = MockConfigEntry(
         data={},
-        domain="cast",
+        domain=DOMAIN,
         title="Google Cast",
     )
 

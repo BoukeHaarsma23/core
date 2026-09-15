@@ -1,16 +1,13 @@
 """Config flow for Cloudflare integration."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
 import logging
-from typing import Any
+from typing import Any, override
 
+import probatio
 import pycfdns
-import voluptuous as vol
 
-from homeassistant.components import persistent_notification
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_API_TOKEN, CONF_ZONE
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -22,31 +19,35 @@ from .helpers import get_zone_id
 
 _LOGGER = logging.getLogger(__name__)
 
-DATA_SCHEMA = vol.Schema(
+DATA_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_API_TOKEN): str,
+        probatio.Required(CONF_API_TOKEN): str,
     }
 )
 
 
-def _zone_schema(zones: list[pycfdns.ZoneModel] | None = None) -> vol.Schema:
+def _zone_schema(zones: list[pycfdns.ZoneModel] | None = None) -> probatio.Schema:
     """Zone selection schema."""
     zones_list = []
 
     if zones is not None:
         zones_list = [zones["name"] for zones in zones]
 
-    return vol.Schema({vol.Required(CONF_ZONE): vol.In(zones_list)})
+    return probatio.Schema({probatio.Required(CONF_ZONE): probatio.In(zones_list)})
 
 
-def _records_schema(records: list[pycfdns.RecordModel] | None = None) -> vol.Schema:
+def _records_schema(
+    records: list[pycfdns.RecordModel] | None = None,
+) -> probatio.Schema:
     """Zone records selection schema."""
     records_dict = {}
 
     if records:
         records_dict = {name["name"]: name["name"] for name in records}
 
-    return vol.Schema({vol.Required(CONF_RECORDS): cv.multi_select(records_dict)})
+    return probatio.Schema(
+        {probatio.Required(CONF_RECORDS): cv.multi_select(records_dict)}
+    )
 
 
 async def _validate_input(
@@ -77,8 +78,6 @@ class CloudflareConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    entry: ConfigEntry | None = None
-
     def __init__(self) -> None:
         """Initialize the Cloudflare config flow."""
         self.cloudflare_config: dict[str, Any] = {}
@@ -89,7 +88,6 @@ class CloudflareConfigFlow(ConfigFlow, domain=DOMAIN):
         self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
         """Handle initiation of re-authentication with Cloudflare."""
-        self.entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
@@ -98,23 +96,18 @@ class CloudflareConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle re-authentication with Cloudflare."""
         errors: dict[str, str] = {}
 
-        if user_input is not None and self.entry:
+        if user_input is not None:
             _, errors = await self._async_validate_or_error(user_input)
 
             if not errors:
-                self.hass.config_entries.async_update_entry(
-                    self.entry,
+                reauth_entry = self._get_reauth_entry()
+                return self.async_update_reload_and_abort(
+                    reauth_entry,
                     data={
-                        **self.entry.data,
+                        **reauth_entry.data,
                         CONF_API_TOKEN: user_input[CONF_API_TOKEN],
                     },
                 )
-
-                self.hass.async_create_task(
-                    self.hass.config_entries.async_reload(self.entry.entry_id)
-                )
-
-                return self.async_abort(reason="reauth_successful")
 
         return self.async_show_form(
             step_id="reauth_confirm",
@@ -122,15 +115,11 @@ class CloudflareConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle a flow initiated by the user."""
-        if self._async_current_entries():
-            return self.async_abort(reason="single_instance_allowed")
-
-        persistent_notification.async_dismiss(self.hass, "cloudflare_setup")
-
         errors: dict[str, str] = {}
 
         if user_input is not None:

@@ -1,14 +1,12 @@
 """Config flow for Webmin."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
 from http import HTTPStatus
-from typing import Any, cast
+from typing import Any, cast, override
 from xmlrpc.client import Fault
 
 from aiohttp.client_exceptions import ClientConnectionError, ClientResponseError
-import voluptuous as vol
+import probatio
 
 from homeassistant.const import (
     CONF_HOST,
@@ -26,7 +24,7 @@ from homeassistant.helpers.schema_config_entry_flow import (
     SchemaFlowFormStep,
 )
 
-from .const import DEFAULT_PORT, DEFAULT_SSL, DEFAULT_VERIFY_SSL, DOMAIN
+from .const import DEFAULT_PORT, DEFAULT_SSL, DEFAULT_VERIFY_SSL, DOMAIN, LOGGER
 from .helpers import get_instance_from_options, get_sorted_mac_addresses
 
 
@@ -45,9 +43,8 @@ async def validate_user_input(
             raise SchemaFlowError("invalid_auth") from err
         raise SchemaFlowError("cannot_connect") from err
     except Fault as fault:
-        raise SchemaFlowError(
-            f"Fault {fault.faultCode}: {fault.faultString}"
-        ) from fault
+        LOGGER.exception("Fault %s: %s", fault.faultCode, fault.faultString)
+        raise SchemaFlowError("unknown") from fault
     except ClientConnectionError as err:
         raise SchemaFlowError("cannot_connect") from err
     except Exception as err:
@@ -60,20 +57,20 @@ async def validate_user_input(
     return user_input
 
 
-CONFIG_SCHEMA = vol.Schema(
+CONFIG_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_HOST): selector.TextSelector(),
-        vol.Required(CONF_PORT, default=DEFAULT_PORT): selector.NumberSelector(
+        probatio.Required(CONF_HOST): selector.TextSelector(),
+        probatio.Required(CONF_PORT, default=DEFAULT_PORT): selector.NumberSelector(
             selector.NumberSelectorConfig(
                 min=1, max=65535, mode=selector.NumberSelectorMode.BOX
             )
         ),
-        vol.Required(CONF_USERNAME): selector.TextSelector(),
-        vol.Required(CONF_PASSWORD): selector.TextSelector(
+        probatio.Required(CONF_USERNAME): selector.TextSelector(),
+        probatio.Required(CONF_PASSWORD): selector.TextSelector(
             selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
         ),
-        vol.Required(CONF_SSL, default=DEFAULT_SSL): selector.BooleanSelector(),
-        vol.Required(
+        probatio.Required(CONF_SSL, default=DEFAULT_SSL): selector.BooleanSelector(),
+        probatio.Required(
             CONF_VERIFY_SSL, default=DEFAULT_VERIFY_SSL
         ): selector.BooleanSelector(),
     }
@@ -91,6 +88,7 @@ class WebminConfigFlowHandler(SchemaConfigFlowHandler, domain=DOMAIN):
 
     config_flow = CONFIG_FLOW
 
+    @override
     def async_config_entry_title(self, options: Mapping[str, Any]) -> str:
         """Return config entry title."""
         return str(options[CONF_HOST])

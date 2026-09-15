@@ -7,8 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from incomfortclient import DisplayCode
 import pytest
 
-from homeassistant.components.incomfort import DOMAIN
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.components.incomfort.const import DOMAIN
 from homeassistant.core import HomeAssistant
 
 from tests.common import MockConfigEntry
@@ -19,13 +18,35 @@ MOCK_CONFIG = {
     "password": "verysecret",
 }
 
+MOCK_CONFIG_DHCP = {
+    "username": "admin",
+    "password": "verysecret",
+}
+
 MOCK_HEATER_STATUS = {
-    "display_code": DisplayCode(126),
+    "display_code": DisplayCode.STANDBY,
     "display_text": "standby",
     "fault_code": None,
     "is_burning": False,
     "is_failed": False,
     "is_pumping": False,
+    "is_tapping": False,
+    "heater_temp": 35.34,
+    "tap_temp": 30.21,
+    "pressure": 1.86,
+    "serial_no": "c0ffeec0ffee",
+    "nodenr": 249,
+    "rf_message_rssi": 30,
+    "rfstatus_cntr": 0,
+}
+
+MOCK_HEATER_STATUS_HEATING = {
+    "display_code": DisplayCode.OPENTHERM,
+    "display_text": "opentherm",
+    "fault_code": None,
+    "is_burning": True,
+    "is_failed": False,
+    "is_pumping": True,
     "is_tapping": False,
     "heater_temp": 35.34,
     "tap_temp": 30.21,
@@ -54,11 +75,31 @@ def mock_entry_data() -> dict[str, Any]:
 
 
 @pytest.fixture
+def mock_entry_options() -> dict[str, Any] | None:
+    """Mock config entry options for fixture."""
+    return None
+
+
+@pytest.fixture
+def mock_entry_unique_id() -> str | None:
+    """Mock config entry unique_id for fixture."""
+    return None
+
+
+@pytest.fixture
 def mock_config_entry(
-    hass: HomeAssistant, mock_entry_data: dict[str, Any]
-) -> ConfigEntry:
+    hass: HomeAssistant,
+    mock_entry_data: dict[str, Any],
+    mock_entry_options: dict[str, Any],
+    mock_entry_unique_id: str | None,
+) -> MockConfigEntry:
     """Mock a config entry setup for incomfort integration."""
-    entry = MockConfigEntry(domain=DOMAIN, data=mock_entry_data)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=mock_entry_data,
+        options=mock_entry_options,
+        unique_id=mock_entry_unique_id,
+    )
     entry.add_to_hass(hass)
     return entry
 
@@ -126,7 +167,6 @@ def mock_incomfort(
         heater_temp: float
         tap_temp: float
         pressure: float
-        serial_no: str
         nodenr: int
         rf_message_rssi: int
         rfstatus_cntr: int
@@ -141,9 +181,15 @@ def mock_incomfort(
                 setattr(self, key, value)
             self.rooms = [MockRoom()]
 
-    with patch(
-        "homeassistant.components.incomfort.coordinator.InComfortGateway", MagicMock()
-    ) as patch_gateway:
+    mock_cls = MagicMock()
+    with (
+        patch(
+            "homeassistant.components.incomfort.InComfortGateway", mock_cls
+        ) as patch_gateway,
+        patch(
+            "homeassistant.components.incomfort.config_flow.InComfortGateway", mock_cls
+        ),
+    ):
         patch_gateway().heaters = AsyncMock()
         patch_gateway().heaters.return_value = [MockHeater()]
         patch_gateway().mock_heater_status = mock_heater_status

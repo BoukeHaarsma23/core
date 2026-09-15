@@ -54,9 +54,14 @@ async def test_flow_user_invalid_auth(
     """Test user initialized flow with invalid token."""
     mock_connection(aioclient_mock, "invalid_auth")
     result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": config_entries.SOURCE_USER},
-        data=CONF_DATA,
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=CONF_INPUT
     )
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
@@ -69,9 +74,14 @@ async def test_flow_user_cannot_connect(
     """Test user initialized flow with unreachable server."""
     mock_connection(aioclient_mock, "cannot_connect")
     result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": config_entries.SOURCE_USER},
-        data=CONF_DATA,
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=CONF_INPUT
     )
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
@@ -81,13 +91,18 @@ async def test_flow_user_cannot_connect(
 async def test_flow_user_unknown_error(hass: HomeAssistant) -> None:
     """Test user initialized flow with unreachable server."""
     with patch(
-        "homeassistant.components.slack.config_flow.WebClient.auth_test"
+        "homeassistant.components.slack.config_flow.AsyncWebClient.auth_test"
     ) as mock:
         mock.side_effect = Exception
         result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": config_entries.SOURCE_USER},
-            data=CONF_DATA,
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "user"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input=CONF_INPUT
         )
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"

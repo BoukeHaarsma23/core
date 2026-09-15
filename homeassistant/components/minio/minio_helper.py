@@ -1,7 +1,5 @@
 """Minio helper methods."""
 
-from __future__ import annotations
-
 from collections.abc import Iterable
 import json
 import logging
@@ -9,7 +7,7 @@ from queue import Queue
 import re
 import threading
 import time
-from typing import Self
+from typing import Self, override
 from urllib.parse import unquote
 
 from minio import Minio
@@ -54,6 +52,7 @@ def get_minio_notification_response(
 class MinioEventStreamIterator(Iterable):
     """Iterator wrapper over notification http response stream."""
 
+    @override
     def __iter__(self) -> Self:
         """Return self."""
         return self
@@ -114,9 +113,10 @@ class MinioEventThread(threading.Thread):
         """Stop and join the thread."""
         self.stop()
 
+    @override
     def run(self):
         """Create MinioClient and run the loop."""
-        _LOGGER.info("Running MinioEventThread")
+        _LOGGER.debug("Running MinioEventThread")
 
         self._should_stop = False
 
@@ -125,7 +125,7 @@ class MinioEventThread(threading.Thread):
         )
 
         while not self._should_stop:
-            _LOGGER.info("Connecting to minio event stream")
+            _LOGGER.debug("Connecting to minio event stream")
             response = None
             try:
                 response = get_minio_notification_response(

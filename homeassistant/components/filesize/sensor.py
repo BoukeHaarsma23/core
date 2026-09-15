@@ -1,9 +1,8 @@
 """Sensor for monitoring the size of a file."""
 
-from __future__ import annotations
-
 from datetime import datetime
 import logging
+from typing import override
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -14,12 +13,11 @@ from homeassistant.components.sensor import (
 from homeassistant.const import EntityCategory, UnitOfInformation
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import FileSizeConfigEntry
 from .const import DOMAIN
-from .coordinator import FileSizeCoordinator
+from .coordinator import FileSizeConfigEntry, FileSizeCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,13 +45,20 @@ SENSOR_TYPES = (
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
+    SensorEntityDescription(
+        key="created",
+        translation_key="created",
+        entity_registry_enabled_default=False,
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
 )
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: FileSizeConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the platform from config entry."""
     async_add_entities(
@@ -75,7 +80,6 @@ class FilesizeEntity(CoordinatorEntity[FileSizeCoordinator], SensorEntity):
     ) -> None:
         """Initialize the Filesize sensor."""
         super().__init__(coordinator)
-        base_name = str(coordinator.path.absolute()).rsplit("/", maxsplit=1)[-1]
         self._attr_unique_id = (
             entry_id if description.key == "file" else f"{entry_id}-{description.key}"
         )
@@ -83,10 +87,10 @@ class FilesizeEntity(CoordinatorEntity[FileSizeCoordinator], SensorEntity):
         self._attr_device_info = DeviceInfo(
             entry_type=DeviceEntryType.SERVICE,
             identifiers={(DOMAIN, entry_id)},
-            name=base_name,
         )
 
     @property
+    @override
     def native_value(self) -> float | int | datetime:
         """Return the value of the sensor."""
         value: float | int | datetime = self.coordinator.data[

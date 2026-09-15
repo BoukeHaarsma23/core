@@ -1,13 +1,11 @@
 """Provides device automations for MQTT."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from dataclasses import dataclass, field
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.components.device_automation import DEVICE_TRIGGER_BASE_SCHEMA
 from homeassistant.config_entries import ConfigEntry
@@ -36,7 +34,7 @@ from .const import (
     DOMAIN,
 )
 from .discovery import MQTTDiscoveryPayload, clear_discovery_hash
-from .mixins import MqttDiscoveryDeviceUpdateMixin, send_discovery_done, update_device
+from .entity import MqttDiscoveryDeviceUpdateMixin, send_discovery_done, update_device
 from .models import DATA_MQTT
 from .schemas import MQTT_ENTITY_DEVICE_INFO_SCHEMA
 
@@ -56,29 +54,31 @@ MQTT_TRIGGER_BASE = {
 
 TRIGGER_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend(
     {
-        vol.Required(CONF_PLATFORM): DEVICE,
-        vol.Required(CONF_DOMAIN): DOMAIN,
-        vol.Required(CONF_DEVICE_ID): str,
+        probatio.Required(CONF_PLATFORM): DEVICE,
+        probatio.Required(CONF_DOMAIN): DOMAIN,
+        probatio.Required(CONF_DEVICE_ID): str,
         # The use of CONF_DISCOVERY_ID was deprecated in HA Core 2024.2.
         # By default, a MQTT device trigger now will be referenced by
         # device_id, type and subtype instead.
-        vol.Optional(CONF_DISCOVERY_ID): str,
-        vol.Required(CONF_TYPE): cv.string,
-        vol.Required(CONF_SUBTYPE): cv.string,
+        probatio.Optional(CONF_DISCOVERY_ID): str,
+        probatio.Required(CONF_TYPE): cv.string,
+        probatio.Required(CONF_SUBTYPE): cv.string,
     },
 )
 
 TRIGGER_DISCOVERY_SCHEMA = MQTT_BASE_SCHEMA.extend(
     {
-        vol.Required(CONF_AUTOMATION_TYPE): str,
-        vol.Required(CONF_DEVICE): MQTT_ENTITY_DEVICE_INFO_SCHEMA,
-        vol.Optional(CONF_PAYLOAD, default=None): vol.Any(None, cv.string),
-        vol.Required(CONF_SUBTYPE): cv.string,
-        vol.Required(CONF_TOPIC): cv.string,
-        vol.Required(CONF_TYPE): cv.string,
-        vol.Optional(CONF_VALUE_TEMPLATE, default=None): vol.Any(None, cv.string),
+        probatio.Required(CONF_AUTOMATION_TYPE): str,
+        probatio.Required(CONF_DEVICE): MQTT_ENTITY_DEVICE_INFO_SCHEMA,
+        probatio.Optional(CONF_PAYLOAD, default=None): probatio.Any(None, cv.string),
+        probatio.Required(CONF_SUBTYPE): cv.string,
+        probatio.Required(CONF_TOPIC): cv.string,
+        probatio.Required(CONF_TYPE): cv.string,
+        probatio.Optional(CONF_VALUE_TEMPLATE, default=None): probatio.Any(
+            None, cv.string
+        ),
     },
-    extra=vol.REMOVE_EXTRA,
+    extra=probatio.REMOVE_EXTRA,
 )
 
 LOG_NAME = "Device trigger"
@@ -148,7 +148,10 @@ class Trigger:
         def async_remove() -> None:
             """Remove trigger."""
             if instance not in self.trigger_instances:
-                raise HomeAssistantError("Can't remove trigger twice")
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="mqtt_trigger_cannot_remove_twice",
+                )
 
             if instance.remove:
                 instance.remove()
@@ -246,6 +249,7 @@ class MqttDeviceTrigger(MqttDiscoveryDeviceUpdateMixin):
             self.hass, discovery_hash, self.discovery_data, self.device_id
         )
 
+    @override
     async def async_update(self, discovery_data: MQTTDiscoveryPayload) -> None:
         """Handle MQTT device trigger discovery updates."""
         discovery_hash = self.discovery_data[ATTR_DISCOVERY_HASH]
@@ -275,6 +279,7 @@ class MqttDeviceTrigger(MqttDiscoveryDeviceUpdateMixin):
         device_trigger: Trigger = self._mqtt_data.device_triggers[self.trigger_id]
         await device_trigger.update_trigger(config)
 
+    @override
     async def async_tear_down(self) -> None:
         """Cleanup device trigger."""
         discovery_hash = self.discovery_data[ATTR_DISCOVERY_HASH]

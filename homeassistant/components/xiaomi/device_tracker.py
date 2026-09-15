@@ -1,37 +1,36 @@
 """Support for Xiaomi Mi routers."""
 
-from __future__ import annotations
-
 from http import HTTPStatus
 import logging
+from typing import override
 
+import probatio
 import requests
-import voluptuous as vol
 
 from homeassistant.components.device_tracker import (
-    DOMAIN,
+    DOMAIN as DEVICE_TRACKER_DOMAIN,
     PLATFORM_SCHEMA as DEVICE_TRACKER_PLATFORM_SCHEMA,
     DeviceScanner,
 )
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORM_SCHEMA = DEVICE_TRACKER_PLATFORM_SCHEMA.extend(
     {
-        vol.Required(CONF_HOST): cv.string,
-        vol.Required(CONF_USERNAME, default="admin"): cv.string,
-        vol.Required(CONF_PASSWORD): cv.string,
+        probatio.Required(CONF_HOST): cv.string,
+        probatio.Required(CONF_USERNAME, default="admin"): cv.string,
+        probatio.Required(CONF_PASSWORD): cv.string,
     }
 )
 
 
 def get_scanner(hass: HomeAssistant, config: ConfigType) -> XiaomiDeviceScanner | None:
     """Validate the configuration and return a Xiaomi Device Scanner."""
-    scanner = XiaomiDeviceScanner(config[DOMAIN])
+    scanner = XiaomiDeviceScanner(config[DEVICE_TRACKER_DOMAIN])
 
     return scanner if scanner.success_init else None
 
@@ -54,11 +53,13 @@ class XiaomiDeviceScanner(DeviceScanner):
         self.mac2name = None
         self.success_init = self.token is not None
 
+    @override
     def scan_devices(self):
         """Scan for new devices and return a list with found device IDs."""
         self._update_info()
         return self.last_results
 
+    @override
     def get_device_name(self, device):
         """Return the name of the given device or None if we don't know."""
         if self.mac2name is None:
@@ -139,7 +140,7 @@ def _retrieve_list(host, token, **kwargs):
             _LOGGER.exception("No list in response from mi router. %s", result)
             return None
     else:
-        _LOGGER.info(
+        _LOGGER.warning(
             "Receive wrong Xiaomi code %s, expected 0 in response %s",
             xiaomi_code,
             result,
@@ -172,7 +173,6 @@ def _get_token(host, username, password):
             )
             _LOGGER.exception(error_message, url, data, result)
             return None
-    else:
-        _LOGGER.error(
-            "Invalid response: [%s] at url: [%s] with data [%s]", res, url, data
-        )
+
+    _LOGGER.error("Invalid response: [%s] at url: [%s] with data [%s]", res, url, data)
+    return None

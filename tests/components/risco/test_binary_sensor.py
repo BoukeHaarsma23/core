@@ -1,6 +1,8 @@
 """Tests for the Risco binary sensors."""
 
-from unittest.mock import PropertyMock, patch
+from collections.abc import Callable
+from typing import Any
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 
@@ -46,20 +48,26 @@ async def test_cloud_setup(
     assert entity_registry.async_is_registered(FIRST_ENTITY_ID)
     assert entity_registry.async_is_registered(SECOND_ENTITY_ID)
 
-    device = device_registry.async_get_device(
-        identifiers={(DOMAIN, TEST_SITE_UUID + "_zone_0")}
+    device = device_registry.async_get_device_by_identifier(
+        (DOMAIN, TEST_SITE_UUID + "_zone_0"), setup_risco_cloud.entry_id
     )
     assert device is not None
     assert device.manufacturer == "Risco"
 
-    device = device_registry.async_get_device(
-        identifiers={(DOMAIN, TEST_SITE_UUID + "_zone_1")}
+    device = device_registry.async_get_device_by_identifier(
+        (DOMAIN, TEST_SITE_UUID + "_zone_1"), setup_risco_cloud.entry_id
     )
     assert device is not None
     assert device.manufacturer == "Risco"
 
 
-async def _check_cloud_state(hass, zones, triggered, entity_id, zone_id):
+async def _check_cloud_state(
+    hass: HomeAssistant,
+    zones: dict[int, Any],
+    triggered: bool,
+    entity_id: str,
+    zone_id: int,
+) -> None:
     with patch.object(
         zones[zone_id],
         "triggered",
@@ -112,26 +120,34 @@ async def test_local_setup(
     assert entity_registry.async_is_registered(FIRST_ALARMED_ENTITY_ID)
     assert entity_registry.async_is_registered(SECOND_ALARMED_ENTITY_ID)
 
-    device = device_registry.async_get_device(
-        identifiers={(DOMAIN, TEST_SITE_UUID + "_zone_0_local")}
+    device = device_registry.async_get_device_by_identifier(
+        (DOMAIN, TEST_SITE_UUID + "_zone_0_local"), setup_risco_local.entry_id
     )
     assert device is not None
     assert device.manufacturer == "Risco"
 
-    device = device_registry.async_get_device(
-        identifiers={(DOMAIN, TEST_SITE_UUID + "_zone_1_local")}
+    device = device_registry.async_get_device_by_identifier(
+        (DOMAIN, TEST_SITE_UUID + "_zone_1_local"), setup_risco_local.entry_id
     )
     assert device is not None
     assert device.manufacturer == "Risco"
 
-    device = device_registry.async_get_device(identifiers={(DOMAIN, TEST_SITE_UUID)})
+    device = device_registry.async_get_device_by_identifier(
+        (DOMAIN, TEST_SITE_UUID), setup_risco_local.entry_id
+    )
     assert device is not None
     assert device.manufacturer == "Risco"
 
 
 async def _check_local_state(
-    hass, zones, entity_property, value, entity_id, zone_id, callback
-):
+    hass: HomeAssistant,
+    zones: dict[int, Any],
+    entity_property: str,
+    value: bool,
+    entity_id: str,
+    zone_id: int,
+    callback: Callable,
+) -> None:
     with patch.object(
         zones[zone_id],
         entity_property,
@@ -218,7 +234,13 @@ async def test_armed_local_states(
     )
 
 
-async def _check_system_state(hass, system, entity_property, value, callback):
+async def _check_system_state(
+    hass: HomeAssistant,
+    system: MagicMock,
+    entity_property: str,
+    value: bool,
+    callback: Callable,
+) -> None:
     with patch.object(
         system,
         entity_property,

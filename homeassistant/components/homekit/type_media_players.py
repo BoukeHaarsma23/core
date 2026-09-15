@@ -1,23 +1,23 @@
 """Class to hold all media player accessories."""
 
 import logging
-from typing import Any
+from typing import Any, override
 
 from pyhap.characteristic import Characteristic
 from pyhap.const import CATEGORY_SWITCH
 
 from homeassistant.components.media_player import (
     ATTR_INPUT_SOURCE,
-    ATTR_INPUT_SOURCE_LIST,
     ATTR_MEDIA_VOLUME_LEVEL,
     ATTR_MEDIA_VOLUME_MUTED,
-    DOMAIN,
+    DOMAIN as MEDIA_PLAYER_DOMAIN,
     SERVICE_SELECT_SOURCE,
+    MediaPlayerEntityCapabilityAttribute,
     MediaPlayerEntityFeature,
+    MediaPlayerEntityStateAttribute,
 )
 from homeassistant.const import (
     ATTR_ENTITY_ID,
-    ATTR_SUPPORTED_FEATURES,
     SERVICE_MEDIA_PAUSE,
     SERVICE_MEDIA_PLAY,
     SERVICE_MEDIA_PLAY_PAUSE,
@@ -33,6 +33,7 @@ from homeassistant.const import (
     STATE_PLAYING,
     STATE_STANDBY,
     STATE_UNKNOWN,
+    EntityStateAttribute,
 )
 from homeassistant.core import State, callback
 
@@ -41,6 +42,7 @@ from .const import (
     ATTR_KEY_NAME,
     CATEGORY_RECEIVER,
     CHAR_ACTIVE,
+    CHAR_CONFIGURED_NAME,
     CHAR_MUTE,
     CHAR_NAME,
     CHAR_ON,
@@ -100,41 +102,67 @@ class MediaPlayer(HomeAccessory):
         )
 
         if FEATURE_ON_OFF in feature_list:
-            name = self.generate_service_name(FEATURE_ON_OFF)
             serv_on_off = self.add_preload_service(
-                SERV_SWITCH, CHAR_NAME, unique_id=FEATURE_ON_OFF
+                SERV_SWITCH, [CHAR_CONFIGURED_NAME, CHAR_NAME], unique_id=FEATURE_ON_OFF
             )
-            serv_on_off.configure_char(CHAR_NAME, value=name)
+            serv_on_off.configure_char(
+                CHAR_NAME, value=self.generate_service_name(FEATURE_ON_OFF)
+            )
+            serv_on_off.configure_char(
+                CHAR_CONFIGURED_NAME,
+                value=self.generated_configured_name(FEATURE_ON_OFF),
+            )
             self.chars[FEATURE_ON_OFF] = serv_on_off.configure_char(
                 CHAR_ON, value=False, setter_callback=self.set_on_off
             )
 
         if FEATURE_PLAY_PAUSE in feature_list:
-            name = self.generate_service_name(FEATURE_PLAY_PAUSE)
             serv_play_pause = self.add_preload_service(
-                SERV_SWITCH, CHAR_NAME, unique_id=FEATURE_PLAY_PAUSE
+                SERV_SWITCH,
+                [CHAR_CONFIGURED_NAME, CHAR_NAME],
+                unique_id=FEATURE_PLAY_PAUSE,
             )
-            serv_play_pause.configure_char(CHAR_NAME, value=name)
+            serv_play_pause.configure_char(
+                CHAR_NAME, value=self.generate_service_name(FEATURE_PLAY_PAUSE)
+            )
+            serv_play_pause.configure_char(
+                CHAR_CONFIGURED_NAME,
+                value=self.generated_configured_name(FEATURE_PLAY_PAUSE),
+            )
             self.chars[FEATURE_PLAY_PAUSE] = serv_play_pause.configure_char(
                 CHAR_ON, value=False, setter_callback=self.set_play_pause
             )
 
         if FEATURE_PLAY_STOP in feature_list:
-            name = self.generate_service_name(FEATURE_PLAY_STOP)
             serv_play_stop = self.add_preload_service(
-                SERV_SWITCH, CHAR_NAME, unique_id=FEATURE_PLAY_STOP
+                SERV_SWITCH,
+                [CHAR_CONFIGURED_NAME, CHAR_NAME],
+                unique_id=FEATURE_PLAY_STOP,
             )
-            serv_play_stop.configure_char(CHAR_NAME, value=name)
+            serv_play_stop.configure_char(
+                CHAR_NAME, value=self.generate_service_name(FEATURE_PLAY_STOP)
+            )
+            serv_play_stop.configure_char(
+                CHAR_CONFIGURED_NAME,
+                value=self.generated_configured_name(FEATURE_PLAY_STOP),
+            )
             self.chars[FEATURE_PLAY_STOP] = serv_play_stop.configure_char(
                 CHAR_ON, value=False, setter_callback=self.set_play_stop
             )
 
         if FEATURE_TOGGLE_MUTE in feature_list:
-            name = self.generate_service_name(FEATURE_TOGGLE_MUTE)
             serv_toggle_mute = self.add_preload_service(
-                SERV_SWITCH, CHAR_NAME, unique_id=FEATURE_TOGGLE_MUTE
+                SERV_SWITCH,
+                [CHAR_CONFIGURED_NAME, CHAR_NAME],
+                unique_id=FEATURE_TOGGLE_MUTE,
             )
-            serv_toggle_mute.configure_char(CHAR_NAME, value=name)
+            serv_toggle_mute.configure_char(
+                CHAR_NAME, value=self.generate_service_name(FEATURE_TOGGLE_MUTE)
+            )
+            serv_toggle_mute.configure_char(
+                CHAR_CONFIGURED_NAME,
+                value=self.generated_configured_name(FEATURE_TOGGLE_MUTE),
+            )
             self.chars[FEATURE_TOGGLE_MUTE] = serv_toggle_mute.configure_char(
                 CHAR_ON, value=False, setter_callback=self.set_toggle_mute
             )
@@ -146,12 +174,16 @@ class MediaPlayer(HomeAccessory):
             f"{self.display_name} {MODE_FRIENDLY_NAME[mode]}"
         )
 
+    def generated_configured_name(self, mode: str) -> str:
+        """Generate name for individual service."""
+        return cleanup_name_for_homekit(MODE_FRIENDLY_NAME[mode])
+
     def set_on_off(self, value: bool) -> None:
         """Move switch state to value if call came from HomeKit."""
         _LOGGER.debug('%s: Set switch state for "on_off" to %s', self.entity_id, value)
         service = SERVICE_TURN_ON if value else SERVICE_TURN_OFF
         params = {ATTR_ENTITY_ID: self.entity_id}
-        self.async_call_service(DOMAIN, service, params)
+        self.async_call_service(MEDIA_PLAYER_DOMAIN, service, params)
 
     def set_play_pause(self, value: bool) -> None:
         """Move switch state to value if call came from HomeKit."""
@@ -160,7 +192,7 @@ class MediaPlayer(HomeAccessory):
         )
         service = SERVICE_MEDIA_PLAY if value else SERVICE_MEDIA_PAUSE
         params = {ATTR_ENTITY_ID: self.entity_id}
-        self.async_call_service(DOMAIN, service, params)
+        self.async_call_service(MEDIA_PLAYER_DOMAIN, service, params)
 
     def set_play_stop(self, value: bool) -> None:
         """Move switch state to value if call came from HomeKit."""
@@ -169,7 +201,7 @@ class MediaPlayer(HomeAccessory):
         )
         service = SERVICE_MEDIA_PLAY if value else SERVICE_MEDIA_STOP
         params = {ATTR_ENTITY_ID: self.entity_id}
-        self.async_call_service(DOMAIN, service, params)
+        self.async_call_service(MEDIA_PLAYER_DOMAIN, service, params)
 
     def set_toggle_mute(self, value: bool) -> None:
         """Move switch state to value if call came from HomeKit."""
@@ -177,9 +209,10 @@ class MediaPlayer(HomeAccessory):
             '%s: Set switch state for "toggle_mute" to %s', self.entity_id, value
         )
         params = {ATTR_ENTITY_ID: self.entity_id, ATTR_MEDIA_VOLUME_MUTED: value}
-        self.async_call_service(DOMAIN, SERVICE_VOLUME_MUTE, params)
+        self.async_call_service(MEDIA_PLAYER_DOMAIN, SERVICE_VOLUME_MUTE, params)
 
     @callback
+    @override
     def async_update_state(self, new_state: State) -> None:
         """Update switch state after state changed."""
         current_state = new_state.state
@@ -210,7 +243,11 @@ class MediaPlayer(HomeAccessory):
             play_stop_char.set_value(hk_state)
 
         if toggle_mute_char := self.chars[FEATURE_TOGGLE_MUTE]:
-            mute_state = bool(new_state.attributes.get(ATTR_MEDIA_VOLUME_MUTED))
+            mute_state = bool(
+                new_state.attributes.get(
+                    MediaPlayerEntityStateAttribute.MEDIA_VOLUME_MUTED
+                )
+            )
             _LOGGER.debug(
                 '%s: Set current state for "toggle_mute" to %s',
                 self.entity_id,
@@ -227,14 +264,14 @@ class TelevisionMediaPlayer(RemoteInputSelectAccessory):
         """Initialize a Television Media Player accessory object."""
         super().__init__(
             MediaPlayerEntityFeature.SELECT_SOURCE,
-            ATTR_INPUT_SOURCE,
-            ATTR_INPUT_SOURCE_LIST,
+            MediaPlayerEntityStateAttribute.INPUT_SOURCE,
+            MediaPlayerEntityCapabilityAttribute.INPUT_SOURCE_LIST,
             *args,
             **kwargs,
         )
         state = self.hass.states.get(self.entity_id)
         assert state
-        features = state.attributes.get(ATTR_SUPPORTED_FEATURES, 0)
+        features = state.attributes.get(EntityStateAttribute.SUPPORTED_FEATURES, 0)
 
         self.chars_speaker: list[str] = []
 
@@ -281,12 +318,13 @@ class TelevisionMediaPlayer(RemoteInputSelectAccessory):
 
         self.async_update_state(state)
 
+    @override
     def set_on_off(self, value: bool) -> None:
         """Move switch state to value if call came from HomeKit."""
         _LOGGER.debug('%s: Set switch state for "on_off" to %s', self.entity_id, value)
         service = SERVICE_TURN_ON if value else SERVICE_TURN_OFF
         params = {ATTR_ENTITY_ID: self.entity_id}
-        self.async_call_service(DOMAIN, service, params)
+        self.async_call_service(MEDIA_PLAYER_DOMAIN, service, params)
 
     def set_mute(self, value: bool) -> None:
         """Move switch state to value if call came from HomeKit."""
@@ -294,28 +332,30 @@ class TelevisionMediaPlayer(RemoteInputSelectAccessory):
             '%s: Set switch state for "toggle_mute" to %s', self.entity_id, value
         )
         params = {ATTR_ENTITY_ID: self.entity_id, ATTR_MEDIA_VOLUME_MUTED: value}
-        self.async_call_service(DOMAIN, SERVICE_VOLUME_MUTE, params)
+        self.async_call_service(MEDIA_PLAYER_DOMAIN, SERVICE_VOLUME_MUTE, params)
 
     def set_volume(self, value: bool) -> None:
         """Send volume step value if call came from HomeKit."""
         _LOGGER.debug("%s: Set volume to %s", self.entity_id, value)
         params = {ATTR_ENTITY_ID: self.entity_id, ATTR_MEDIA_VOLUME_LEVEL: value}
-        self.async_call_service(DOMAIN, SERVICE_VOLUME_SET, params)
+        self.async_call_service(MEDIA_PLAYER_DOMAIN, SERVICE_VOLUME_SET, params)
 
     def set_volume_step(self, value: bool) -> None:
         """Send volume step value if call came from HomeKit."""
         _LOGGER.debug("%s: Step volume by %s", self.entity_id, value)
         service = SERVICE_VOLUME_DOWN if value else SERVICE_VOLUME_UP
         params = {ATTR_ENTITY_ID: self.entity_id}
-        self.async_call_service(DOMAIN, service, params)
+        self.async_call_service(MEDIA_PLAYER_DOMAIN, service, params)
 
+    @override
     def set_input_source(self, value: int) -> None:
         """Send input set value if call came from HomeKit."""
         _LOGGER.debug("%s: Set current input to %s", self.entity_id, value)
         source_name = self._mapped_sources[self.sources[value]]
         params = {ATTR_ENTITY_ID: self.entity_id, ATTR_INPUT_SOURCE: source_name}
-        self.async_call_service(DOMAIN, SERVICE_SELECT_SOURCE, params)
+        self.async_call_service(MEDIA_PLAYER_DOMAIN, SERVICE_SELECT_SOURCE, params)
 
+    @override
     def set_remote_key(self, value: int) -> None:
         """Send remote key value if call came from HomeKit."""
         _LOGGER.debug("%s: Set remote key to %s", self.entity_id, value)
@@ -335,7 +375,7 @@ class TelevisionMediaPlayer(RemoteInputSelectAccessory):
             else:
                 service = SERVICE_MEDIA_PLAY_PAUSE
             params = {ATTR_ENTITY_ID: self.entity_id}
-            self.async_call_service(DOMAIN, service, params)
+            self.async_call_service(MEDIA_PLAYER_DOMAIN, service, params)
             return
 
         # Unhandled keys can be handled by listening to the event bus
@@ -345,6 +385,7 @@ class TelevisionMediaPlayer(RemoteInputSelectAccessory):
         )
 
     @callback
+    @override
     def async_update_state(self, new_state: State) -> None:
         """Update Television state after state changed."""
         current_state = new_state.state
@@ -358,7 +399,11 @@ class TelevisionMediaPlayer(RemoteInputSelectAccessory):
 
         # Set mute state
         if CHAR_VOLUME_SELECTOR in self.chars_speaker:
-            current_mute_state = bool(new_state.attributes.get(ATTR_MEDIA_VOLUME_MUTED))
+            current_mute_state = bool(
+                new_state.attributes.get(
+                    MediaPlayerEntityStateAttribute.MEDIA_VOLUME_MUTED
+                )
+            )
             _LOGGER.debug(
                 "%s: Set current mute state to %s",
                 self.entity_id,

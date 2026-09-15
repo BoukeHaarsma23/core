@@ -1,16 +1,16 @@
 """Config flow for bluesound."""
 
 import logging
-from typing import Any
+from typing import Any, override
 
-import aiohttp
+import probatio
 from pyblu import Player, SyncStatus
-import voluptuous as vol
+from pyblu.errors import PlayerUnreachableError
 
-from homeassistant.components import zeroconf
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from .const import DOMAIN
 from .media_player import DEFAULT_PORT
@@ -31,6 +31,7 @@ class BluesoundConfigFlow(ConfigFlow, domain=DOMAIN):
         self._port = DEFAULT_PORT
         self._sync_status: SyncStatus | None = None
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -43,7 +44,7 @@ class BluesoundConfigFlow(ConfigFlow, domain=DOMAIN):
             ) as player:
                 try:
                     sync_status = await player.sync_status(timeout=1)
-                except (TimeoutError, aiohttp.ClientError):
+                except PlayerUnreachableError:
                     errors["base"] = "cannot_connect"
                 else:
                     await self.async_set_unique_id(
@@ -63,39 +64,22 @@ class BluesoundConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             errors=errors,
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(CONF_HOST): str,
-                    vol.Optional(CONF_PORT, default=11000): int,
+                    probatio.Required(CONF_HOST): str,
+                    probatio.Optional(CONF_PORT, default=11000): int,
                 }
             ),
         )
 
-    async def async_step_import(self, import_data: dict[str, Any]) -> ConfigFlowResult:
-        """Import bluesound config entry from configuration.yaml."""
-        session = async_get_clientsession(self.hass)
-        async with Player(
-            import_data[CONF_HOST], import_data[CONF_PORT], session=session
-        ) as player:
-            try:
-                sync_status = await player.sync_status(timeout=1)
-            except (TimeoutError, aiohttp.ClientError):
-                return self.async_abort(reason="cannot_connect")
-
-        await self.async_set_unique_id(
-            format_unique_id(sync_status.mac, import_data[CONF_PORT])
-        )
-        self._abort_if_unique_id_configured()
-
-        return self.async_create_entry(
-            title=sync_status.name,
-            data=import_data,
-        )
-
+    @override
     async def async_step_zeroconf(
-        self, discovery_info: zeroconf.ZeroconfServiceInfo
+        self, discovery_info: ZeroconfServiceInfo
     ) -> ConfigFlowResult:
         """Handle a flow initialized by zeroconf discovery."""
+        # the player can have an ipv6 address, but the api is only available on ipv4
+        if discovery_info.ip_address.version != 4:
+            return self.async_abort(reason="no_ipv4_address")
         if discovery_info.port is not None:
             self._port = discovery_info.port
 
@@ -105,7 +89,7 @@ class BluesoundConfigFlow(ConfigFlow, domain=DOMAIN):
                 discovery_info.host, self._port, session=session
             ) as player:
                 sync_status = await player.sync_status(timeout=1)
-        except (TimeoutError, aiohttp.ClientError):
+        except PlayerUnreachableError:
             return self.async_abort(reason="cannot_connect")
 
         await self.async_set_unique_id(format_unique_id(sync_status.mac, self._port))
@@ -127,7 +111,9 @@ class BluesoundConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         return await self.async_step_confirm()
 
-    async def async_step_confirm(self, user_input=None) -> ConfigFlowResult:
+    async def async_step_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Confirm the zeroconf setup."""
         assert self._sync_status is not None
         assert self._host is not None

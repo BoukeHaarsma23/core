@@ -1,13 +1,11 @@
 """Validate Modbus configuration."""
 
-from __future__ import annotations
-
 from collections import namedtuple
 import logging
 import struct
 from typing import Any
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.components.climate import HVACMode
 from homeassistant.const import (
@@ -15,6 +13,7 @@ from homeassistant.const import (
     CONF_COUNT,
     CONF_HOST,
     CONF_NAME,
+    CONF_OFFSET,
     CONF_PORT,
     CONF_SCAN_INTERVAL,
     CONF_STRUCTURE,
@@ -25,20 +24,25 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.issue_registry import IssueSeverity, async_create_issue
 
 from .const import (
+    CONF_CURRENT_TEMP_OFFSET,
+    CONF_CURRENT_TEMP_SCALE,
     CONF_DATA_TYPE,
     CONF_FAN_MODE_VALUES,
-    CONF_LAZY_ERROR,
-    CONF_RETRIES,
+    CONF_SCALE,
     CONF_SLAVE_COUNT,
     CONF_SWAP,
     CONF_SWAP_BYTE,
     CONF_SWAP_WORD,
     CONF_SWAP_WORD_BYTE,
     CONF_SWING_MODE_VALUES,
+    CONF_TARGET_TEMP_OFFSET,
+    CONF_TARGET_TEMP_SCALE,
     CONF_VIRTUAL_COUNT,
     DEFAULT_HUB,
+    DEFAULT_OFFSET,
+    DEFAULT_SCALE,
     DEFAULT_SCAN_INTERVAL,
-    MODBUS_DOMAIN as DOMAIN,
+    DOMAIN,
     PLATFORMS,
     SERIAL,
     DataType,
@@ -46,7 +50,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-ENTRY = namedtuple(
+ENTRY = namedtuple(  # noqa: PYI024
     "ENTRY",
     [
         "struct_id",
@@ -60,7 +64,7 @@ ILLEGAL = "I"
 OPTIONAL = "O"
 DEMANDED = "D"
 
-PARM_IS_LEGAL = namedtuple(
+PARM_IS_LEGAL = namedtuple(  # noqa: PYI024
     "PARM_IS_LEGAL",
     [
         "count",
@@ -160,11 +164,14 @@ def struct_validator(config: dict[str, Any]) -> dict[str, Any]:
     ):
         if entry[0] is None:
             if entry[1] == DEMANDED:
-                error = f"{name}: `{entry[2]}` missing, demanded with `{CONF_DATA_TYPE}: {data_type}`"
-                raise vol.Invalid(error)
+                error = (
+                    f"{name}: `{entry[2]}` missing,"
+                    f" demanded with `{CONF_DATA_TYPE}: {data_type}`"
+                )
+                raise probatio.Invalid(error)
         elif entry[1] == ILLEGAL:
             error = f"{name}: `{entry[2]}` illegal with `{CONF_DATA_TYPE}: {data_type}`"
-            raise vol.Invalid(error)
+            raise probatio.Invalid(error)
 
     if config[CONF_DATA_TYPE] == DataType.CUSTOM:
         assert isinstance(structure, str)
@@ -172,11 +179,14 @@ def struct_validator(config: dict[str, Any]) -> dict[str, Any]:
         try:
             size = struct.calcsize(structure)
         except struct.error as err:
-            raise vol.Invalid(f"{name}: error in structure format --> {err!s}") from err
+            raise probatio.Invalid(
+                f"{name}: error in structure format --> {err!s}"
+            ) from err
         bytecount = count * 2
         if bytecount != size:
-            raise vol.Invalid(
-                f"{name}: Size of structure is {size} bytes but `{CONF_COUNT}: {count}` is {bytecount} bytes"
+            raise probatio.Invalid(
+                f"{name}: Size of structure is {size} bytes"
+                f" but `{CONF_COUNT}: {count}` is {bytecount} bytes"
             )
     else:
         if data_type != DataType.STRING:
@@ -195,7 +205,7 @@ def struct_validator(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def hvac_fixedsize_reglist_validator(value: Any) -> list:
-    """Check the number of registers for target temp. and coerce it to a list, if valid."""
+    """Check the number of registers for target temp and coerce to a list."""
     if isinstance(value, int):
         value = [value] * len(HVACMode)
         return list(value)
@@ -209,8 +219,9 @@ def hvac_fixedsize_reglist_validator(value: Any) -> list:
         if _rv is True:
             return list(value)
 
-    raise vol.Invalid(
-        f"Invalid target temp register. Required type: integer, allowed 1 or list of {len(HVACMode)} registers"
+    raise probatio.Invalid(
+        "Invalid target temp register. Required type: integer,"
+        f" allowed 1 or list of {len(HVACMode)} registers"
     )
 
 
@@ -220,12 +231,12 @@ def nan_validator(value: Any) -> int:
         return value
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         pass
     try:
         return int(value, 16)
     except (TypeError, ValueError) as err:
-        raise vol.Invalid(f"invalid number {value}") from err
+        raise probatio.Invalid(f"invalid number {value}") from err
 
 
 def duplicate_fan_mode_validator(config: dict[str, Any]) -> dict:
@@ -234,7 +245,10 @@ def duplicate_fan_mode_validator(config: dict[str, Any]) -> dict:
     errors = []
     for key, value in config[CONF_FAN_MODE_VALUES].items():
         if value in fan_modes:
-            warn = f"Modbus fan mode {key} has a duplicate value {value}, not loaded, values must be unique!"
+            warn = (
+                f"Modbus fan mode {key} has a duplicate value"
+                f" {value}, not loaded, values must be unique!"
+            )
             _LOGGER.warning(warn)
             errors.append(key)
         else:
@@ -245,13 +259,61 @@ def duplicate_fan_mode_validator(config: dict[str, Any]) -> dict:
     return config
 
 
+def not_zero_value(val: float, errMsg: str) -> float:
+    """Check value is not zero."""
+    if val == 0:
+        raise probatio.Invalid(errMsg)
+    return val
+
+
+def ensure_and_check_conflicting_scales_and_offsets(config: dict[str, Any]) -> dict:
+    """Check for conflicts in scale/offset and ensure target/current temp is set."""
+    config_keys = [
+        (CONF_SCALE, CONF_TARGET_TEMP_SCALE, CONF_CURRENT_TEMP_SCALE, DEFAULT_SCALE),
+        (
+            CONF_OFFSET,
+            CONF_TARGET_TEMP_OFFSET,
+            CONF_CURRENT_TEMP_OFFSET,
+            DEFAULT_OFFSET,
+        ),
+    ]
+
+    for generic_key, target_key, current_key, default_value in config_keys:
+        if generic_key in config and (target_key in config or current_key in config):
+            raise probatio.Invalid(
+                f"Cannot use both '{generic_key}' and"
+                " temperature-specific parameters"
+                f" ('{target_key}' or '{current_key}')"
+                " in the same configuration."
+                f" Either the '{generic_key}' parameter"
+                " (which applies to both temperatures)"
+                " or the new temperature-specific"
+                " parameters, but not both."
+            )
+        if generic_key in config:
+            value = config.pop(generic_key)
+            config[target_key] = value
+            config[current_key] = value
+
+        if target_key not in config:
+            config[target_key] = default_value
+        if current_key not in config:
+            config[current_key] = default_value
+
+    return config
+
+
 def duplicate_swing_mode_validator(config: dict[str, Any]) -> dict:
     """Control modbus climate swing mode values for duplicates."""
     swing_modes: set[int] = set()
     errors = []
     for key, value in config[CONF_SWING_MODE_VALUES].items():
         if value in swing_modes:
-            warn = f"Modbus swing mode {key} has a duplicate value {value}, not loaded, values must be unique!"
+            warn = (
+                f"Modbus swing mode {key} has a duplicate"
+                f" value {value}, not loaded,"
+                " values must be unique!"
+            )
             _LOGGER.warning(warn)
             errors.append(key)
         else:
@@ -271,8 +333,10 @@ def register_int_list_validator(value: Any) -> Any:
         if (len(value) == 1) and isinstance(value[0], int) and value[0] >= 0:
             return value
 
-    raise vol.Invalid(
-        f"Invalid {CONF_ADDRESS} register for fan/swing mode. Required type: positive integer, allowed 1 or list of 1 register."
+    raise probatio.Invalid(
+        f"Invalid {CONF_ADDRESS} register for fan/swing mode."
+        " Required type: positive integer,"
+        " allowed 1 or list of 1 register."
     )
 
 
@@ -284,27 +348,6 @@ def validate_modbus(
     hub_name_inx: int,
 ) -> bool:
     """Validate modbus entries."""
-    if CONF_RETRIES in hub:
-        async_create_issue(
-            hass,
-            DOMAIN,
-            "deprecated_retries",
-            breaks_in_ha_version="2024.7.0",
-            is_fixable=False,
-            severity=IssueSeverity.WARNING,
-            translation_key="deprecated_retries",
-            translation_placeholders={
-                "config_key": "retries",
-                "integration": DOMAIN,
-                "url": "https://www.home-assistant.io/integrations/modbus",
-            },
-        )
-        _LOGGER.warning(
-            "`retries`: is deprecated and will be removed in version 2024.7"
-        )
-    else:
-        hub[CONF_RETRIES] = 3
-
     host: str = (
         hub[CONF_PORT]
         if hub[CONF_TYPE] == SERIAL
@@ -353,24 +396,6 @@ def validate_entity(
     ent_addr: set[str],
 ) -> bool:
     """Validate entity."""
-    if CONF_LAZY_ERROR in entity:
-        async_create_issue(
-            hass,
-            DOMAIN,
-            "removed_lazy_error_count",
-            breaks_in_ha_version="2024.7.0",
-            is_fixable=False,
-            severity=IssueSeverity.WARNING,
-            translation_key="removed_lazy_error_count",
-            translation_placeholders={
-                "config_key": "lazy_error_count",
-                "integration": DOMAIN,
-                "url": "https://www.home-assistant.io/integrations/modbus",
-            },
-        )
-        _LOGGER.warning(
-            "`lazy_error_count`: is deprecated and will be removed in version 2024.7"
-        )
     name = f"{component}.{entity[CONF_NAME]}"
     scan_interval = entity.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
     if 0 < scan_interval < 5:
@@ -442,7 +467,8 @@ def check_config(hass: HomeAssistant, config: dict) -> dict:
                     "",
                     "",
                 ],
-                f"Modbus {hub[CONF_NAME]} contain no entities, causing instability, entry not loaded",
+                f"Modbus {hub[CONF_NAME]} contain no entities,"
+                " causing instability, entry not loaded",
             )
             del config[hub_inx]
             continue

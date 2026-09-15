@@ -74,6 +74,7 @@ async def test_discover_routers(
     assert discovered[-1] == (
         "aeeb2f594b570bbf",
         discovery.ThreadRouterDiscoveryData(
+            instance_name="HomeAssistant OpenThreadBorderRouter #0BBF",
             addresses=["192.168.0.115"],
             border_agent_id="230c6a1ac57f6f4be262acf32e5ef52c",
             brand="homeassistant",
@@ -101,6 +102,7 @@ async def test_discover_routers(
     assert discovered[-1] == (
         "f6a99b425a67abed",
         discovery.ThreadRouterDiscoveryData(
+            instance_name="Google-Nest-Hub-#ABED",
             addresses=["192.168.0.124"],
             border_agent_id="bc3740c3e963aa8735bebecd7cc503c7",
             brand="google",
@@ -180,6 +182,7 @@ async def test_discover_routers_unconfigured(
     router_discovered_removed.assert_called_once_with(
         "aeeb2f594b570bbf",
         discovery.ThreadRouterDiscoveryData(
+            instance_name="HomeAssistant OpenThreadBorderRouter #0BBF",
             addresses=["192.168.0.115"],
             border_agent_id="230c6a1ac57f6f4be262acf32e5ef52c",
             brand="homeassistant",
@@ -226,6 +229,7 @@ async def test_discover_routers_bad_or_missing_optional_data(
     router_discovered_removed.assert_called_once_with(
         "aeeb2f594b570bbf",
         discovery.ThreadRouterDiscoveryData(
+            instance_name="HomeAssistant OpenThreadBorderRouter #0BBF",
             addresses=["192.168.0.115"],
             border_agent_id="230c6a1ac57f6f4be262acf32e5ef52c",
             brand=None,
@@ -237,6 +241,66 @@ async def test_discover_routers_bad_or_missing_optional_data(
             thread_version="1.3.0",
             unconfigured=None,
             vendor_name=None,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("vendor_name", "expected_brand"),
+    sorted(
+        (vendor_name, expected_brand)
+        for vendor_name, expected_brand in discovery.KNOWN_BRANDS.items()
+        if vendor_name is not None
+    ),
+)
+async def test_discover_routers_known_vendor_names(
+    hass: HomeAssistant,
+    mock_async_zeroconf: MagicMock,
+    vendor_name: str,
+    expected_brand: str,
+) -> None:
+    """Test discovering thread routers with known vendor names."""
+    mock_async_zeroconf.async_add_service_listener = AsyncMock()
+    mock_async_zeroconf.async_remove_service_listener = AsyncMock()
+    mock_async_zeroconf.async_get_service_info = AsyncMock()
+
+    assert await async_setup_component(hass, DOMAIN, {})
+    await hass.async_block_till_done()
+
+    router_discovered_removed = Mock()
+    thread_discovery = discovery.ThreadRouterDiscovery(
+        hass, router_discovered_removed, router_discovered_removed
+    )
+    await thread_discovery.async_start()
+    listener: discovery.ThreadRouterDiscovery.ThreadServiceListener = (
+        mock_async_zeroconf.async_add_service_listener.mock_calls[0][1][1]
+    )
+
+    data = {
+        **ROUTER_DISCOVERY_HASS,
+        "properties": {
+            **ROUTER_DISCOVERY_HASS["properties"],
+            b"vn": vendor_name.encode(),
+        },
+    }
+    mock_async_zeroconf.async_get_service_info.return_value = AsyncServiceInfo(**data)
+    listener.add_service(None, data["type_"], data["name"])
+    await hass.async_block_till_done()
+    router_discovered_removed.assert_called_once_with(
+        "aeeb2f594b570bbf",
+        discovery.ThreadRouterDiscoveryData(
+            instance_name="HomeAssistant OpenThreadBorderRouter #0BBF",
+            addresses=["192.168.0.115"],
+            border_agent_id="230c6a1ac57f6f4be262acf32e5ef52c",
+            brand=expected_brand,
+            extended_address="aeeb2f594b570bbf",
+            extended_pan_id="e60fc7c186212ce5",
+            model_name="OpenThreadBorderRouter",
+            network_name="OpenThread HC",
+            server="core-silabs-multiprotocol.local.",
+            thread_version="1.3.0",
+            unconfigured=None,
+            vendor_name=vendor_name,
         ),
     )
 

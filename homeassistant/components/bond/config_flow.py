@@ -1,22 +1,21 @@
 """Config flow for Bond integration."""
 
-from __future__ import annotations
-
 import contextlib
 from http import HTTPStatus
 import logging
-from typing import Any
+from typing import Any, override
 
 from aiohttp import ClientConnectionError, ClientResponseError
-from bond_async import Bond
-import voluptuous as vol
+from bond_async import Bond, RequestorUUID
+import probatio
 
-from homeassistant.components import zeroconf
 from homeassistant.config_entries import ConfigEntryState, ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ACCESS_TOKEN, CONF_HOST, CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from .const import DOMAIN
 from .utils import BondHub
@@ -24,16 +23,21 @@ from .utils import BondHub
 _LOGGER = logging.getLogger(__name__)
 
 
-USER_SCHEMA = vol.Schema(
-    {vol.Required(CONF_HOST): str, vol.Required(CONF_ACCESS_TOKEN): str}
+USER_SCHEMA = probatio.Schema(
+    {probatio.Required(CONF_HOST): str, probatio.Required(CONF_ACCESS_TOKEN): str}
 )
-DISCOVERY_SCHEMA = vol.Schema({vol.Required(CONF_ACCESS_TOKEN): str})
-TOKEN_SCHEMA = vol.Schema({})
+DISCOVERY_SCHEMA = probatio.Schema({probatio.Required(CONF_ACCESS_TOKEN): str})
+TOKEN_SCHEMA = probatio.Schema({})
 
 
 async def async_get_token(hass: HomeAssistant, host: str) -> str | None:
     """Try to fetch the token from the bond device."""
-    bond = Bond(host, "", session=async_get_clientsession(hass))
+    bond = Bond(
+        host,
+        "",
+        session=async_get_clientsession(hass),
+        requestor_uuid=RequestorUUID.HOME_ASSISTANT,
+    )
     response: dict[str, str] = {}
     with contextlib.suppress(ClientConnectionError):
         response = await bond.token()
@@ -44,7 +48,10 @@ async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> tuple[st
     """Validate the user input allows us to connect."""
 
     bond = Bond(
-        data[CONF_HOST], data[CONF_ACCESS_TOKEN], session=async_get_clientsession(hass)
+        data[CONF_HOST],
+        data[CONF_ACCESS_TOKEN],
+        session=async_get_clientsession(hass),
+        requestor_uuid=RequestorUUID.HOME_ASSISTANT,
     )
     try:
         hub = BondHub(bond, data[CONF_HOST])
@@ -91,24 +98,54 @@ class BondConfigFlow(ConfigFlow, domain=DOMAIN):
 
         self._discovered[CONF_ACCESS_TOKEN] = token
         try:
-            _, hub_name = await _validate_input(self.hass, self._discovered)
+            bond_id, hub_name = await _validate_input(self.hass, self._discovered)
         except InputValidationError:
             return
+        await self.async_set_unique_id(bond_id)
+        self._abort_if_unique_id_configured(updates={CONF_HOST: host})
         self._discovered[CONF_NAME] = hub_name
 
+    @override
+    async def async_step_dhcp(
+        self, discovery_info: DhcpServiceInfo
+    ) -> ConfigFlowResult:
+        """Handle a flow initialized by dhcp discovery."""
+        host = discovery_info.ip
+        bond_id = discovery_info.hostname.partition("-")[2].upper()
+        await self.async_set_unique_id(bond_id)
+        return await self.async_step_any_discovery(bond_id, host)
+
+    @override
     async def async_step_zeroconf(
-        self, discovery_info: zeroconf.ZeroconfServiceInfo
+        self, discovery_info: ZeroconfServiceInfo
     ) -> ConfigFlowResult:
         """Handle a flow initialized by zeroconf discovery."""
         name: str = discovery_info.name
         host: str = discovery_info.host
         bond_id = name.partition(".")[0]
-        await self.async_set_unique_id(bond_id)
+        entry = await self.async_set_unique_id(bond_id)
+
+        # A bridge on both Wi-Fi and Ethernet announces every address it has,
+        # and host is whichever one refreshed its record last. Stay on the
+        # address we already talk to as long as the bridge still answers to it.
+        if (
+            entry is not None
+            and (known_host := entry.data.get(CONF_HOST))
+            and known_host in {str(ip) for ip in discovery_info.ip_addresses}
+        ):
+            host = known_host
+
+        return await self.async_step_any_discovery(bond_id, host)
+
+    async def async_step_any_discovery(
+        self, bond_id: str, host: str
+    ) -> ConfigFlowResult:
+        """Handle a flow initialized by discovery."""
         for entry in self._async_current_entries():
             if entry.unique_id != bond_id:
                 continue
             updates = {CONF_HOST: host}
-            if entry.state == ConfigEntryState.SETUP_ERROR and (
+            if entry.state is ConfigEntryState.SETUP_ERROR and (
                 token := await async_get_token(self.hass, host)
             ):
                 updates[CONF_ACCESS_TOKEN] = token
@@ -153,10 +190,14 @@ class BondConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_HOST: self._discovered[CONF_HOST],
             }
             try:
-                _, hub_name = await _validate_input(self.hass, data)
+                bond_id, hub_name = await _validate_input(self.hass, data)
             except InputValidationError as error:
                 errors["base"] = error.base
             else:
+                await self.async_set_unique_id(bond_id)
+                self._abort_if_unique_id_configured(
+                    updates={CONF_HOST: self._discovered[CONF_HOST]}
+                )
                 return self.async_create_entry(
                     title=hub_name,
                     data=data,
@@ -174,6 +215,7 @@ class BondConfigFlow(ConfigFlow, domain=DOMAIN):
             description_placeholders=self._discovered,
         )
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -185,8 +227,10 @@ class BondConfigFlow(ConfigFlow, domain=DOMAIN):
             except InputValidationError as error:
                 errors["base"] = error.base
             else:
-                await self.async_set_unique_id(bond_id)
-                self._abort_if_unique_id_configured()
+                await self.async_set_unique_id(bond_id, raise_on_progress=False)
+                self._abort_if_unique_id_configured(
+                    updates={CONF_HOST: user_input[CONF_HOST]}
+                )
                 return self.async_create_entry(title=hub_name, data=user_input)
 
         return self.async_show_form(

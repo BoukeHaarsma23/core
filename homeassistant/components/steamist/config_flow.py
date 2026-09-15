@@ -1,20 +1,18 @@
 """Config flow for Steamist integration."""
 
-from __future__ import annotations
-
 import logging
-from typing import Any
+from typing import Any, Self, override
 
 from aiosteamist import Steamist
 from discovery30303 import Device30303, normalize_mac
-import voluptuous as vol
+import probatio
 
-from homeassistant.components import dhcp
 from homeassistant.config_entries import ConfigEntryState, ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_DEVICE, CONF_HOST, CONF_MODEL, CONF_NAME
 from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 from homeassistant.helpers.typing import DiscoveryInfoType
 
 from .const import CONNECTION_EXCEPTIONS, DISCOVER_SCAN_TIMEOUT, DOMAIN
@@ -33,13 +31,16 @@ class SteamistConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    host: str | None = None
+
     def __init__(self) -> None:
         """Initialize the config flow."""
         self._discovered_devices: dict[str, Device30303] = {}
         self._discovered_device: Device30303 | None = None
 
+    @override
     async def async_step_dhcp(
-        self, discovery_info: dhcp.DhcpServiceInfo
+        self, discovery_info: DhcpServiceInfo
     ) -> ConfigFlowResult:
         """Handle discovery via dhcp."""
         self._discovered_device = Device30303(
@@ -50,6 +51,7 @@ class SteamistConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         return await self._async_handle_discovery()
 
+    @override
     async def async_step_integration_discovery(
         self, discovery_info: DiscoveryInfoType
     ) -> ConfigFlowResult:
@@ -78,10 +80,9 @@ class SteamistConfigFlow(ConfigFlow, domain=DOMAIN):
                 ):
                     self.hass.config_entries.async_schedule_reload(entry.entry_id)
                 return self.async_abort(reason="already_configured")
-        self.context[CONF_HOST] = host
-        for progress in self._async_in_progress():
-            if progress.get("context", {}).get(CONF_HOST) == host:
-                return self.async_abort(reason="already_in_progress")
+        self.host = host
+        if self.hass.config_entries.flow.async_has_matching_flow(self):
+            return self.async_abort(reason="already_in_progress")
         if not device.name:
             discovery = await async_discover_device(self.hass, device.ipaddress)
             if not discovery:
@@ -91,6 +92,11 @@ class SteamistConfigFlow(ConfigFlow, domain=DOMAIN):
         if not async_is_steamist_device(self._discovered_device):
             return self.async_abort(reason="not_steamist_device")
         return await self.async_step_discovery_confirm()
+
+    @override
+    def is_matching(self, other_flow: Self) -> bool:
+        """Return True if other_flow is matching this flow."""
+        return other_flow.host == self.host
 
     async def async_step_discovery_confirm(
         self, user_input: dict[str, Any] | None = None
@@ -132,7 +138,7 @@ class SteamistConfigFlow(ConfigFlow, domain=DOMAIN):
             device = self._discovered_devices[mac]
             return self._async_create_entry_from_device(device)
 
-        current_unique_ids = self._async_current_ids()
+        current_unique_ids = self._async_current_ids(include_ignore=False)
         current_hosts = {
             entry.data[CONF_HOST]
             for entry in self._async_current_entries(include_ignore=False)
@@ -151,9 +157,12 @@ class SteamistConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="no_devices_found")
         return self.async_show_form(
             step_id="pick_device",
-            data_schema=vol.Schema({vol.Required(CONF_DEVICE): vol.In(devices_name)}),
+            data_schema=probatio.Schema(
+                {probatio.Required(CONF_DEVICE): probatio.In(devices_name)}
+            ),
         )
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -182,6 +191,8 @@ class SteamistConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({vol.Optional(CONF_HOST, default=""): str}),
+            data_schema=probatio.Schema(
+                {probatio.Optional(CONF_HOST, default=""): str}
+            ),
             errors=errors,
         )

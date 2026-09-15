@@ -3,11 +3,12 @@
 from datetime import datetime, timedelta
 import logging
 from operator import itemgetter
-from typing import Any
+from typing import Any, override
 
 from rachiopy import Rachio
 from requests.exceptions import Timeout
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -38,16 +39,17 @@ class RachioUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self,
         hass: HomeAssistant,
         rachio: Rachio,
+        config_entry: ConfigEntry,
         base_station,
         base_count: int,
     ) -> None:
         """Initialize the Rachio Update Coordinator."""
-        self.hass = hass
         self.rachio = rachio
         self.base_station = base_station
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=config_entry,
             name=f"{DOMAIN} update coordinator",
             # To avoid exceeding the rate limit, increase polling interval for
             # each additional base station on the account
@@ -58,6 +60,7 @@ class RachioUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ),
         )
 
+    @override
     async def _async_update_data(self) -> dict[str, Any]:
         """Update smart hose timer data."""
         try:
@@ -76,19 +79,21 @@ class RachioScheduleUpdateCoordinator(DataUpdateCoordinator[list[dict[str, Any]]
         self,
         hass: HomeAssistant,
         rachio: Rachio,
+        config_entry: ConfigEntry,
         base_station,
     ) -> None:
         """Initialize a Rachio schedule coordinator."""
-        self.hass = hass
         self.rachio = rachio
         self.base_station = base_station
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=config_entry,
             name=f"{DOMAIN} schedule update coordinator",
             update_interval=timedelta(minutes=30),
         )
 
+    @override
     async def _async_update_data(self) -> list[dict[str, Any]]:
         """Retrieve data for the past week and the next 60 days."""
         _now: datetime = dt_util.now()

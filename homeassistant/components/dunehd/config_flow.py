@@ -1,11 +1,9 @@
 """Adds config flow for Dune HD integration."""
 
-from __future__ import annotations
-
-from typing import Any
+from typing import Any, override
 
 from pdunehd import DuneHDPlayer
-import voluptuous as vol
+import probatio
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_HOST
@@ -27,6 +25,7 @@ class DuneHDConfigFlow(ConfigFlow, domain=DOMAIN):
         if not state:
             raise CannotConnect
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -39,7 +38,7 @@ class DuneHDConfigFlow(ConfigFlow, domain=DOMAIN):
 
                 try:
                     if self.host_already_configured(host):
-                        raise AlreadyConfigured
+                        raise AlreadyConfigured  # noqa: TRY301
                     await self.init_device(host)
                 except CannotConnect:
                     errors[CONF_HOST] = "cannot_connect"
@@ -52,7 +51,9 @@ class DuneHDConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({vol.Required(CONF_HOST, default=""): str}),
+            data_schema=probatio.Schema(
+                {probatio.Required(CONF_HOST, default=""): str}
+            ),
             errors=errors,
         )
 

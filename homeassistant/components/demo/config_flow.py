@@ -1,10 +1,8 @@
 """Config flow to configure demo component."""
 
-from __future__ import annotations
+from typing import Any, override
 
-from typing import Any
-
-import voluptuous as vol
+import probatio
 
 from homeassistant.config_entries import (
     ConfigEntry,
@@ -13,7 +11,7 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.core import callback
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 
 from . import DOMAIN
 
@@ -31,18 +29,16 @@ class DemoConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
+    @override
     def async_get_options_flow(
         config_entry: ConfigEntry,
     ) -> OptionsFlowHandler:
         """Get the options flow for this handler."""
         return OptionsFlowHandler(config_entry)
 
-    async def async_step_import(self, import_info: dict[str, Any]) -> ConfigFlowResult:
+    async def async_step_import(self, import_data: dict[str, Any]) -> ConfigFlowResult:
         """Set the config entry up from yaml."""
-        if self._async_current_entries():
-            return self.async_abort(reason="single_instance_allowed")
-
-        return self.async_create_entry(title="Demo", data=import_info)
+        return self.async_create_entry(title="Demo", data=import_data)
 
 
 class OptionsFlowHandler(OptionsFlow):
@@ -50,7 +46,6 @@ class OptionsFlowHandler(OptionsFlow):
 
     def __init__(self, config_entry: ConfigEntry) -> None:
         """Initialize options flow."""
-        self.config_entry = config_entry
         self.options = dict(config_entry.options)
 
     async def async_step_init(
@@ -69,14 +64,14 @@ class OptionsFlowHandler(OptionsFlow):
 
         return self.async_show_form(
             step_id="options_1",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required("constant"): "Constant Value",
-                    vol.Optional(
+                    probatio.Required("constant"): "Constant Value",
+                    probatio.Optional(
                         CONF_BOOLEAN,
                         default=self.config_entry.options.get(CONF_BOOLEAN, False),
                     ): bool,
-                    vol.Optional(
+                    probatio.Optional(
                         CONF_INT,
                         default=self.config_entry.options.get(CONF_INT, 10),
                     ): int,
@@ -94,20 +89,20 @@ class OptionsFlowHandler(OptionsFlow):
 
         return self.async_show_form(
             step_id="options_2",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Optional(
+                    probatio.Optional(
                         CONF_STRING,
                         default=self.config_entry.options.get(
                             CONF_STRING,
                             "Default",
                         ),
                     ): str,
-                    vol.Optional(
+                    probatio.Optional(
                         CONF_SELECT,
                         default=self.config_entry.options.get(CONF_SELECT, "default"),
-                    ): vol.In(["default", "other"]),
-                    vol.Optional(
+                    ): probatio.In(["default", "other"]),
+                    probatio.Optional(
                         CONF_MULTISELECT,
                         default=self.config_entry.options.get(
                             CONF_MULTISELECT, ["default"]

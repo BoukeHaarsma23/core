@@ -11,6 +11,7 @@ from homeassistant.setup import async_setup_component
 
 from . import (
     DATASET_1,
+    DATASET_1_LARGER_TIMESTAMP,
     DATASET_2,
     DATASET_3,
     ROUTER_DISCOVERY_GOOGLE_1,
@@ -34,13 +35,39 @@ async def test_add_dataset(
     )
     msg = await client.receive_json()
     assert msg["success"]
-    assert msg["result"] is None
+    assert msg["result"] == {"result": "stored"}
 
     store = await dataset_store.async_get_store(hass)
     assert len(store.datasets) == 1
     dataset = next(iter(store.datasets.values()))
     assert dataset.source == "test"
     assert dataset.tlv == DATASET_1
+
+
+async def test_add_dataset_discarded(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Test a dataset the store discards is reported as discarded, not stored.
+
+    The command still succeeds -- existing callers treat any error as a
+    failed transfer -- but the payload says the dataset was discarded.
+    """
+    assert await async_setup_component(hass, DOMAIN, {})
+    await hass.async_block_till_done()
+    await dataset_store.async_add_dataset(hass, "test", DATASET_1_LARGER_TIMESTAMP)
+
+    client = await hass_ws_client(hass)
+
+    await client.send_json(
+        {"id": 1, "type": "thread/add_dataset_tlv", "source": "test", "tlv": DATASET_1}
+    )
+    msg = await client.receive_json()
+    assert msg["success"]
+    assert msg["result"] == {"result": "discarded"}
+
+    store = await dataset_store.async_get_store(hass)
+    assert len(store.datasets) == 1
+    assert next(iter(store.datasets.values())).tlv == DATASET_1_LARGER_TIMESTAMP
 
 
 async def test_add_invalid_dataset(
@@ -57,7 +84,10 @@ async def test_add_invalid_dataset(
     )
     msg = await client.receive_json()
     assert not msg["success"]
-    assert msg["error"] == {"code": "invalid_format", "message": "unknown type 222"}
+    assert msg["error"] == {
+        "code": "invalid_format",
+        "message": "expected 173 bytes for tag 222, got 2",
+    }
 
 
 async def test_delete_dataset(
@@ -234,7 +264,7 @@ async def test_set_preferred_border_agent(
     )
     msg = await client.receive_json()
     assert msg["success"]
-    assert msg["result"] is None
+    assert msg["result"] == {"result": "stored"}
 
     await client.send_json_auto_id({"type": "thread/list_datasets"})
     msg = await client.receive_json()
@@ -353,6 +383,7 @@ async def test_discover_routers(
     assert msg == {
         "event": {
             "data": {
+                "instance_name": "HomeAssistant OpenThreadBorderRouter #0BBF",
                 "addresses": ["192.168.0.115"],
                 "border_agent_id": "230c6a1ac57f6f4be262acf32e5ef52c",
                 "brand": "homeassistant",
@@ -388,6 +419,7 @@ async def test_discover_routers(
                 "brand": "google",
                 "extended_address": "f6a99b425a67abed",
                 "extended_pan_id": "9e75e256f61409a3",
+                "instance_name": "Google-Nest-Hub-#ABED",
                 "model_name": "Google Nest Hub",
                 "network_name": "NEST-PAN-E1AF",
                 "server": "2d99f293-cd8e-2770-8dd2-6675de9fa000.local.",

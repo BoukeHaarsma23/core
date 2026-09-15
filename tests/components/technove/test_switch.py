@@ -1,5 +1,6 @@
 """Tests for the TechnoVE switch platform."""
 
+from dataclasses import replace
 from unittest.mock import MagicMock
 
 import pytest
@@ -15,7 +16,7 @@ from homeassistant.const import (
     Platform,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 
 from . import setup_with_selected_platforms
@@ -45,48 +46,57 @@ async def test_switches(
 
 
 @pytest.mark.parametrize(
-    ("entity_id", "method", "called_with_on", "called_with_off"),
+    ("entity_id", "service", "method", "called_with"),
     [
         (
             "switch.technove_station_auto_charge",
+            SERVICE_TURN_ON,
             "set_auto_charge",
             {"enabled": True},
+        ),
+        (
+            "switch.technove_station_auto_charge",
+            SERVICE_TURN_OFF,
+            "set_auto_charge",
+            {"enabled": False},
+        ),
+        (
+            "switch.technove_station_charging_enabled",
+            SERVICE_TURN_ON,
+            "set_charging_enabled",
+            {"enabled": True},
+        ),
+        (
+            "switch.technove_station_charging_enabled",
+            SERVICE_TURN_OFF,
+            "set_charging_enabled",
             {"enabled": False},
         ),
     ],
 )
 @pytest.mark.usefixtures("init_integration")
-async def test_switch_on_off(
+async def test_switch_services(
     hass: HomeAssistant,
     mock_technove: MagicMock,
     entity_id: str,
+    service: str,
     method: str,
-    called_with_on: dict[str, bool | int],
-    called_with_off: dict[str, bool | int],
+    called_with: dict[str, bool | int],
 ) -> None:
-    """Test on/off services."""
+    """Test switch services."""
     state = hass.states.get(entity_id)
     method_mock = getattr(mock_technove, method)
 
     await hass.services.async_call(
         SWITCH_DOMAIN,
-        SERVICE_TURN_ON,
+        service,
         {ATTR_ENTITY_ID: state.entity_id},
         blocking=True,
     )
 
     assert method_mock.call_count == 1
-    method_mock.assert_called_with(**called_with_on)
-
-    await hass.services.async_call(
-        SWITCH_DOMAIN,
-        SERVICE_TURN_OFF,
-        {ATTR_ENTITY_ID: state.entity_id},
-        blocking=True,
-    )
-
-    assert method_mock.call_count == 2
-    method_mock.assert_called_with(**called_with_off)
+    method_mock.assert_called_with(**called_with)
+    assert mock_technove.update.call_count == 2
 
 
 @pytest.mark.parametrize(
@@ -95,6 +105,10 @@ async def test_switch_on_off(
         (
             "switch.technove_station_auto_charge",
             "set_auto_charge",
+        ),
+        (
+            "switch.technove_station_charging_enabled",
+            "set_charging_enabled",
         ),
     ],
 )
@@ -130,6 +144,10 @@ async def test_invalid_response(
             "switch.technove_station_auto_charge",
             "set_auto_charge",
         ),
+        (
+            "switch.technove_station_charging_enabled",
+            "set_charging_enabled",
+        ),
     ],
 )
 @pytest.mark.usefixtures("init_integration")
@@ -157,3 +175,31 @@ async def test_connection_error(
     assert method_mock.call_count == 1
     assert (state := hass.states.get(state.entity_id))
     assert state.state == STATE_UNAVAILABLE
+
+
+@pytest.mark.usefixtures("init_integration")
+async def test_disable_charging_auto_charge(
+    hass: HomeAssistant,
+    mock_technove: MagicMock,
+) -> None:
+    """Test failure to disable charging when the station is in auto charge mode."""
+    entity_id = "switch.technove_station_charging_enabled"
+    state = hass.states.get(entity_id)
+
+    # Enable auto-charge mode
+    device = mock_technove.update.return_value
+    device.info = replace(device.info, auto_charge=True)
+
+    with pytest.raises(
+        ServiceValidationError,
+        match="auto-charge is enabled",
+    ):
+        await hass.services.async_call(
+            SWITCH_DOMAIN,
+            SERVICE_TURN_OFF,
+            {ATTR_ENTITY_ID: entity_id},
+            blocking=True,
+        )
+
+    assert (state := hass.states.get(state.entity_id))
+    assert state.state != STATE_UNAVAILABLE

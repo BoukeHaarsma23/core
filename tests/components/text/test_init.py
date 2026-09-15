@@ -64,21 +64,22 @@ async def test_text_set_value(hass: HomeAssistant) -> None:
 
     with pytest.raises(ValueError):
         await _async_set_value(
-            text, ServiceCall(DOMAIN, SERVICE_SET_VALUE, {ATTR_VALUE: ""})
+            text, ServiceCall(hass, DOMAIN, SERVICE_SET_VALUE, {ATTR_VALUE: ""})
         )
 
     with pytest.raises(ValueError):
         await _async_set_value(
-            text, ServiceCall(DOMAIN, SERVICE_SET_VALUE, {ATTR_VALUE: "hello world!"})
+            text,
+            ServiceCall(hass, DOMAIN, SERVICE_SET_VALUE, {ATTR_VALUE: "hello world!"}),
         )
 
     with pytest.raises(ValueError):
         await _async_set_value(
-            text, ServiceCall(DOMAIN, SERVICE_SET_VALUE, {ATTR_VALUE: "HELLO"})
+            text, ServiceCall(hass, DOMAIN, SERVICE_SET_VALUE, {ATTR_VALUE: "HELLO"})
         )
 
     await _async_set_value(
-        text, ServiceCall(DOMAIN, SERVICE_SET_VALUE, {ATTR_VALUE: "test2"})
+        text, ServiceCall(hass, DOMAIN, SERVICE_SET_VALUE, {ATTR_VALUE: "test2"})
     )
 
     assert text.state == "test2"
@@ -118,7 +119,7 @@ async def test_restore_number_save_state(
     )
     setup_test_component_platform(hass, DOMAIN, [entity0])
 
-    assert await async_setup_component(hass, "text", {"text": {"platform": "test"}})
+    assert await async_setup_component(hass, DOMAIN, {"text": {"platform": "test"}})
     await hass.async_block_till_done()
 
     # Trigger saving state
@@ -162,7 +163,7 @@ async def test_restore_number_restore_state(
     )
     setup_test_component_platform(hass, DOMAIN, [entity0])
 
-    assert await async_setup_component(hass, "text", {"text": {"platform": "test"}})
+    assert await async_setup_component(hass, DOMAIN, {"text": {"platform": "test"}})
     await hass.async_block_till_done()
 
     assert hass.states.get(entity0.entity_id)

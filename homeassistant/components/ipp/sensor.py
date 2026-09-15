@@ -1,11 +1,9 @@
 """Support for IPP sensors."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from typing import Any
+from datetime import datetime
+from typing import Any, override
 
 from pyipp import Marker, Printer
 
@@ -17,11 +15,9 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import ATTR_LOCATION, PERCENTAGE, EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
-from homeassistant.util.dt import utcnow
 
-from . import IPPConfigEntry
 from .const import (
     ATTR_COMMAND_SET,
     ATTR_INFO,
@@ -33,6 +29,7 @@ from .const import (
     ATTR_STATE_REASON,
     ATTR_URI_SUPPORTED,
 )
+from .coordinator import IPPConfigEntry
 from .entity import IPPEntity
 
 
@@ -80,7 +77,7 @@ PRINTER_SENSORS: tuple[IPPSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
-        value_fn=lambda printer: (utcnow() - timedelta(seconds=printer.info.uptime)),
+        value_fn=lambda printer: printer.booted_at,
     ),
 )
 
@@ -88,7 +85,7 @@ PRINTER_SENSORS: tuple[IPPSensorEntityDescription, ...] = (
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: IPPConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up IPP sensor based on a config entry."""
     coordinator = entry.runtime_data
@@ -135,11 +132,13 @@ class IPPSensor(IPPEntity, SensorEntity):
     entity_description: IPPSensorEntityDescription
 
     @property
+    @override
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the state attributes of the entity."""
         return self.entity_description.attributes_fn(self.coordinator.data)
 
     @property
+    @override
     def native_value(self) -> StateType | datetime:
         """Return the state of the sensor."""
         return self.entity_description.value_fn(self.coordinator.data)

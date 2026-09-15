@@ -1,9 +1,7 @@
 """Support for Abode Security System cameras."""
 
-from __future__ import annotations
-
 from datetime import timedelta
-from typing import Any, cast
+from typing import Any, cast, override
 
 from jaraco.abode.devices.base import Device
 from jaraco.abode.devices.camera import Camera as AbodeCam
@@ -12,24 +10,25 @@ import requests
 from requests.models import Response
 
 from homeassistant.components.camera import Camera
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import Throttle
 
-from . import AbodeSystem
-from .const import DOMAIN, LOGGER
+from . import AbodeConfigEntry, AbodeSystem
+from .const import LOGGER
 from .entity import AbodeDevice
 
 MIN_TIME_BETWEEN_UPDATES = timedelta(seconds=90)
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: AbodeConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Abode camera devices."""
-    data: AbodeSystem = hass.data[DOMAIN]
+    data = entry.runtime_data
 
     async_add_entities(
         AbodeCamera(data, device, timeline.CAPTURE_IMAGE)
@@ -50,6 +49,7 @@ class AbodeCamera(AbodeDevice, Camera):
         self._event = event
         self._response: Response | None = None
 
+    @override
     async def async_added_to_hass(self) -> None:
         """Subscribe Abode events."""
         await super().async_added_to_hass()
@@ -88,6 +88,7 @@ class AbodeCamera(AbodeDevice, Camera):
         else:
             self._response = None
 
+    @override
     def camera_image(
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
@@ -99,10 +100,12 @@ class AbodeCamera(AbodeDevice, Camera):
 
         return None
 
+    @override
     def turn_on(self) -> None:
         """Turn on camera."""
         self._device.privacy_mode(False)
 
+    @override
     def turn_off(self) -> None:
         """Turn off camera."""
         self._device.privacy_mode(True)
@@ -114,6 +117,7 @@ class AbodeCamera(AbodeDevice, Camera):
         self.schedule_update_ha_state()
 
     @property
+    @override
     def is_on(self) -> bool:
         """Return true if on."""
         return cast(bool, self._device.is_on)

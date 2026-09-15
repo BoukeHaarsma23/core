@@ -1,9 +1,8 @@
 """Text entities for UniFi Protect."""
 
-from __future__ import annotations
-
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import override
 
 from uiprotect.data import (
     Camera,
@@ -15,15 +14,24 @@ from uiprotect.data import (
 from homeassistant.components.text import TextEntity, TextEntityDescription
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .data import ProtectDeviceType, UFPConfigEntry
-from .entity import ProtectDeviceEntity, async_all_device_entities
-from .models import PermRequired, ProtectEntityDescription, ProtectSetableKeysMixin, T
+from .entity import (
+    PermRequired,
+    ProtectDeviceEntity,
+    ProtectEntityDescription,
+    ProtectSettableKeysMixin,
+    T,
+    async_all_device_entities,
+)
+from .utils import async_ufp_instance_command
+
+PARALLEL_UPDATES = 0
 
 
 @dataclass(frozen=True, kw_only=True)
-class ProtectTextEntityDescription(ProtectSetableKeysMixin[T], TextEntityDescription):
+class ProtectTextEntityDescription(ProtectSettableKeysMixin[T], TextEntityDescription):
     """Describes UniFi Protect Text entity."""
 
 
@@ -34,13 +42,16 @@ def _get_doorbell_current(obj: Camera) -> str | None:
 
 
 async def _set_doorbell_message(obj: Camera, message: str) -> None:
-    await obj.set_lcd_text(DoorbellMessageType.CUSTOM_MESSAGE, text=message)
+    # reset_at=None keeps the message up until it is changed
+    await obj.set_lcd_message_public(
+        DoorbellMessageType.CUSTOM_MESSAGE, text=message, reset_at=None
+    )
 
 
 CAMERA: tuple[ProtectTextEntityDescription, ...] = (
     ProtectTextEntityDescription(
         key="doorbell",
-        name="Doorbell",
+        translation_key="doorbell",
         entity_category=EntityCategory.CONFIG,
         ufp_value_fn=_get_doorbell_current,
         ufp_set_method_fn=_set_doorbell_message,
@@ -57,7 +68,7 @@ _MODEL_DESCRIPTIONS: dict[ModelType, Sequence[ProtectEntityDescription]] = {
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: UFPConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up sensors for UniFi Protect integration."""
     data = entry.runtime_data
@@ -88,10 +99,15 @@ class ProtectDeviceText(ProtectDeviceEntity, TextEntity):
     _state_attrs = ("_attr_available", "_attr_native_value")
 
     @callback
+    @override
     def _async_update_device_from_protect(self, device: ProtectDeviceType) -> None:
         super()._async_update_device_from_protect(device)
-        self._attr_native_value = self.entity_description.get_ufp_value(self.device)
+        self._attr_native_value = self.entity_description.get_value(
+            self.device, self._ufp_public_obj
+        )
 
+    @async_ufp_instance_command
+    @override
     async def async_set_value(self, value: str) -> None:
         """Change the value."""
         await self.entity_description.ufp_set(self.device, value)

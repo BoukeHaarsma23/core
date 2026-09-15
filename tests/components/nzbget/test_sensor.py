@@ -3,9 +3,18 @@
 from datetime import timedelta
 from unittest.mock import patch
 
+import pytest
+
+from homeassistant.components.nzbget.const import DOMAIN
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
+    CONF_HOST,
+    CONF_PASSWORD,
+    CONF_PORT,
+    CONF_SSL,
+    CONF_USERNAME,
+    CONF_VERIFY_SSL,
     UnitOfDataRate,
     UnitOfInformation,
 )
@@ -13,12 +22,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
-from . import init_integration
+from . import ENTRY_OPTIONS, init_integration
+
+from tests.common import MockConfigEntry
 
 
-async def test_sensors(
-    hass: HomeAssistant, entity_registry: er.EntityRegistry, nzbget_api
-) -> None:
+@pytest.mark.usefixtures("nzbget_api")
+async def test_sensors(hass: HomeAssistant, entity_registry: er.EntityRegistry) -> None:
     """Test the creation and values of the sensors."""
     now = dt_util.utcnow().replace(microsecond=0)
     with patch("homeassistant.components.nzbget.sensor.utcnow", return_value=now):
@@ -35,14 +45,14 @@ async def test_sensors(
         ),
         "average_speed": (
             "AverageDownloadRate",
-            "1.250000",
+            "1.25",
             UnitOfDataRate.MEGABYTES_PER_SECOND,
             SensorDeviceClass.DATA_RATE,
         ),
         "download_paused": ("DownloadPaused", "False", None, None),
         "speed": (
             "DownloadRate",
-            "2.500000",
+            "2.5",
             UnitOfDataRate.MEGABYTES_PER_SECOND,
             SensorDeviceClass.DATA_RATE,
         ),
@@ -69,7 +79,7 @@ async def test_sensors(
         "uptime": ("UpTimeSec", uptime.isoformat(), None, SensorDeviceClass.TIMESTAMP),
         "speed_limit": (
             "DownloadLimit",
-            "1.000000",
+            "1.0",
             UnitOfDataRate.MEGABYTES_PER_SECOND,
             SensorDeviceClass.DATA_RATE,
         ),
@@ -85,3 +95,29 @@ async def test_sensors(
         assert state
         assert state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) == data[2]
         assert state.state == data[1]
+
+
+@pytest.mark.usefixtures("nzbget_api")
+async def test_sensor_name_from_entry_title(hass: HomeAssistant) -> None:
+    """Test sensors are named from the entry title when no legacy name is stored."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="10.10.10.30",
+        data={
+            CONF_HOST: "10.10.10.30",
+            CONF_PASSWORD: "",
+            CONF_PORT: 6789,
+            CONF_SSL: False,
+            CONF_USERNAME: "",
+            CONF_VERIFY_SSL: False,
+        },
+        options=ENTRY_OPTIONS,
+    )
+    entry.add_to_hass(hass)
+
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.10_10_10_30_speed")
+    assert state
+    assert state.name == "10.10.10.30 Speed"

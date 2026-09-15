@@ -1,7 +1,5 @@
 """Test system log component."""
 
-from __future__ import annotations
-
 import asyncio
 from collections.abc import Awaitable
 import logging
@@ -36,7 +34,7 @@ async def get_error_log(hass_ws_client):
 
 def _generate_and_log_exception(exception, log):
     try:
-        raise Exception(exception)  # pylint: disable=broad-exception-raised
+        raise Exception(exception)  # noqa: TRY002, TRY301
     except Exception:
         _LOGGER.exception(log)
 
@@ -145,7 +143,7 @@ async def test_warning(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) 
 async def test_warning_good_format(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
-    """Test that warning with good format arguments are logged and retrieved correctly."""
+    """Test warning with good format arguments are logged correctly."""
     await async_setup_component(hass, system_log.DOMAIN, BASIC_CONFIG)
     await hass.async_block_till_done()
     _LOGGER.warning("Warning message: %s", "test")
@@ -158,7 +156,7 @@ async def test_warning_good_format(
 async def test_warning_missing_format_args(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
-    """Test that warning with missing format arguments are logged and retrieved correctly."""
+    """Test warning with missing format args are logged correctly."""
     await async_setup_component(hass, system_log.DOMAIN, BASIC_CONFIG)
     await hass.async_block_till_done()
     _LOGGER.warning("Warning message missing a format arg %s")
@@ -371,7 +369,9 @@ def get_frame(path: str, previous_frame: MagicMock | None) -> MagicMock:
     )
 
 
-async def async_log_error_from_test_path(hass, path, watcher):
+async def async_log_error_from_test_path(
+    hass: HomeAssistant, path: str, watcher: WatchLogErrorHandler
+) -> None:
     """Log error while mocking the path."""
     call_path = "internal_path.py"
     main_frame = get_frame("main_path/main.py", None)
@@ -461,7 +461,7 @@ async def test__figure_out_source(hass: HomeAssistant) -> None:
     in a test because the test is not a component.
     """
     try:
-        raise ValueError("test")
+        raise ValueError("test")  # noqa: TRY301
     except ValueError as ex:
         exc_info = (type(ex), ex, ex.__traceback__)
     mock_record = MagicMock(
@@ -486,7 +486,7 @@ async def test__figure_out_source(hass: HomeAssistant) -> None:
 async def test_formatting_exception(hass: HomeAssistant) -> None:
     """Test that exceptions are formatted correctly."""
     try:
-        raise ValueError("test")
+        raise ValueError("test")  # noqa: TRY301
     except ValueError as ex:
         exc_info = (type(ex), ex, ex.__traceback__)
     mock_record = MagicMock(

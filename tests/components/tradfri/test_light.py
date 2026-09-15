@@ -9,10 +9,10 @@ from pytradfri.device import Device
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
     ATTR_COLOR_MODE,
-    ATTR_COLOR_TEMP,
+    ATTR_COLOR_TEMP_KELVIN,
     ATTR_HS_COLOR,
-    ATTR_MAX_MIREDS,
-    ATTR_MIN_MIREDS,
+    ATTR_MAX_COLOR_TEMP_KELVIN,
+    ATTR_MIN_COLOR_TEMP_KELVIN,
     ATTR_SUPPORTED_COLOR_MODES,
     DOMAIN as LIGHT_DOMAIN,
     ColorMode,
@@ -67,9 +67,9 @@ def bulb_cws() -> str:
             "light.test_ws",
             {
                 ATTR_BRIGHTNESS: 250,
-                ATTR_COLOR_TEMP: 400,
-                ATTR_MIN_MIREDS: 250,
-                ATTR_MAX_MIREDS: 454,
+                ATTR_COLOR_TEMP_KELVIN: 2500,
+                ATTR_MAX_COLOR_TEMP_KELVIN: 4000,
+                ATTR_MIN_COLOR_TEMP_KELVIN: 2202,
                 ATTR_SUPPORTED_COLOR_MODES: [ColorMode.COLOR_TEMP],
                 ATTR_COLOR_MODE: ColorMode.COLOR_TEMP,
             },
@@ -166,22 +166,22 @@ async def test_light_available(
         (
             "bulb_ws",
             "light.test_ws",
-            {"color_temp": 250},
-            {"color_temp": 250},
+            {"color_temp_kelvin": 4000},
+            {"color_temp_kelvin": 4000},
         ),
-        # color_temp < 250
+        # color_temp_kelvin > 4000
         (
             "bulb_ws",
             "light.test_ws",
-            {"color_temp": 1},
-            {"color_temp": 250},
+            {"color_temp_kelvin": 1000000},
+            {"color_temp_kelvin": 4000},
         ),
-        # color_temp > 454
+        # color_temp_kelvin < 2202
         (
             "bulb_ws",
             "light.test_ws",
-            {"color_temp": 1000},
-            {"color_temp": 454},
+            {"color_temp_kelvin": 1000},
+            {"color_temp_kelvin": 2202},
         ),
         # hs_color
         (
@@ -194,21 +194,21 @@ async def test_light_available(
         (
             "bulb_ws",
             "light.test_ws",
-            {"color_temp": 250, "brightness": 200},
-            {"color_temp": 250, "brightness": 200},
+            {"color_temp_kelvin": 4000, "brightness": 200},
+            {"color_temp_kelvin": 4000, "brightness": 200},
         ),
         # ct + brightness (no temp support)
         (
             "bulb_cws",
             "light.test_cws",
-            {"color_temp": 250, "brightness": 200},
+            {"color_temp_kelvin": 4000, "brightness": 200},
             {"hs_color": [26.807, 34.869], "brightness": 200},
         ),
         # ct + brightness (no temp or color support)
         (
             "bulb_w",
             "light.test_w",
-            {"color_temp": 250, "brightness": 200},
+            {"color_temp_kelvin": 4000, "brightness": 200},
             {"brightness": 200},
         ),
         # hs + brightness
@@ -225,9 +225,9 @@ async def test_light_available(
         "brightness > 0",
         "brightness == 1",
         "brightness > 254",
-        "color_temp",
-        "color_temp < 250",
-        "color_temp > 454",
+        "color_temp_kelvin",
+        "color_temp_kelvin > 4000",
+        "color_temp_kelvin < 2202",
         "hs_color",
         "ct + brightness",
         "ct + brightness (no temp support)",
@@ -245,9 +245,15 @@ async def test_turn_on(
     state_attributes: dict[str, Any],
 ) -> None:
     """Test turning on a light."""
-    # Make sure the light is off.
-    device.raw[ATTR_LIGHT_CONTROL][0][ATTR_DEVICE_STATE] = 0
     await setup_integration(hass)
+
+    await command_store.trigger_observe_callback(
+        hass, device, {ATTR_LIGHT_CONTROL: [{ATTR_DEVICE_STATE: 0}]}
+    )
+
+    state = hass.states.get(entity_id)
+    assert state
+    assert state.state == STATE_OFF
 
     await hass.services.async_call(
         LIGHT_DOMAIN,

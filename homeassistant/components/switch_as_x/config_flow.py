@@ -1,11 +1,9 @@
 """Config flow for Switch as X integration."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, override
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.const import CONF_ENTITY_ID, Platform
 from homeassistant.helpers import entity_registry as er, selector
@@ -18,24 +16,28 @@ from homeassistant.helpers.schema_config_entry_flow import (
 from .const import CONF_INVERT, CONF_TARGET_DOMAIN, DOMAIN
 
 TARGET_DOMAIN_OPTIONS = [
-    selector.SelectOptionDict(value=Platform.COVER, label="Cover"),
-    selector.SelectOptionDict(value=Platform.FAN, label="Fan"),
-    selector.SelectOptionDict(value=Platform.LIGHT, label="Light"),
-    selector.SelectOptionDict(value=Platform.LOCK, label="Lock"),
-    selector.SelectOptionDict(value=Platform.SIREN, label="Siren"),
-    selector.SelectOptionDict(value=Platform.VALVE, label="Valve"),
+    Platform.COVER,
+    Platform.FAN,
+    Platform.LIGHT,
+    Platform.LOCK,
+    Platform.SIREN,
+    Platform.VALVE,
 ]
 
 CONFIG_FLOW = {
     "user": SchemaFlowFormStep(
-        vol.Schema(
+        probatio.Schema(
             {
-                vol.Required(CONF_ENTITY_ID): selector.EntitySelector(
+                probatio.Required(CONF_ENTITY_ID): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain=Platform.SWITCH),
                 ),
-                vol.Optional(CONF_INVERT, default=False): selector.BooleanSelector(),
-                vol.Required(CONF_TARGET_DOMAIN): selector.SelectSelector(
-                    selector.SelectSelectorConfig(options=TARGET_DOMAIN_OPTIONS),
+                probatio.Optional(
+                    CONF_INVERT, default=False
+                ): selector.BooleanSelector(),
+                probatio.Required(CONF_TARGET_DOMAIN): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=TARGET_DOMAIN_OPTIONS, translation_key="target_domain"
+                    ),
                 ),
             }
         )
@@ -44,7 +46,7 @@ CONFIG_FLOW = {
 
 OPTIONS_FLOW = {
     "init": SchemaFlowFormStep(
-        vol.Schema({vol.Required(CONF_INVERT): selector.BooleanSelector()})
+        probatio.Schema({probatio.Required(CONF_INVERT): selector.BooleanSelector()})
     ),
 }
 
@@ -54,10 +56,12 @@ class SwitchAsXConfigFlowHandler(SchemaConfigFlowHandler, domain=DOMAIN):
 
     config_flow = CONFIG_FLOW
     options_flow = OPTIONS_FLOW
+    options_flow_reloads = True
 
     VERSION = 1
-    MINOR_VERSION = 2
+    MINOR_VERSION = 3
 
+    @override
     def async_config_entry_title(self, options: Mapping[str, Any]) -> str:
         """Return config entry title and hide the wrapped entity if registered."""
         # Hide the wrapped entry if registered

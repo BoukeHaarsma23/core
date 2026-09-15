@@ -1,14 +1,13 @@
 """Config flow to configure deCONZ component."""
 
-from __future__ import annotations
-
 import asyncio
 from collections.abc import Mapping
 import logging
 from pprint import pformat
-from typing import Any, cast
+from typing import Any, cast, override
 from urllib.parse import urlparse
 
+import probatio
 from pydeconz.errors import LinkButtonNotPressed, RequestError, ResponseError
 from pydeconz.gateway import DeconzSession
 from pydeconz.utils import (
@@ -17,10 +16,7 @@ from pydeconz.utils import (
     get_bridge_id as deconz_get_bridge_id,
     normalize_bridge_id,
 )
-import voluptuous as vol
 
-from homeassistant.components import ssdp
-from homeassistant.components.hassio import HassioServiceInfo
 from homeassistant.config_entries import (
     SOURCE_HASSIO,
     ConfigEntry,
@@ -29,8 +25,10 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.const import CONF_API_KEY, CONF_HOST, CONF_PORT
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import callback
 from homeassistant.helpers import aiohttp_client
+from homeassistant.helpers.service_info.hassio import HassioServiceInfo
+from homeassistant.helpers.service_info.ssdp import ATTR_UPNP_SERIAL, SsdpServiceInfo
 
 from .const import (
     CONF_ALLOW_CLIP_SENSOR,
@@ -51,15 +49,6 @@ CONF_SERIAL = "serial"
 CONF_MANUAL_INPUT = "Manually define gateway"
 
 
-@callback
-def get_master_hub(hass: HomeAssistant) -> DeconzHub:
-    """Return the gateway which is marked as master."""
-    for hub in hass.data[DOMAIN].values():
-        if hub.master:
-            return cast(DeconzHub, hub)
-    raise ValueError
-
-
 class DeconzFlowHandler(ConfigFlow, domain=DOMAIN):
     """Handle a deCONZ config flow."""
 
@@ -74,14 +63,18 @@ class DeconzFlowHandler(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+    @override
+    def async_get_options_flow(
+        config_entry: ConfigEntry,
+    ) -> DeconzOptionsFlowHandler:
         """Get the options flow for this handler."""
-        return DeconzOptionsFlowHandler(config_entry)
+        return DeconzOptionsFlowHandler()
 
     def __init__(self) -> None:
         """Initialize the deCONZ config flow."""
         self.bridge_id = ""
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -107,7 +100,7 @@ class DeconzFlowHandler(ConfigFlow, domain=DOMAIN):
             async with asyncio.timeout(10):
                 self.bridges = await deconz_discovery(session)
 
-        except (TimeoutError, ResponseError):
+        except TimeoutError, ResponseError:
             self.bridges = []
 
         if LOGGER.isEnabledFor(logging.DEBUG):
@@ -120,7 +113,9 @@ class DeconzFlowHandler(ConfigFlow, domain=DOMAIN):
 
             return self.async_show_form(
                 step_id="user",
-                data_schema=vol.Schema({vol.Optional(CONF_HOST): vol.In(hosts)}),
+                data_schema=probatio.Schema(
+                    {probatio.Optional(CONF_HOST): probatio.In(hosts)}
+                ),
             )
 
         return await self.async_step_manual_input()
@@ -136,10 +131,10 @@ class DeconzFlowHandler(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="manual_input",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(CONF_HOST): str,
-                    vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
+                    probatio.Required(CONF_HOST): str,
+                    probatio.Required(CONF_PORT, default=DEFAULT_PORT): int,
                 }
             ),
         )
@@ -165,7 +160,7 @@ class DeconzFlowHandler(ConfigFlow, domain=DOMAIN):
             except LinkButtonNotPressed:
                 errors["base"] = "linking_not_possible"
 
-            except (ResponseError, RequestError, TimeoutError):
+            except ResponseError, RequestError, TimeoutError:
                 errors["base"] = "no_key"
 
             else:
@@ -191,7 +186,8 @@ class DeconzFlowHandler(ConfigFlow, domain=DOMAIN):
                             CONF_HOST: self.host,
                             CONF_PORT: self.port,
                             CONF_API_KEY: self.api_key,
-                        }
+                        },
+                        reload_on_update=False,
                     )
 
             except TimeoutError:
@@ -217,14 +213,15 @@ class DeconzFlowHandler(ConfigFlow, domain=DOMAIN):
 
         return await self.async_step_link()
 
+    @override
     async def async_step_ssdp(
-        self, discovery_info: ssdp.SsdpServiceInfo
+        self, discovery_info: SsdpServiceInfo
     ) -> ConfigFlowResult:
         """Handle a discovered deCONZ bridge."""
         if LOGGER.isEnabledFor(logging.DEBUG):
             LOGGER.debug("deCONZ SSDP discovery %s", pformat(discovery_info))
 
-        self.bridge_id = normalize_bridge_id(discovery_info.upnp[ssdp.ATTR_UPNP_SERIAL])
+        self.bridge_id = normalize_bridge_id(discovery_info.upnp[ATTR_UPNP_SERIAL])
         parsed_url = urlparse(discovery_info.ssdp_location)
 
         entry = await self.async_set_unique_id(self.bridge_id)
@@ -238,7 +235,8 @@ class DeconzFlowHandler(ConfigFlow, domain=DOMAIN):
             updates={
                 CONF_HOST: self.host,
                 CONF_PORT: self.port,
-            }
+            },
+            reload_on_update=False,
         )
 
         self.context.update(
@@ -250,6 +248,7 @@ class DeconzFlowHandler(ConfigFlow, domain=DOMAIN):
 
         return await self.async_step_link()
 
+    @override
     async def async_step_hassio(
         self, discovery_info: HassioServiceInfo
     ) -> ConfigFlowResult:
@@ -272,7 +271,8 @@ class DeconzFlowHandler(ConfigFlow, domain=DOMAIN):
                 CONF_HOST: self.host,
                 CONF_PORT: self.port,
                 CONF_API_KEY: self.api_key,
-            }
+            },
+            reload_on_update=False,
         )
 
         self.context["configuration_url"] = HASSIO_CONFIGURATION_URL
@@ -299,11 +299,6 @@ class DeconzOptionsFlowHandler(OptionsFlow):
 
     gateway: DeconzHub
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialize deCONZ options flow."""
-        self.config_entry = config_entry
-        self.options = dict(config_entry.options)
-
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -315,8 +310,7 @@ class DeconzOptionsFlowHandler(OptionsFlow):
     ) -> ConfigFlowResult:
         """Manage the deconz devices options."""
         if user_input is not None:
-            self.options.update(user_input)
-            return self.async_create_entry(title="", data=self.options)
+            return self.async_create_entry(data=self.config_entry.options | user_input)
 
         schema_options = {}
         for option, default in (
@@ -325,7 +319,7 @@ class DeconzOptionsFlowHandler(OptionsFlow):
             (CONF_ALLOW_NEW_DEVICES, DEFAULT_ALLOW_NEW_DEVICES),
         ):
             schema_options[
-                vol.Optional(
+                probatio.Optional(
                     option,
                     default=self.config_entry.options.get(option, default),
                 )
@@ -333,5 +327,5 @@ class DeconzOptionsFlowHandler(OptionsFlow):
 
         return self.async_show_form(
             step_id="deconz_devices",
-            data_schema=vol.Schema(schema_options),
+            data_schema=probatio.Schema(schema_options),
         )

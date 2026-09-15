@@ -1,6 +1,6 @@
 """Tests for the yandex transport platform."""
 
-import json
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -9,13 +9,13 @@ from homeassistant.components import sensor
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
-import homeassistant.util.dt as dt_util
+from homeassistant.util import dt as dt_util
 
-from tests.common import assert_setup_component, load_fixture
+from tests.common import assert_setup_component, load_json_object_fixture
 
-BUS_REPLY = json.loads(load_fixture("bus_reply.json", "yandex_transport"))
-SUBURBAN_TRAIN_REPLY = json.loads(
-    load_fixture("suburban_reply.json", "yandex_transport")
+BUS_REPLY = load_json_object_fixture("bus_reply.json", "yandex_transport")
+SUBURBAN_TRAIN_REPLY = load_json_object_fixture(
+    "suburban_reply.json", "yandex_transport"
 )
 
 
@@ -76,7 +76,9 @@ SUBURBAN_RESULT_STATE = dt_util.utc_from_timestamp(1634984640).isoformat(
 )
 
 
-async def assert_setup_sensor(hass, config, count=1):
+async def assert_setup_sensor(
+    hass: HomeAssistant, config: dict[str, Any], count: int = 1
+) -> None:
     """Set up the sensor and assert it's been created."""
     with assert_setup_component(count):
         assert await async_setup_component(hass, sensor.DOMAIN, config)

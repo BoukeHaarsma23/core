@@ -15,7 +15,7 @@ async def test_form(hass: HomeAssistant, mock_setup_entry: AsyncMock) -> None:
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
-    assert result["type"] == FlowResultType.FORM
+    assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {}
 
     with patch(
@@ -30,9 +30,8 @@ async def test_form(hass: HomeAssistant, mock_setup_entry: AsyncMock) -> None:
                 CONF_PASSWORD: "test-password",
             },
         )
-        await hass.async_block_till_done()
 
-    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Name of the device"
     assert result["data"] == {
         CONF_HOST: "1.1.1.1",
@@ -63,7 +62,7 @@ async def test_form_invalid_auth(
             },
         )
 
-    assert result["type"] == FlowResultType.FORM
+    assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "invalid_auth"}
 
     # Make sure the config flow tests finish with either an
@@ -81,9 +80,8 @@ async def test_form_invalid_auth(
                 CONF_PASSWORD: "test-password",
             },
         )
-        await hass.async_block_till_done()
 
-    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Name of the device"
     assert result["data"] == {
         CONF_HOST: "1.1.1.1",
@@ -114,7 +112,7 @@ async def test_form_cannot_connect(
             },
         )
 
-    assert result["type"] == FlowResultType.FORM
+    assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "cannot_connect"}
 
     # Make sure the config flow tests finish with either an
@@ -133,9 +131,8 @@ async def test_form_cannot_connect(
                 CONF_PASSWORD: "test-password",
             },
         )
-        await hass.async_block_till_done()
 
-    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "Name of the device"
     assert result["data"] == {
         CONF_HOST: "1.1.1.1",

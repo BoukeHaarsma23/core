@@ -1,8 +1,6 @@
 """Support for the Airzone Cloud sensors."""
 
-from __future__ import annotations
-
-from typing import Any, Final
+from typing import Any, Final, override
 
 from aioairzone_cloud.const import (
     AZD_AIDOOS,
@@ -12,7 +10,16 @@ from aioairzone_cloud.const import (
     AZD_AQ_PM_10,
     AZD_CPU_USAGE,
     AZD_HUMIDITY,
+    AZD_INDOOR_EXCHANGER_TEMP,
+    AZD_INDOOR_RETURN_TEMP,
+    AZD_INDOOR_WORK_TEMP,
     AZD_MEMORY_FREE,
+    AZD_OUTDOOR_CONDENSER_PRESS,
+    AZD_OUTDOOR_DISCHARGE_TEMP,
+    AZD_OUTDOOR_ELECTRIC_CURRENT,
+    AZD_OUTDOOR_EVAPORATOR_PRESS,
+    AZD_OUTDOOR_EXCHANGER_TEMP,
+    AZD_OUTDOOR_TEMP,
     AZD_TEMP,
     AZD_THERMOSTAT_BATTERY,
     AZD_THERMOSTAT_COVERAGE,
@@ -28,18 +35,19 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import (
-    CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
-    PERCENTAGE,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     EntityCategory,
+    UnitOfDensity,
+    UnitOfElectricCurrent,
     UnitOfInformation,
+    UnitOfPressure,
+    UnitOfRatio,
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import AirzoneCloudConfigEntry
-from .coordinator import AirzoneUpdateCoordinator
+from .coordinator import AirzoneCloudConfigEntry, AirzoneUpdateCoordinator
 from .entity import (
     AirzoneAidooEntity,
     AirzoneEntity,
@@ -48,6 +56,78 @@ from .entity import (
 )
 
 AIDOO_SENSOR_TYPES: Final[tuple[SensorEntityDescription, ...]] = (
+    SensorEntityDescription(
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        key=AZD_INDOOR_EXCHANGER_TEMP,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        translation_key="indoor_exchanger_temp",
+    ),
+    SensorEntityDescription(
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        key=AZD_INDOOR_RETURN_TEMP,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        translation_key="indoor_return_temp",
+    ),
+    SensorEntityDescription(
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        key=AZD_INDOOR_WORK_TEMP,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        translation_key="indoor_work_temp",
+    ),
+    SensorEntityDescription(
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        key=AZD_OUTDOOR_CONDENSER_PRESS,
+        native_unit_of_measurement=UnitOfPressure.KPA,
+        state_class=SensorStateClass.MEASUREMENT,
+        translation_key="outdoor_condenser_press",
+    ),
+    SensorEntityDescription(
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        key=AZD_OUTDOOR_DISCHARGE_TEMP,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        translation_key="outdoor_discharge_temp",
+    ),
+    SensorEntityDescription(
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        key=AZD_OUTDOOR_ELECTRIC_CURRENT,
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        state_class=SensorStateClass.MEASUREMENT,
+        translation_key="outdoor_electric_current",
+    ),
+    SensorEntityDescription(
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        key=AZD_OUTDOOR_EVAPORATOR_PRESS,
+        native_unit_of_measurement=UnitOfPressure.KPA,
+        state_class=SensorStateClass.MEASUREMENT,
+        translation_key="outdoor_evaporator_press",
+    ),
+    SensorEntityDescription(
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        key=AZD_OUTDOOR_EXCHANGER_TEMP,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        translation_key="outdoor_exchanger_temp",
+    ),
+    SensorEntityDescription(
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        key=AZD_OUTDOOR_TEMP,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        translation_key="outdoor_temp",
+    ),
     SensorEntityDescription(
         device_class=SensorDeviceClass.TEMPERATURE,
         key=AZD_TEMP,
@@ -61,7 +141,7 @@ WEBSERVER_SENSOR_TYPES: Final[tuple[SensorEntityDescription, ...]] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         key=AZD_CPU_USAGE,
-        native_unit_of_measurement=PERCENTAGE,
+        native_unit_of_measurement=UnitOfRatio.PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         translation_key="cpu_usage",
     ),
@@ -92,19 +172,19 @@ ZONE_SENSOR_TYPES: Final[tuple[SensorEntityDescription, ...]] = (
     SensorEntityDescription(
         device_class=SensorDeviceClass.PM1,
         key=AZD_AQ_PM_1,
-        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        native_unit_of_measurement=UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
         state_class=SensorStateClass.MEASUREMENT,
     ),
     SensorEntityDescription(
         device_class=SensorDeviceClass.PM25,
         key=AZD_AQ_PM_2P5,
-        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        native_unit_of_measurement=UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
         state_class=SensorStateClass.MEASUREMENT,
     ),
     SensorEntityDescription(
         device_class=SensorDeviceClass.PM10,
         key=AZD_AQ_PM_10,
-        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        native_unit_of_measurement=UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
         state_class=SensorStateClass.MEASUREMENT,
     ),
     SensorEntityDescription(
@@ -116,20 +196,20 @@ ZONE_SENSOR_TYPES: Final[tuple[SensorEntityDescription, ...]] = (
     SensorEntityDescription(
         device_class=SensorDeviceClass.HUMIDITY,
         key=AZD_HUMIDITY,
-        native_unit_of_measurement=PERCENTAGE,
+        native_unit_of_measurement=UnitOfRatio.PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
     ),
     SensorEntityDescription(
         device_class=SensorDeviceClass.BATTERY,
         key=AZD_THERMOSTAT_BATTERY,
-        native_unit_of_measurement=PERCENTAGE,
+        native_unit_of_measurement=UnitOfRatio.PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
     ),
     SensorEntityDescription(
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         key=AZD_THERMOSTAT_COVERAGE,
-        native_unit_of_measurement=PERCENTAGE,
+        native_unit_of_measurement=UnitOfRatio.PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         translation_key="thermostat_coverage",
     ),
@@ -139,7 +219,7 @@ ZONE_SENSOR_TYPES: Final[tuple[SensorEntityDescription, ...]] = (
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: AirzoneCloudConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Add Airzone Cloud sensors from a config_entry."""
     coordinator = entry.runtime_data
@@ -189,7 +269,14 @@ async def async_setup_entry(
 class AirzoneSensor(AirzoneEntity, SensorEntity):
     """Define an Airzone Cloud sensor."""
 
+    @property
+    @override
+    def available(self) -> bool:
+        """Return Airzone Cloud sensor availability."""
+        return super().available and self.native_value is not None
+
     @callback
+    @override
     def _handle_coordinator_update(self) -> None:
         """Update attributes when the coordinator updates."""
         self._async_update_attrs()

@@ -1,38 +1,35 @@
 """Support for Blink Alarm Control Panel."""
 
-from __future__ import annotations
-
 import logging
+from typing import override
 
+from blinkpy.auth import UnauthorizedError
 from blinkpy.blinkpy import Blink, BlinkSyncModule
 
 from homeassistant.components.alarm_control_panel import (
     AlarmControlPanelEntity,
     AlarmControlPanelEntityFeature,
-)
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import (
-    ATTR_ATTRIBUTION,
-    STATE_ALARM_ARMED_AWAY,
-    STATE_ALARM_DISARMED,
+    AlarmControlPanelState,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DEFAULT_ATTRIBUTION, DEFAULT_BRAND, DOMAIN
-from .coordinator import BlinkUpdateCoordinator
+from .coordinator import BlinkConfigEntry, BlinkUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, config: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    config_entry: BlinkConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the Blink Alarm Control Panels."""
-    coordinator: BlinkUpdateCoordinator = hass.data[DOMAIN][config.entry_id]
+    coordinator = config_entry.runtime_data
 
     sync_modules = []
     for sync_name, sync_module in coordinator.api.sync.items():
@@ -45,6 +42,7 @@ class BlinkSyncModuleHA(
 ):
     """Representation of a Blink Alarm Control Panel."""
 
+    _attr_attribution = DEFAULT_ATTRIBUTION
     _attr_supported_features = AlarmControlPanelEntityFeature.ARM_AWAY
     _attr_code_arm_required = False
     _attr_has_entity_name = True
@@ -68,6 +66,7 @@ class BlinkSyncModuleHA(
         self._update_attr()
 
     @callback
+    @override
     def _handle_coordinator_update(self) -> None:
         """Handle coordinator update."""
         self._update_attr()
@@ -78,12 +77,14 @@ class BlinkSyncModuleHA(
         """Update attributes for alarm control panel."""
         self.sync.attributes["network_info"] = self.api.networks
         self.sync.attributes["associated_cameras"] = list(self.sync.cameras)
-        self.sync.attributes[ATTR_ATTRIBUTION] = DEFAULT_ATTRIBUTION
         self._attr_extra_state_attributes = self.sync.attributes
-        self._attr_state = (
-            STATE_ALARM_ARMED_AWAY if self.sync.arm else STATE_ALARM_DISARMED
+        self._attr_alarm_state = (
+            AlarmControlPanelState.ARMED_AWAY
+            if self.sync.arm
+            else AlarmControlPanelState.DISARMED
         )
 
+    @override
     async def async_alarm_disarm(self, code: str | None = None) -> None:
         """Send disarm command."""
         try:
@@ -91,9 +92,13 @@ class BlinkSyncModuleHA(
 
         except TimeoutError as er:
             raise HomeAssistantError("Blink failed to disarm camera") from er
+        except UnauthorizedError as er:
+            self.coordinator.config_entry.async_start_reauth(self.hass)
+            raise ConfigEntryAuthFailed("Blink authorization failed") from er
 
         await self.coordinator.async_refresh()
 
+    @override
     async def async_alarm_arm_away(self, code: str | None = None) -> None:
         """Send arm command."""
         try:
@@ -101,5 +106,8 @@ class BlinkSyncModuleHA(
 
         except TimeoutError as er:
             raise HomeAssistantError("Blink failed to arm camera away") from er
+        except UnauthorizedError as er:
+            self.coordinator.config_entry.async_start_reauth(self.hass)
+            raise ConfigEntryAuthFailed("Blink authorization failed") from er
 
         await self.coordinator.async_refresh()

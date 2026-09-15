@@ -1,7 +1,7 @@
 """Base entity for the Chacon Dio entity."""
 
 import logging
-from typing import Any
+from typing import Any, override
 
 from dio_chacon_wifi_api import DIOChaconAPIClient
 
@@ -38,6 +38,7 @@ class ChaconDioEntity(Entity):
     def _update_attr(self, data: dict[str, Any]) -> None:
         """Recomputes the attributes values."""
 
+    @override
     async def async_added_to_hass(self) -> None:
         """Register the callback for server side events."""
         await super().async_added_to_hass()
@@ -51,3 +52,11 @@ class ChaconDioEntity(Entity):
         _LOGGER.debug("Data received from server %s", data)
         self._update_attr(data)
         self.async_write_ha_state()
+
+    async def async_update(self) -> None:
+        """Update the state when the entity is requested to."""
+
+        _LOGGER.debug("Update called for %s, %s", self, self.target_id)
+        data = await self.client.get_status_details([self.target_id])
+        _LOGGER.debug("Received data from server %s", data)
+        self._update_attr(data[self.target_id])

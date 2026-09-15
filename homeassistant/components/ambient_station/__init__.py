@@ -1,7 +1,5 @@
 """Support for Ambient Weather Station Service."""
 
-from __future__ import annotations
-
 from typing import Any
 
 from aioambient import Websocket
@@ -17,15 +15,12 @@ from homeassistant.const import (
 )
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers import config_validation as cv
-import homeassistant.helpers.device_registry as dr
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-import homeassistant.helpers.entity_registry as er
 
 from .const import (
     ATTR_LAST_DATA,
     CONF_APP_KEY,
-    DOMAIN,
     LOGGER,
     TYPE_SOLARRADIATION,
     TYPE_SOLARRADIATION_LX,
@@ -37,7 +32,6 @@ DATA_CONFIG = "config"
 
 DEFAULT_SOCKET_MIN_RETRY = 15
 
-CONFIG_SCHEMA = cv.removed(DOMAIN, raise_if_present=False)
 
 type AmbientStationConfigEntry = ConfigEntry[AmbientStation]
 
@@ -112,7 +106,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # 1 -> 2: Unique ID format changed, so delete and re-import:
     if version == 1:
         dev_reg = dr.async_get(hass)
-        dev_reg.async_clear_config_entry(entry.entry_id)
+        dev_reg.async_clear_config_entry(entry.entry_id, entry.domain)
 
         en_reg = er.async_get(hass)
         en_reg.async_clear_config_entry(entry.entry_id)

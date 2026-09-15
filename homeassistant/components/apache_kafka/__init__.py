@@ -1,13 +1,11 @@
 """Support for Apache Kafka."""
 
-from __future__ import annotations
-
 from datetime import datetime
 import json
-from typing import Any, Literal
+from typing import Any, Literal, override
 
 from aiokafka import AIOKafkaProducer
-import voluptuous as vol
+import probatio
 
 from homeassistant.const import (
     CONF_IP_ADDRESS,
@@ -18,7 +16,7 @@ from homeassistant.const import (
     EVENT_STATE_CHANGED,
 )
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entityfilter import FILTER_SCHEMA, EntityFilter
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import ssl as ssl_util
@@ -29,23 +27,23 @@ CONF_FILTER = "filter"
 CONF_TOPIC = "topic"
 CONF_SECURITY_PROTOCOL = "security_protocol"
 
-CONFIG_SCHEMA = vol.Schema(
+CONFIG_SCHEMA = probatio.Schema(
     {
-        DOMAIN: vol.Schema(
+        DOMAIN: probatio.Schema(
             {
-                vol.Required(CONF_IP_ADDRESS): cv.string,
-                vol.Required(CONF_PORT): cv.port,
-                vol.Required(CONF_TOPIC): cv.string,
-                vol.Optional(CONF_FILTER, default={}): FILTER_SCHEMA,
-                vol.Optional(CONF_SECURITY_PROTOCOL, default="PLAINTEXT"): vol.In(
-                    ["PLAINTEXT", "SASL_SSL"]
-                ),
-                vol.Optional(CONF_USERNAME): cv.string,
-                vol.Optional(CONF_PASSWORD): cv.string,
+                probatio.Required(CONF_IP_ADDRESS): cv.string,
+                probatio.Required(CONF_PORT): cv.port,
+                probatio.Required(CONF_TOPIC): cv.string,
+                probatio.Optional(CONF_FILTER, default={}): FILTER_SCHEMA,
+                probatio.Optional(
+                    CONF_SECURITY_PROTOCOL, default="PLAINTEXT"
+                ): probatio.In(["PLAINTEXT", "SSL", "SASL_SSL"]),
+                probatio.Optional(CONF_USERNAME): cv.string,
+                probatio.Optional(CONF_PASSWORD): cv.string,
             }
         )
     },
-    extra=vol.ALLOW_EXTRA,
+    extra=probatio.ALLOW_EXTRA,
 )
 
 
@@ -53,7 +51,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Activate the Apache Kafka integration."""
     conf = config[DOMAIN]
 
-    kafka = hass.data[DOMAIN] = KafkaManager(
+    kafka = KafkaManager(
         hass,
         conf[CONF_IP_ADDRESS],
         conf[CONF_PORT],
@@ -77,6 +75,7 @@ class DateTimeJSONEncoder(json.JSONEncoder):
     Additionally add encoding for datetime objects as isoformat.
     """
 
+    @override
     def default(self, o: Any) -> str:
         """Implement encoding logic."""
         if isinstance(o, datetime):
@@ -94,7 +93,7 @@ class KafkaManager:
         port: int,
         topic: str,
         entities_filter: EntityFilter,
-        security_protocol: Literal["PLAINTEXT", "SASL_SSL"],
+        security_protocol: Literal["PLAINTEXT", "SSL", "SASL_SSL"],
         username: str | None,
         password: str | None,
     ) -> None:

@@ -1,21 +1,20 @@
 """Signal Messenger for notify component."""
 
-from __future__ import annotations
-
 import logging
-from typing import Any
+from typing import Any, override
 
+import probatio
 from pysignalclirestapi import SignalCliRestApi, SignalCliRestApiError
 import requests
-import voluptuous as vol
 
 from homeassistant.components.notify import (
     ATTR_DATA,
+    ATTR_TARGET,
     PLATFORM_SCHEMA as NOTIFY_PLATFORM_SCHEMA,
     BaseNotificationService,
 )
 from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 _LOGGER = logging.getLogger(__name__)
@@ -31,26 +30,32 @@ ATTR_TEXTMODE = "text_mode"
 
 TEXTMODE_OPTIONS = ["normal", "styled"]
 
-DATA_FILENAMES_SCHEMA = vol.Schema(
+DATA_FILENAMES_SCHEMA = probatio.Schema(
     {
-        vol.Required(ATTR_FILENAMES): [cv.string],
-        vol.Optional(ATTR_TEXTMODE, default="normal"): vol.In(TEXTMODE_OPTIONS),
+        probatio.Required(ATTR_FILENAMES): [cv.string],
+        probatio.Optional(ATTR_TEXTMODE, default="normal"): probatio.In(
+            TEXTMODE_OPTIONS
+        ),
     }
 )
 
-DATA_URLS_SCHEMA = vol.Schema(
+DATA_URLS_SCHEMA = probatio.Schema(
     {
-        vol.Required(ATTR_URLS): [cv.url],
-        vol.Optional(ATTR_VERIFY_SSL, default=True): cv.boolean,
-        vol.Optional(ATTR_TEXTMODE, default="normal"): vol.In(TEXTMODE_OPTIONS),
+        probatio.Required(ATTR_URLS): [cv.url],
+        probatio.Optional(ATTR_VERIFY_SSL, default=True): cv.boolean,
+        probatio.Optional(ATTR_TEXTMODE, default="normal"): probatio.In(
+            TEXTMODE_OPTIONS
+        ),
     }
 )
 
-DATA_SCHEMA = vol.Any(
+DATA_SCHEMA = probatio.Any(
     None,
-    vol.Schema(
+    probatio.Schema(
         {
-            vol.Optional(ATTR_TEXTMODE, default="normal"): vol.In(TEXTMODE_OPTIONS),
+            probatio.Optional(ATTR_TEXTMODE, default="normal"): probatio.In(
+                TEXTMODE_OPTIONS
+            ),
         }
     ),
     DATA_FILENAMES_SCHEMA,
@@ -59,9 +64,9 @@ DATA_SCHEMA = vol.Any(
 
 PLATFORM_SCHEMA = NOTIFY_PLATFORM_SCHEMA.extend(
     {
-        vol.Required(CONF_SENDER_NR): cv.string,
-        vol.Required(CONF_SIGNAL_CLI_REST_API): cv.string,
-        vol.Required(CONF_RECP_NR): vol.All(cv.ensure_list, [cv.string]),
+        probatio.Required(CONF_SENDER_NR): cv.string,
+        probatio.Required(CONF_SIGNAL_CLI_REST_API): cv.string,
+        probatio.Required(CONF_RECP_NR): probatio.All(cv.ensure_list, [cv.string]),
     }
 )
 
@@ -97,16 +102,19 @@ class SignalNotificationService(BaseNotificationService):
         self._recp_nrs = recp_nrs
         self._signal_cli_rest_api = signal_cli_rest_api
 
+    @override
     def send_message(self, message: str = "", **kwargs: Any) -> None:
-        """Send a message to a one or more recipients. Additionally a file can be attached."""
+        """Send a message to one or more recipients."""
 
         _LOGGER.debug("Sending signal message")
+
+        recipients: list[str] = kwargs.get(ATTR_TARGET) or self._recp_nrs
 
         data = kwargs.get(ATTR_DATA)
 
         try:
             data = DATA_SCHEMA(data)
-        except vol.Invalid as ex:
+        except probatio.Invalid as ex:
             _LOGGER.error("Invalid message data: %s", ex)
             raise
 
@@ -117,9 +125,10 @@ class SignalNotificationService(BaseNotificationService):
         try:
             self._signal_cli_rest_api.send_message(
                 message,
-                self._recp_nrs,
-                filenames,
-                attachments_as_bytes,
+                recipients,
+                notify_self=True,
+                filenames=filenames,
+                attachments_as_bytes=attachments_as_bytes,
                 text_mode="normal" if data is None else data.get(ATTR_TEXTMODE),
             )
         except SignalCliRestApiError as ex:
@@ -131,7 +140,7 @@ class SignalNotificationService(BaseNotificationService):
         """Extract attachment filenames from data."""
         try:
             data = DATA_FILENAMES_SCHEMA(data)
-        except vol.Invalid:
+        except probatio.Invalid:
             return None
         return data[ATTR_FILENAMES]
 
@@ -144,7 +153,7 @@ class SignalNotificationService(BaseNotificationService):
         """Retrieve attachments from URLs defined in data."""
         try:
             data = DATA_URLS_SCHEMA(data)
-        except vol.Invalid:
+        except probatio.Invalid:
             return None
         urls = data[ATTR_URLS]
 
@@ -166,12 +175,11 @@ class SignalNotificationService(BaseNotificationService):
                     and int(str(resp.headers.get("Content-Length")))
                     > attachment_size_limit
                 ):
-                    raise ValueError(
-                        "Attachment too large (Content-Length reports {}). Max size: {}"
-                        " bytes".format(
-                            int(str(resp.headers.get("Content-Length"))),
-                            CONF_MAX_ALLOWED_DOWNLOAD_SIZE_BYTES,
-                        )
+                    content_length = int(str(resp.headers.get("Content-Length")))
+                    raise ValueError(  # noqa: TRY301
+                        "Attachment too large (Content-Length reports "
+                        f"{content_length}). Max size: "
+                        f"{CONF_MAX_ALLOWED_DOWNLOAD_SIZE_BYTES} bytes"
                     )
 
                 size = 0
@@ -179,7 +187,7 @@ class SignalNotificationService(BaseNotificationService):
                 for chunk in resp.iter_content(1024):
                     size += len(chunk)
                     if size > attachment_size_limit:
-                        raise ValueError(
+                        raise ValueError(  # noqa: TRY301
                             f"Attachment too large (Stream reports {size}). "
                             f"Max size: {CONF_MAX_ALLOWED_DOWNLOAD_SIZE_BYTES} bytes"
                         )

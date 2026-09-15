@@ -2,11 +2,11 @@
 
 from functools import partial
 import logging
-from typing import Any
+from typing import Any, override
 from urllib.error import URLError
 
 from panasonic_viera import TV_TYPE_ENCRYPTED, RemoteControl, SOAPError
-import voluptuous as vol
+import probatio
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PIN, CONF_PORT
@@ -44,6 +44,7 @@ class PanasonicVieraConfigFlow(ConfigFlow, domain=DOMAIN):
 
         self._remote: RemoteControl | None = None
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -85,15 +86,17 @@ class PanasonicVieraConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(
+                    probatio.Required(
                         CONF_HOST,
                         default=self._data[CONF_HOST]
                         if self._data[CONF_HOST] is not None
                         else "",
                     ): str,
-                    vol.Optional(
+                    # Name field is no longer allowed in config flow schemas
+                    # pylint: disable-next=home-assistant-config-flow-name-field
+                    probatio.Optional(
                         CONF_NAME,
                         default=self._data[CONF_NAME]
                         if self._data[CONF_NAME] is not None
@@ -153,15 +156,13 @@ class PanasonicVieraConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="pairing",
-            data_schema=vol.Schema({vol.Required(CONF_PIN): str}),
+            data_schema=probatio.Schema({probatio.Required(CONF_PIN): str}),
             errors=errors,
         )
 
-    async def async_step_import(
-        self, import_config: dict[str, Any]
-    ) -> ConfigFlowResult:
+    async def async_step_import(self, import_data: dict[str, Any]) -> ConfigFlowResult:
         """Import a config entry from configuration.yaml."""
-        return await self.async_step_user(user_input=import_config)
+        return await self.async_step_user(user_input=import_data)
 
     async def async_load_data(self, config: dict[str, Any]) -> None:
         """Load the data."""
@@ -170,5 +171,7 @@ class PanasonicVieraConfigFlow(ConfigFlow, domain=DOMAIN):
         self._data[CONF_PORT] = self._data.get(CONF_PORT, DEFAULT_PORT)
         self._data[CONF_ON_ACTION] = self._data.get(CONF_ON_ACTION)
 
+        # Uses the host/IP value from CONF_HOST as unique ID, which is no longer allowed
+        # pylint: disable-next=home-assistant-unique-id-ip-based
         await self.async_set_unique_id(self._data[CONF_HOST])
         self._abort_if_unique_id_configured()

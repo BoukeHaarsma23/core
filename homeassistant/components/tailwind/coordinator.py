@@ -1,10 +1,12 @@
 """Data update coordinator for Tailwind."""
 
 from datetime import timedelta
+from typing import override
 
 from gotailwind import (
     Tailwind,
     TailwindAuthenticationError,
+    TailwindConnectionError,
     TailwindDeviceStatus,
     TailwindError,
 )
@@ -18,11 +20,15 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .const import DOMAIN, LOGGER
 
+type TailwindConfigEntry = ConfigEntry[TailwindDataUpdateCoordinator]
+
 
 class TailwindDataUpdateCoordinator(DataUpdateCoordinator[TailwindDeviceStatus]):
     """Class to manage fetching Tailwind data."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+    config_entry: TailwindConfigEntry
+
+    def __init__(self, hass: HomeAssistant, entry: TailwindConfigEntry) -> None:
         """Initialize the coordinator."""
         self.tailwind = Tailwind(
             host=entry.data[CONF_HOST],
@@ -32,15 +38,25 @@ class TailwindDataUpdateCoordinator(DataUpdateCoordinator[TailwindDeviceStatus])
         super().__init__(
             hass,
             LOGGER,
+            config_entry=entry,
             name=f"{DOMAIN}_{entry.data[CONF_HOST]}",
             update_interval=timedelta(seconds=5),
         )
 
+    @override
     async def _async_update_data(self) -> TailwindDeviceStatus:
         """Fetch data from the Tailwind device."""
         try:
             return await self.tailwind.status()
         except TailwindAuthenticationError as err:
             raise ConfigEntryAuthFailed from err
+        except TailwindConnectionError as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="communication_error",
+            ) from err
         except TailwindError as err:
-            raise UpdateFailed(err) from err
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="unknown_error",
+            ) from err

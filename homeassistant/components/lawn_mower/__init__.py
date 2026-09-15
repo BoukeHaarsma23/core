@@ -1,11 +1,10 @@
 """The lawn mower integration."""
 
-from __future__ import annotations
-
 from datetime import timedelta
-from functools import cached_property
 import logging
-from typing import final
+from typing import final, override
+
+from propcache.api import cached_property
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -13,18 +12,22 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity import Entity, EntityDescription
 from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.util.hass_dict import HassKey
 
 from .const import (
     DOMAIN,
     SERVICE_DOCK,
     SERVICE_PAUSE,
     SERVICE_START_MOWING,
+    SERVICE_STOP,
     LawnMowerActivity,
     LawnMowerEntityFeature,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
+DATA_COMPONENT: HassKey[EntityComponent[LawnMowerEntity]] = HassKey(DOMAIN)
+ENTITY_ID_FORMAT = DOMAIN + ".{}"
 PLATFORM_SCHEMA = cv.PLATFORM_SCHEMA
 PLATFORM_SCHEMA_BASE = cv.PLATFORM_SCHEMA_BASE
 SCAN_INTERVAL = timedelta(seconds=60)
@@ -32,22 +35,25 @@ SCAN_INTERVAL = timedelta(seconds=60)
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the lawn_mower component."""
-    component = hass.data[DOMAIN] = EntityComponent[LawnMowerEntity](
+    component = hass.data[DATA_COMPONENT] = EntityComponent[LawnMowerEntity](
         _LOGGER, DOMAIN, hass, SCAN_INTERVAL
     )
     await component.async_setup(config)
 
     component.async_register_entity_service(
         SERVICE_START_MOWING,
-        {},
+        None,
         "async_start_mowing",
         [LawnMowerEntityFeature.START_MOWING],
     )
     component.async_register_entity_service(
-        SERVICE_PAUSE, {}, "async_pause", [LawnMowerEntityFeature.PAUSE]
+        SERVICE_PAUSE, None, "async_pause", [LawnMowerEntityFeature.PAUSE]
     )
     component.async_register_entity_service(
-        SERVICE_DOCK, {}, "async_dock", [LawnMowerEntityFeature.DOCK]
+        SERVICE_DOCK, None, "async_dock", [LawnMowerEntityFeature.DOCK]
+    )
+    component.async_register_entity_service(
+        SERVICE_STOP, None, "async_stop", [LawnMowerEntityFeature.STOP]
     )
 
     return True
@@ -55,14 +61,12 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up lawn mower devices."""
-    component: EntityComponent[LawnMowerEntity] = hass.data[DOMAIN]
-    return await component.async_setup_entry(entry)
+    return await hass.data[DATA_COMPONENT].async_setup_entry(entry)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    component: EntityComponent[LawnMowerEntity] = hass.data[DOMAIN]
-    return await component.async_unload_entry(entry)
+    return await hass.data[DATA_COMPONENT].async_unload_entry(entry)
 
 
 class LawnMowerEntityEntityDescription(EntityDescription, frozen_or_thawed=True):
@@ -84,11 +88,10 @@ class LawnMowerEntity(Entity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_):
 
     @final
     @property
+    @override
     def state(self) -> str | None:
         """Return the current state."""
-        if (activity := self.activity) is None:
-            return None
-        return str(activity)
+        return self.activity
 
     @cached_property
     def activity(self) -> LawnMowerActivity | None:
@@ -96,6 +99,7 @@ class LawnMowerEntity(Entity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_):
         return self._attr_activity
 
     @cached_property
+    @override
     def supported_features(self) -> LawnMowerEntityFeature:
         """Flag lawn mower features that are supported."""
         return self._attr_supported_features
@@ -123,3 +127,11 @@ class LawnMowerEntity(Entity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_):
     async def async_pause(self) -> None:
         """Pause the lawn mower."""
         await self.hass.async_add_executor_job(self.pause)
+
+    def stop(self) -> None:
+        """Stop the lawn mower."""
+        raise NotImplementedError
+
+    async def async_stop(self) -> None:
+        """Stop the lawn mower."""
+        await self.hass.async_add_executor_job(self.stop)

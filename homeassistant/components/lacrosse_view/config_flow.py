@@ -1,25 +1,23 @@
 """Config flow for LaCrosse View integration."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
 import logging
-from typing import Any
+from typing import Any, override
 
 from lacrosse_view import LaCrosse, Location, LoginError
-import voluptuous as vol
+import probatio
 
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import SOURCE_REAUTH, ConfigFlow, ConfigFlowResult
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import DOMAIN
 
-STEP_USER_DATA_SCHEMA = vol.Schema(
+STEP_USER_DATA_SCHEMA = probatio.Schema(
     {
-        vol.Required("username"): str,
-        vol.Required("password"): str,
+        probatio.Required("username"): str,
+        probatio.Required("password"): str,
     }
 )
 _LOGGER = logging.getLogger(__name__)
@@ -40,7 +38,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> list[Loca
         raise InvalidAuth from error
 
     if not locations:
-        raise NoLocations(f'No locations found for account {data["username"]}')
+        raise NoLocations(f"No locations found for account {data['username']}")
 
     return locations
 
@@ -54,8 +52,8 @@ class LaCrosseViewConfigFlow(ConfigFlow, domain=DOMAIN):
         """Initialize the config flow."""
         self.data: dict[str, str] = {}
         self.locations: list[Location] = []
-        self._reauth_entry: ConfigEntry | None = None
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -83,12 +81,10 @@ class LaCrosseViewConfigFlow(ConfigFlow, domain=DOMAIN):
             self.locations = info
 
             # Check if we are reauthenticating
-            if self._reauth_entry is not None:
-                self.hass.config_entries.async_update_entry(
-                    self._reauth_entry, data=self._reauth_entry.data | self.data
+            if self.source == SOURCE_REAUTH:
+                return self.async_update_reload_and_abort(
+                    self._get_reauth_entry(), data_updates=self.data
                 )
-                await self.hass.config_entries.async_reload(self._reauth_entry.entry_id)
-                return self.async_abort(reason="reauth_successful")
 
             _LOGGER.debug("Moving on to location step")
             return await self.async_step_location()
@@ -107,9 +103,9 @@ class LaCrosseViewConfigFlow(ConfigFlow, domain=DOMAIN):
             _LOGGER.debug("Showing initial location selection")
             return self.async_show_form(
                 step_id="location",
-                data_schema=vol.Schema(
+                data_schema=probatio.Schema(
                     {
-                        vol.Required("location"): vol.In(
+                        probatio.Required("location"): probatio.In(
                             {location.id: location.name for location in self.locations}
                         )
                     }
@@ -139,9 +135,6 @@ class LaCrosseViewConfigFlow(ConfigFlow, domain=DOMAIN):
         self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
         """Reauth in case of a password change or other error."""
-        self._reauth_entry = self.hass.config_entries.async_get_entry(
-            self.context["entry_id"]
-        )
         return await self.async_step_user()
 
 

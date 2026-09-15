@@ -1,23 +1,22 @@
 """Websocket API for blueprint."""
 
-from __future__ import annotations
-
 import asyncio
 from collections.abc import Callable, Coroutine
 import functools
 from typing import Any, cast
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
-from homeassistant.util import yaml
+from homeassistant.util import yaml as yaml_util
 
 from . import importer, models
 from .const import DOMAIN
 from .errors import BlueprintException, FailedToLoad, FileAlreadyExists
+from .schemas import BLUEPRINT_SCHEMA
 
 
 @callback
@@ -63,10 +62,11 @@ def _ws_with_blueprint_domain(
     return with_domain_blueprints
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "blueprint/list",
-        vol.Required("domain"): cv.string,
+        probatio.Required("type"): "blueprint/list",
+        probatio.Required("domain"): cv.string,
     }
 )
 @websocket_api.async_response
@@ -96,10 +96,11 @@ async def ws_list_blueprints(
     connection.send_result(msg["id"], results)
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "blueprint/import",
-        vol.Required("url"): cv.url,
+        probatio.Required("type"): "blueprint/import",
+        probatio.Required("url"): cv.url,
     }
 )
 @websocket_api.async_response
@@ -149,14 +150,15 @@ async def ws_import_blueprint(
     )
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "blueprint/save",
-        vol.Required("domain"): cv.string,
-        vol.Required("path"): cv.path,
-        vol.Required("yaml"): cv.string,
-        vol.Optional("source_url"): cv.url,
-        vol.Optional("allow_override"): bool,
+        probatio.Required("type"): "blueprint/save",
+        probatio.Required("domain"): cv.string,
+        probatio.Required("path"): cv.path,
+        probatio.Required("yaml"): cv.string,
+        probatio.Optional("source_url"): cv.url,
+        probatio.Optional("allow_override"): bool,
     }
 )
 @websocket_api.async_response
@@ -173,8 +175,10 @@ async def ws_save_blueprint(
     domain = msg["domain"]
 
     try:
-        yaml_data = cast(dict[str, Any], yaml.parse_yaml(msg["yaml"]))
-        blueprint = models.Blueprint(yaml_data, expected_domain=domain)
+        yaml_data = cast(dict[str, Any], yaml_util.parse_yaml(msg["yaml"]))
+        blueprint = models.Blueprint(
+            yaml_data, expected_domain=domain, schema=BLUEPRINT_SCHEMA
+        )
         if "source_url" in msg:
             blueprint.update_metadata(source_url=msg["source_url"])
     except HomeAssistantError as err:
@@ -203,11 +207,12 @@ async def ws_save_blueprint(
     )
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "blueprint/delete",
-        vol.Required("domain"): cv.string,
-        vol.Required("path"): cv.path,
+        probatio.Required("type"): "blueprint/delete",
+        probatio.Required("domain"): cv.string,
+        probatio.Required("path"): cv.path,
     }
 )
 @websocket_api.async_response
@@ -230,12 +235,13 @@ async def ws_delete_blueprint(
     )
 
 
+@websocket_api.require_admin
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "blueprint/substitute",
-        vol.Required("domain"): cv.string,
-        vol.Required("path"): cv.path,
-        vol.Required("input"): dict,
+        probatio.Required("type"): "blueprint/substitute",
+        probatio.Required("domain"): cv.string,
+        probatio.Required("path"): cv.path,
+        probatio.Required("input"): dict,
     }
 )
 @websocket_api.async_response
@@ -260,7 +266,7 @@ async def ws_substitute_blueprint(
 
     try:
         config = blueprint_inputs.async_substitute()
-    except yaml.UndefinedSubstitution as err:
+    except yaml_util.UndefinedSubstitution as err:
         connection.send_error(msg["id"], websocket_api.ERR_UNKNOWN_ERROR, str(err))
         return
 

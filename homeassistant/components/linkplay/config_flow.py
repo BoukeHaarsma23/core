@@ -1,16 +1,23 @@
 """Config flow to configure LinkPlay component."""
 
-from typing import Any
+import logging
+from typing import Any, override
 
-from linkplay.discovery import linkplay_factory_bridge
-import voluptuous as vol
+from aiohttp import ClientSession
+from linkplay.bridge import LinkPlayBridge
+from linkplay.discovery import linkplay_factory_httpapi_bridge
+from linkplay.exceptions import LinkPlayRequestException
+from linkplay.manufacturers import MANUFACTURER_WIIM
+import probatio
 
-from homeassistant.components import zeroconf
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_MODEL
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from .const import DOMAIN
+from .utils import async_get_client_session
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class LinkPlayConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -20,16 +27,39 @@ class LinkPlayConfigFlow(ConfigFlow, domain=DOMAIN):
         """Initialize the LinkPlay config flow."""
         self.data: dict[str, Any] = {}
 
+    @override
     async def async_step_zeroconf(
-        self, discovery_info: zeroconf.ZeroconfServiceInfo
+        self, discovery_info: ZeroconfServiceInfo
     ) -> ConfigFlowResult:
         """Handle Zeroconf discovery."""
 
-        session = async_get_clientsession(self.hass)
-        bridge = await linkplay_factory_bridge(discovery_info.host, session)
+        # Do not probe the device if the host is already configured
+        self._async_abort_entries_match({CONF_HOST: discovery_info.host})
 
-        if bridge is None:
+        # Do not probe the device if the UUID advertised over mDNS matches
+        # an existing (or ignored) entry
+        if uuid := discovery_info.properties.get("uuid"):
+            # The advertised UUID is prefixed and dashed
+            # (uuid:FF31F09E-5001-...), while the device API (and therefore
+            # the stored unique id) uses the dashless form
+            await self.async_set_unique_id(uuid.removeprefix("uuid:").replace("-", ""))
+            self._abort_if_unique_id_configured(
+                updates={CONF_HOST: discovery_info.host}
+            )
+
+        session: ClientSession = await async_get_client_session(self.hass)
+        bridge: LinkPlayBridge | None = None
+
+        try:
+            bridge = await linkplay_factory_httpapi_bridge(discovery_info.host, session)
+        except LinkPlayRequestException:
+            _LOGGER.exception(
+                "Failed to connect to LinkPlay device at %s", discovery_info.host
+            )
             return self.async_abort(reason="cannot_connect")
+
+        if bridge.device.manufacturer == MANUFACTURER_WIIM:
+            return self.async_abort(reason="not_linkplay_device")
 
         self.data[CONF_HOST] = discovery_info.host
         self.data[CONF_MODEL] = bridge.device.name
@@ -60,20 +90,33 @@ class LinkPlayConfigFlow(ConfigFlow, domain=DOMAIN):
             },
         )
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle a flow initialized by the user."""
         errors: dict[str, str] = {}
         if user_input:
-            session = async_get_clientsession(self.hass)
-            bridge = await linkplay_factory_bridge(user_input[CONF_HOST], session)
+            session: ClientSession = await async_get_client_session(self.hass)
+            bridge: LinkPlayBridge | None = None
+
+            try:
+                bridge = await linkplay_factory_httpapi_bridge(
+                    user_input[CONF_HOST], session
+                )
+            except LinkPlayRequestException:
+                _LOGGER.exception(
+                    "Failed to connect to LinkPlay device at %s", user_input[CONF_HOST]
+                )
+                errors["base"] = "cannot_connect"
 
             if bridge is not None:
                 self.data[CONF_HOST] = user_input[CONF_HOST]
                 self.data[CONF_MODEL] = bridge.device.name
 
-                await self.async_set_unique_id(bridge.device.uuid)
+                await self.async_set_unique_id(
+                    bridge.device.uuid, raise_on_progress=False
+                )
                 self._abort_if_unique_id_configured(
                     updates={CONF_HOST: self.data[CONF_HOST]}
                 )
@@ -83,9 +126,8 @@ class LinkPlayConfigFlow(ConfigFlow, domain=DOMAIN):
                     data={CONF_HOST: self.data[CONF_HOST]},
                 )
 
-            errors["base"] = "cannot_connect"
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({vol.Required(CONF_HOST): str}),
+            data_schema=probatio.Schema({probatio.Required(CONF_HOST): str}),
             errors=errors,
         )

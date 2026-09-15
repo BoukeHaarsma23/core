@@ -1,11 +1,10 @@
 """Weather data coordinator for the AEMET OpenData service."""
 
-from __future__ import annotations
-
 from asyncio import timeout
+from dataclasses import dataclass
 from datetime import timedelta
 import logging
-from typing import Any, Final, cast
+from typing import Any, Final, cast, override
 
 from aemet_opendata.const import (
     AOD_CONDITION,
@@ -19,6 +18,7 @@ from aemet_opendata.helpers import dict_nested_value
 from aemet_opendata.interface import AEMET
 
 from homeassistant.components.weather import Forecast
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -27,7 +27,17 @@ from .const import CONDITIONS_MAP, DOMAIN, FORECAST_MAP
 _LOGGER = logging.getLogger(__name__)
 
 API_TIMEOUT: Final[int] = 120
-WEATHER_UPDATE_INTERVAL = timedelta(minutes=10)
+WEATHER_UPDATE_INTERVAL = timedelta(minutes=20)
+
+type AemetConfigEntry = ConfigEntry[AemetData]
+
+
+@dataclass
+class AemetData:
+    """Aemet runtime data."""
+
+    name: str
+    coordinator: WeatherUpdateCoordinator
 
 
 class WeatherUpdateCoordinator(DataUpdateCoordinator):
@@ -36,6 +46,7 @@ class WeatherUpdateCoordinator(DataUpdateCoordinator):
     def __init__(
         self,
         hass: HomeAssistant,
+        entry: AemetConfigEntry,
         aemet: AEMET,
     ) -> None:
         """Initialize coordinator."""
@@ -44,10 +55,12 @@ class WeatherUpdateCoordinator(DataUpdateCoordinator):
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name=DOMAIN,
             update_interval=WEATHER_UPDATE_INTERVAL,
         )
 
+    @override
     async def _async_update_data(self) -> dict[str, Any]:
         """Update coordinator data."""
         async with timeout(API_TIMEOUT):

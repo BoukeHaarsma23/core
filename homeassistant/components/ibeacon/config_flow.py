@@ -1,11 +1,9 @@
 """Config flow for iBeacon Tracker integration."""
 
-from __future__ import annotations
-
-from typing import Any
+from typing import Any, override
 from uuid import UUID
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import (
@@ -15,7 +13,7 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.core import callback
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import VolDictType
 
 from .const import CONF_ALLOW_NAMELESS_UUIDS, DOMAIN
@@ -26,13 +24,11 @@ class IBeaconConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle the initial step."""
-        if self._async_current_entries():
-            return self.async_abort(reason="single_instance_allowed")
-
         if not bluetooth.async_scanner_count(self.hass, connectable=False):
             return self.async_abort(reason="bluetooth_not_available")
 
@@ -43,19 +39,16 @@ class IBeaconConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
+    @override
     def async_get_options_flow(
         config_entry: ConfigEntry,
     ) -> OptionsFlow:
         """Get the options flow for this handler."""
-        return IBeaconOptionsFlow(config_entry)
+        return IBeaconOptionsFlow()
 
 
 class IBeaconOptionsFlow(OptionsFlow):
     """Handle options."""
-
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
 
     async def async_step_init(self, user_input: dict | None = None) -> ConfigFlowResult:
         """Manage the options."""
@@ -83,18 +76,18 @@ class IBeaconOptionsFlow(OptionsFlow):
                 return self.async_create_entry(title="", data=data)
 
         schema: VolDictType = {
-            vol.Optional(
+            probatio.Optional(
                 "new_uuid",
                 description={"suggested_value": new_uuid},
             ): str,
         }
         if current_uuids:
             schema |= {
-                vol.Optional(
+                probatio.Optional(
                     "allow_nameless_uuids",
                     default=current_uuids,
                 ): cv.multi_select(sorted(current_uuids))
             }
         return self.async_show_form(
-            step_id="init", errors=errors, data_schema=vol.Schema(schema)
+            step_id="init", errors=errors, data_schema=probatio.Schema(schema)
         )

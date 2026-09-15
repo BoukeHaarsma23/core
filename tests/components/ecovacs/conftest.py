@@ -1,6 +1,7 @@
 """Common fixtures for the Ecovacs tests."""
 
 from collections.abc import AsyncGenerator, Generator
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -10,6 +11,7 @@ from deebot_client.device import Device
 from deebot_client.exceptions import ApiError
 from deebot_client.models import Credentials
 import pytest
+from sucks import EventEmitter
 
 from homeassistant.components.ecovacs import PLATFORMS
 from homeassistant.components.ecovacs.const import DOMAIN
@@ -17,9 +19,19 @@ from homeassistant.components.ecovacs.controller import EcovacsController
 from homeassistant.const import CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
 
-from .const import VALID_ENTRY_DATA_CLOUD
+from .const import CLOUD_DEVICE_ID, STORED_ENTRY_DATA_CLOUD
 
 from tests.common import MockConfigEntry, load_json_object_fixture
+
+
+@pytest.fixture
+def mock_device_id() -> Generator[None]:
+    """Return a deterministic cloud device ID."""
+    with patch(
+        "homeassistant.components.ecovacs.util.random.choice",
+        return_value=CLOUD_DEVICE_ID[0],
+    ):
+        yield
 
 
 @pytest.fixture
@@ -34,7 +46,7 @@ def mock_setup_entry() -> Generator[AsyncMock]:
 @pytest.fixture
 def mock_config_entry_data() -> dict[str, Any]:
     """Return the default mocked config entry data."""
-    return VALID_ENTRY_DATA_CLOUD
+    return STORED_ENTRY_DATA_CLOUD
 
 
 @pytest.fixture
@@ -44,6 +56,7 @@ def mock_config_entry(mock_config_entry_data: dict[str, Any]) -> MockConfigEntry
         title=mock_config_entry_data[CONF_USERNAME],
         domain=DOMAIN,
         data=mock_config_entry_data,
+        minor_version=2,
     )
 
 
@@ -128,11 +141,12 @@ def mock_vacbot(device_fixture: str) -> Generator[Mock]:
         vacbot.vacuum = load_json_object_fixture(
             f"devices/{device_fixture}/device.json", DOMAIN
         )
-        vacbot.statusEvents = Mock()
-        vacbot.batteryEvents = Mock()
-        vacbot.lifespanEvents = Mock()
-        vacbot.errorEvents = Mock()
+        vacbot.statusEvents = EventEmitter()
+        vacbot.batteryEvents = EventEmitter()
+        vacbot.lifespanEvents = EventEmitter()
+        vacbot.errorEvents = EventEmitter()
         vacbot.battery_status = None
+        vacbot.charge_status = None
         vacbot.fan_speed = None
         vacbot.components = {}
         yield vacbot
@@ -158,6 +172,7 @@ def platforms() -> Platform | list[Platform]:
 @pytest.fixture
 async def init_integration(
     hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
     mock_config_entry: MockConfigEntry,
     mock_authenticator: Mock,
     mock_mqtt_client: Mock,
@@ -165,6 +180,9 @@ async def init_integration(
     platforms: Platform | list[Platform],
 ) -> AsyncGenerator[MockConfigEntry]:
     """Set up the Ecovacs integration for testing."""
+    # Workaround for https://github.com/home-assistant/core/issues/155417
+    caplog.clear()
+
     if not isinstance(platforms, list):
         platforms = [platforms]
 
@@ -175,8 +193,18 @@ async def init_integration(
         mock_config_entry.add_to_hass(hass)
 
         await hass.config_entries.async_setup(mock_config_entry.entry_id)
-        await hass.async_block_till_done()
+        await hass.async_block_till_done(wait_background_tasks=True)
+
+        # No errors should be logged during setup
+        assert not [t for t in caplog.record_tuples if t[1] >= logging.ERROR], (
+            "Errors during integration setup"
+        )
+
         yield mock_config_entry
+
+        # Properly unload the integration to trigger cleanup
+        await hass.config_entries.async_unload(mock_config_entry.entry_id)
+        await hass.async_block_till_done(wait_background_tasks=True)
 
 
 @pytest.fixture

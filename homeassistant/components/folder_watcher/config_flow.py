@@ -1,17 +1,13 @@
 """Adds config flow for Folder watcher."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
 import os
-from typing import Any
+from typing import Any, override
 
-import voluptuous as vol
+import probatio
 
-from homeassistant.components.homeassistant import DOMAIN as HOMEASSISTANT_DOMAIN
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.core import callback
-from homeassistant.helpers.issue_registry import IssueSeverity, async_create_issue
 from homeassistant.helpers.schema_config_entry_flow import (
     SchemaCommonFlowHandler,
     SchemaConfigFlowHandler,
@@ -46,31 +42,9 @@ async def validate_setup(
     return user_input
 
 
-async def validate_import_setup(
-    handler: SchemaCommonFlowHandler, user_input: dict[str, Any]
-) -> dict[str, Any]:
-    """Create issue on successful import."""
-    async_create_issue(
-        handler.parent_handler.hass,
-        HOMEASSISTANT_DOMAIN,
-        f"deprecated_yaml_{DOMAIN}",
-        breaks_in_ha_version="2024.11.0",
-        is_fixable=False,
-        is_persistent=False,
-        issue_domain=DOMAIN,
-        severity=IssueSeverity.WARNING,
-        translation_key="deprecated_yaml",
-        translation_placeholders={
-            "domain": DOMAIN,
-            "integration_title": "Folder Watcher",
-        },
-    )
-    return user_input
-
-
-OPTIONS_SCHEMA = vol.Schema(
+OPTIONS_SCHEMA = probatio.Schema(
     {
-        vol.Optional(CONF_PATTERNS, default=[DEFAULT_PATTERN]): SelectSelector(
+        probatio.Optional(CONF_PATTERNS, default=[DEFAULT_PATTERN]): SelectSelector(
             SelectSelectorConfig(
                 options=[DEFAULT_PATTERN],
                 multiple=True,
@@ -80,17 +54,14 @@ OPTIONS_SCHEMA = vol.Schema(
         ),
     }
 )
-DATA_SCHEMA = vol.Schema(
+DATA_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_FOLDER): TextSelector(),
+        probatio.Required(CONF_FOLDER): TextSelector(),
     }
 ).extend(OPTIONS_SCHEMA.schema)
 
 CONFIG_FLOW = {
     "user": SchemaFlowFormStep(schema=DATA_SCHEMA, validate_user_input=validate_setup),
-    "import": SchemaFlowFormStep(
-        schema=DATA_SCHEMA, validate_user_input=validate_import_setup
-    ),
 }
 OPTIONS_FLOW = {
     "init": SchemaFlowFormStep(schema=OPTIONS_SCHEMA),
@@ -103,11 +74,13 @@ class FolderWatcherConfigFlowHandler(SchemaConfigFlowHandler, domain=DOMAIN):
     config_flow = CONFIG_FLOW
     options_flow = OPTIONS_FLOW
 
+    @override
     def async_config_entry_title(self, options: Mapping[str, Any]) -> str:
         """Return config entry title."""
         return f"Folder Watcher {options[CONF_FOLDER]}"
 
     @callback
+    @override
     def async_create_entry(
         self, data: Mapping[str, Any], **kwargs: Any
     ) -> ConfigFlowResult:

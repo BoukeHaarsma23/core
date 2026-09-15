@@ -32,29 +32,34 @@ class MockDoorbirdEntry:
     api: MagicMock
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="package")
 def doorbird_info() -> dict[str, Any]:
     """Return a loaded DoorBird info fixture."""
     return load_json_value_fixture("info.json", "doorbird")["BHA"]["VERSION"][0]
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def doorbird_schedule() -> list[DoorBirdScheduleEntry]:
-    """Return a loaded DoorBird schedule fixture."""
+    """Return a freshly parsed DoorBird schedule fixture.
+
+    Function-scoped because the integration mutates schedule entries in place
+    via `_configure_unconfigured_favorites` — sharing one instance across tests
+    would let earlier tests poison later ones.
+    """
     return DoorBirdScheduleEntry.parse_all(
         load_json_value_fixture("schedule.json", "doorbird")
     )
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def doorbird_schedule_wrong_param() -> list[DoorBirdScheduleEntry]:
-    """Return a loaded DoorBird schedule fixture with an incorrect param."""
+    """Return a freshly parsed DoorBird schedule fixture with an incorrect param."""
     return DoorBirdScheduleEntry.parse_all(
         load_json_value_fixture("schedule_wrong_param.json", "doorbird")
     )
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="package")
 def doorbird_favorites() -> dict[str, dict[str, Any]]:
     """Return a loaded DoorBird favorites fixture."""
     return load_json_value_fixture("favorites.json", "doorbird")
@@ -82,6 +87,10 @@ def patch_doorbird_api_entry_points(api: MagicMock) -> Generator[DoorBird]:
             "homeassistant.components.doorbird.config_flow.DoorBird",
             return_value=api,
         ),
+        patch(
+            "homeassistant.components.doorbird.device.get_url",
+            return_value="http://127.0.0.1:8123",
+        ),
     ):
         yield api
 
@@ -102,6 +111,7 @@ async def doorbird_mocker(
         info: dict[str, Any] | None = None,
         info_side_effect: Exception | None = None,
         schedule: list[DoorBirdScheduleEntry] | None = None,
+        schedule_side_effect: Exception | None = None,
         favorites: dict[str, dict[str, Any]] | None = None,
         favorites_side_effect: Exception | None = None,
         options: dict[str, Any] | None = None,
@@ -118,6 +128,7 @@ async def doorbird_mocker(
             info=info or doorbird_info,
             info_side_effect=info_side_effect,
             schedule=schedule or doorbird_schedule,
+            schedule_side_effect=schedule_side_effect,
             favorites=favorites or doorbird_favorites,
             favorites_side_effect=favorites_side_effect,
             change_schedule=change_schedule,

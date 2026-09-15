@@ -1,26 +1,26 @@
 """The Tag integration."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 import logging
-from typing import TYPE_CHECKING, Any, final
+from typing import TYPE_CHECKING, Any, final, override
 import uuid
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.components import websocket_api
 from homeassistant.const import CONF_ID, CONF_NAME
 from homeassistant.core import Context, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import collection, entity_registry as er
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import (
+    collection,
+    config_validation as cv,
+    entity_registry as er,
+)
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType, VolDictType
-from homeassistant.util import slugify
-import homeassistant.util.dt as dt_util
+from homeassistant.util import dt as dt_util, slugify
 from homeassistant.util.hass_dict import HassKey
 
 from .const import DEFAULT_NAME, DEVICE_ID, DOMAIN, EVENT_TAG_SCANNED, LOGGER, TAG_ID
@@ -36,18 +36,18 @@ STORAGE_VERSION_MINOR = 3
 TAG_DATA: HassKey[TagStorageCollection] = HassKey(DOMAIN)
 
 CREATE_FIELDS: VolDictType = {
-    vol.Optional(TAG_ID): cv.string,
-    vol.Optional(CONF_NAME): vol.All(str, vol.Length(min=1)),
-    vol.Optional("description"): cv.string,
-    vol.Optional(LAST_SCANNED): cv.datetime,
-    vol.Optional(DEVICE_ID): cv.string,
+    probatio.Optional(TAG_ID): cv.string,
+    probatio.Optional(CONF_NAME): probatio.All(str, probatio.Length(min=1)),
+    probatio.Optional("description"): cv.string,
+    probatio.Optional(LAST_SCANNED): cv.datetime,
+    probatio.Optional(DEVICE_ID): cv.string,
 }
 
 UPDATE_FIELDS: VolDictType = {
-    vol.Optional(CONF_NAME): vol.All(str, vol.Length(min=1)),
-    vol.Optional("description"): cv.string,
-    vol.Optional(LAST_SCANNED): cv.datetime,
-    vol.Optional(DEVICE_ID): cv.string,
+    probatio.Optional(CONF_NAME): probatio.All(str, probatio.Length(min=1)),
+    probatio.Optional("description"): cv.string,
+    probatio.Optional(LAST_SCANNED): cv.datetime,
+    probatio.Optional(DEVICE_ID): cv.string,
 }
 
 CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
@@ -65,6 +65,7 @@ class TagIDExistsError(HomeAssistantError):
 class TagIDManager(collection.IDManager):
     """ID manager for tags."""
 
+    @override
     def generate_id(self, suggestion: str) -> str:
         """Generate an ID."""
         if self.has_id(suggestion):
@@ -81,15 +82,18 @@ def _create_entry(
         DOMAIN,
         DOMAIN,
         tag_id,
+        object_id_base=slugify(name) if name else tag_id,
         original_name=f"{DEFAULT_NAME} {tag_id}",
-        suggested_object_id=slugify(name) if name else tag_id,
     )
-    return entity_registry.async_update_entity(entry.entity_id, name=name)
+    if name:
+        return entity_registry.async_update_entity(entry.entity_id, name=name)
+    return entry
 
 
 class TagStore(Store[collection.SerializedStorageCollection]):
     """Store tag data."""
 
+    @override
     async def _async_migrate_func(
         self,
         old_major_version: int,
@@ -104,7 +108,6 @@ class TagStore(Store[collection.SerializedStorageCollection]):
             for tag in data["items"]:
                 # Copy name in tag store to the entity registry
                 _create_entry(entity_registry, tag[CONF_ID], tag.get(CONF_NAME))
-                tag["migrated"] = True
         if old_major_version == 1 and old_minor_version < 3:
             # Version 1.3 removes tag_id from the store
             for tag in data["items"]:
@@ -121,8 +124,8 @@ class TagStore(Store[collection.SerializedStorageCollection]):
 class TagStorageCollection(collection.DictStorageCollection):
     """Tag collection stored in storage."""
 
-    CREATE_SCHEMA = vol.Schema(CREATE_FIELDS)
-    UPDATE_SCHEMA = vol.Schema(UPDATE_FIELDS)
+    CREATE_SCHEMA = probatio.Schema(CREATE_FIELDS)
+    UPDATE_SCHEMA = probatio.Schema(UPDATE_FIELDS)
 
     def __init__(
         self,
@@ -133,6 +136,7 @@ class TagStorageCollection(collection.DictStorageCollection):
         super().__init__(store, id_manager)
         self.entity_registry = er.async_get(self.hass)
 
+    @override
     async def _process_create_data(self, data: dict) -> dict:
         """Validate the config is valid."""
         data = self.CREATE_SCHEMA(data)
@@ -150,10 +154,12 @@ class TagStorageCollection(collection.DictStorageCollection):
         return data
 
     @callback
+    @override
     def _get_suggested_id(self, info: dict[str, str]) -> str:
         """Suggest an ID based on the config."""
         return info[CONF_ID]
 
+    @override
     async def _update_data(self, item: dict, update_data: dict) -> dict:
         """Return a new updated data object."""
         data = {**item, **self.UPDATE_SCHEMA(update_data)}
@@ -171,15 +177,13 @@ class TagStorageCollection(collection.DictStorageCollection):
 
         return data
 
+    @override
     def _serialize_item(self, item_id: str, item: dict) -> dict:
         """Return the serialized representation of an item for storing.
 
         We don't store the name, it's stored in the entity registry.
         """
-        # Preserve the name of migrated entries to allow downgrading to 2024.5
-        # without losing tag names. This can be removed in HA Core 2025.1.
-        migrated = item_id in self.data and "migrated" in self.data[item_id]
-        return {k: v for k, v in item.items() if k != CONF_NAME or migrated}
+        return {k: v for k, v in item.items() if k != CONF_NAME}
 
 
 class TagDictStorageCollectionWebsocket(
@@ -202,6 +206,7 @@ class TagDictStorageCollectionWebsocket(
         self.entity_registry = er.async_get(storage_collection.hass)
 
     @callback
+    @override
     def ws_list_item(
         self, hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
     ) -> None:
@@ -364,7 +369,6 @@ class TagEntity(Entity):
     """Representation of a Tag entity."""
 
     _unrecorded_attributes = frozenset({TAG_ID})
-    _attr_translation_key = DOMAIN
     _attr_should_poll = False
 
     def __init__(
@@ -402,6 +406,7 @@ class TagEntity(Entity):
 
     @property
     @final
+    @override
     def state(self) -> str | None:
         """Return the entity state."""
         if (
@@ -412,15 +417,18 @@ class TagEntity(Entity):
         return last_scanned.isoformat(timespec="milliseconds")
 
     @property
+    @override
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the state attributes of the sun."""
         return {TAG_ID: self._tag_id, LAST_SCANNED_BY_DEVICE_ID: self._last_device_id}
 
+    @override
     async def async_added_to_hass(self) -> None:
         """Handle entity which will be added."""
         await super().async_added_to_hass()
         self._entity_update_handlers[self._tag_id] = self.async_handle_event
 
+    @override
     async def async_will_remove_from_hass(self) -> None:
         """Handle entity being removed."""
         await super().async_will_remove_from_hass()

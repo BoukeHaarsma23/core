@@ -1,11 +1,9 @@
 """Config flow to configure the LaMetric integration."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
 from ipaddress import ip_address
 import logging
-from typing import Any
+from typing import Any, override
 
 from demetriek import (
     CloudDevice,
@@ -20,16 +18,10 @@ from demetriek import (
     Simple,
     Sound,
 )
-import voluptuous as vol
+import probatio
 from yarl import URL
 
-from homeassistant.components.dhcp import DhcpServiceInfo
-from homeassistant.components.ssdp import (
-    ATTR_UPNP_FRIENDLY_NAME,
-    ATTR_UPNP_SERIAL,
-    SsdpServiceInfo,
-)
-from homeassistant.config_entries import ConfigEntry, ConfigFlowResult
+from homeassistant.config_entries import SOURCE_REAUTH, ConfigFlowResult
 from homeassistant.const import CONF_API_KEY, CONF_DEVICE, CONF_HOST, CONF_MAC
 from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -44,9 +36,17 @@ from homeassistant.helpers.selector import (
     TextSelectorConfig,
     TextSelectorType,
 )
+from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
+from homeassistant.helpers.service_info.ssdp import (
+    ATTR_UPNP_FRIENDLY_NAME,
+    ATTR_UPNP_SERIAL,
+    SsdpServiceInfo,
+)
 from homeassistant.util.network import is_link_local
 
 from .const import DOMAIN, LOGGER
+
+DEVICES_URL = "https://developer.lametric.com/user/devices"
 
 
 class LaMetricFlowHandler(AbstractOAuth2FlowHandler, domain=DOMAIN):
@@ -59,24 +59,27 @@ class LaMetricFlowHandler(AbstractOAuth2FlowHandler, domain=DOMAIN):
     discovered_host: str
     discovered_serial: str
     discovered: bool = False
-    reauth_entry: ConfigEntry | None = None
 
     @property
+    @override
     def logger(self) -> logging.Logger:
         """Return logger."""
         return LOGGER
 
     @property
+    @override
     def extra_authorize_data(self) -> dict[str, Any]:
         """Extra data that needs to be appended to the authorize url."""
         return {"scope": "basic devices_read"}
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle a flow initiated by the user."""
         return await self.async_step_choice_enter_manual_or_fetch_cloud()
 
+    @override
     async def async_step_ssdp(
         self, discovery_info: SsdpServiceInfo
     ) -> ConfigFlowResult:
@@ -113,9 +116,6 @@ class LaMetricFlowHandler(AbstractOAuth2FlowHandler, domain=DOMAIN):
         self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
         """Handle initiation of re-authentication with LaMetric."""
-        self.reauth_entry = self.hass.config_entries.async_get_entry(
-            self.context["entry_id"]
-        )
         return await self.async_step_choice_enter_manual_or_fetch_cloud()
 
     async def async_step_choice_enter_manual_or_fetch_cloud(
@@ -138,8 +138,8 @@ class LaMetricFlowHandler(AbstractOAuth2FlowHandler, domain=DOMAIN):
         if user_input is not None:
             if self.discovered:
                 host = self.discovered_host
-            elif self.reauth_entry:
-                host = self.reauth_entry.data[CONF_HOST]
+            elif self.source == SOURCE_REAUTH:
+                host = self._get_reauth_entry().data[CONF_HOST]
             else:
                 host = user_input[CONF_HOST]
 
@@ -158,16 +158,19 @@ class LaMetricFlowHandler(AbstractOAuth2FlowHandler, domain=DOMAIN):
 
         # Don't ask for a host if it was discovered
         schema = {
-            vol.Required(CONF_API_KEY): TextSelector(
+            probatio.Required(CONF_API_KEY): TextSelector(
                 TextSelectorConfig(type=TextSelectorType.PASSWORD)
             )
         }
-        if not self.discovered and not self.reauth_entry:
-            schema = {vol.Required(CONF_HOST): TextSelector()} | schema
+        if not self.discovered and self.source != SOURCE_REAUTH:
+            schema = {probatio.Required(CONF_HOST): TextSelector()} | schema
 
         return self.async_show_form(
             step_id="manual_entry",
-            data_schema=vol.Schema(schema),
+            data_schema=probatio.Schema(schema),
+            description_placeholders={
+                "devices_url": DEVICES_URL,
+            },
             errors=errors,
         )
 
@@ -195,10 +198,11 @@ class LaMetricFlowHandler(AbstractOAuth2FlowHandler, domain=DOMAIN):
         """Handle device selection from devices offered by the cloud."""
         if self.discovered:
             user_input = {CONF_DEVICE: self.discovered_serial}
-        elif self.reauth_entry:
-            if self.reauth_entry.unique_id not in self.devices:
+        elif self.source == SOURCE_REAUTH:
+            reauth_unique_id = self._get_reauth_entry().unique_id
+            if reauth_unique_id not in self.devices:
                 return self.async_abort(reason="reauth_device_not_found")
-            user_input = {CONF_DEVICE: self.reauth_entry.unique_id}
+            user_input = {CONF_DEVICE: reauth_unique_id}
         elif len(self.devices) == 1:
             user_input = {CONF_DEVICE: list(self.devices.values())[0].serial_number}
 
@@ -220,9 +224,9 @@ class LaMetricFlowHandler(AbstractOAuth2FlowHandler, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="cloud_select_device",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(CONF_DEVICE): SelectSelector(
+                    probatio.Required(CONF_DEVICE): SelectSelector(
                         SelectSelectorConfig(
                             mode=SelectSelectorMode.DROPDOWN,
                             options=[
@@ -251,8 +255,11 @@ class LaMetricFlowHandler(AbstractOAuth2FlowHandler, domain=DOMAIN):
 
         device = await lametric.device()
 
-        if not self.reauth_entry:
-            await self.async_set_unique_id(device.serial_number)
+        if self.source != SOURCE_REAUTH:
+            await self.async_set_unique_id(
+                device.serial_number,
+                raise_on_progress=False,
+            )
             self._abort_if_unique_id_configured(
                 updates={CONF_HOST: lametric.host, CONF_API_KEY: lametric.api_key}
             )
@@ -273,19 +280,14 @@ class LaMetricFlowHandler(AbstractOAuth2FlowHandler, domain=DOMAIN):
             )
         )
 
-        if self.reauth_entry:
-            self.hass.config_entries.async_update_entry(
-                self.reauth_entry,
-                data={
-                    **self.reauth_entry.data,
+        if self.source == SOURCE_REAUTH:
+            return self.async_update_reload_and_abort(
+                self._get_reauth_entry(),
+                data_updates={
                     CONF_HOST: lametric.host,
                     CONF_API_KEY: lametric.api_key,
                 },
             )
-            self.hass.async_create_task(
-                self.hass.config_entries.async_reload(self.reauth_entry.entry_id)
-            )
-            return self.async_abort(reason="reauth_successful")
 
         return self.async_create_entry(
             title=device.name,
@@ -296,6 +298,7 @@ class LaMetricFlowHandler(AbstractOAuth2FlowHandler, domain=DOMAIN):
             },
         )
 
+    @override
     async def async_step_dhcp(
         self, discovery_info: DhcpServiceInfo
     ) -> ConfigFlowResult:

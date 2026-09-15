@@ -1,6 +1,6 @@
 """Alexa Resources and Assets."""
 
-from typing import Any
+from typing import Any, override
 
 
 class AlexaGlobalCatalog:
@@ -263,6 +263,7 @@ class AlexaModeResource(AlexaCapabilityResource):
         """Add mode to the supportedModes object."""
         self._supported_modes.append({"value": value, "labels": labels})
 
+    @override
     def serialize_configuration(self) -> dict[str, Any]:
         """Return serialized configuration for an API response.
 
@@ -283,7 +284,7 @@ class AlexaPresetResource(AlexaCapabilityResource):
     """Implements Alexa PresetResources.
 
     Use presetResources with RangeController to provide a set of
-    friendlyNamesfor each RangeController preset.
+    friendlyNames for each RangeController preset.
 
     https://developer.amazon.com/docs/device-apis/resources-and-assets.html#presetresources
     """
@@ -310,6 +311,7 @@ class AlexaPresetResource(AlexaCapabilityResource):
         """Add preset to configuration presets array."""
         self._presets.append({"value": value, "labels": labels})
 
+    @override
     def serialize_configuration(self) -> dict[str, Any]:
         """Return serialized configuration for an API response.
 

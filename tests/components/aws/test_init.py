@@ -1,8 +1,10 @@
 """Tests for the aws component config and setup."""
 
 import json
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch as async_patch
 
+from homeassistant.components.aws import DOMAIN
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 
@@ -10,7 +12,7 @@ from homeassistant.setup import async_setup_component
 class MockAioSession:
     """Mock AioSession."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Init a mock session."""
         self.get_user = AsyncMock()
         self.invoke = AsyncMock()
@@ -44,7 +46,7 @@ async def test_empty_config(hass: HomeAssistant) -> None:
     with async_patch(
         "homeassistant.components.aws.AioSession", return_value=mock_session
     ):
-        await async_setup_component(hass, "aws", {"aws": {}})
+        await async_setup_component(hass, DOMAIN, {"aws": {}})
         await hass.async_block_till_done()
 
     # we don't validate auto-created default profile
@@ -59,7 +61,7 @@ async def test_empty_credential(hass: HomeAssistant) -> None:
     ):
         await async_setup_component(
             hass,
-            "aws",
+            DOMAIN,
             {
                 "aws": {
                     "notify": [
@@ -89,7 +91,7 @@ async def test_profile_credential(hass: HomeAssistant) -> None:
     ):
         await async_setup_component(
             hass,
-            "aws",
+            DOMAIN,
             {
                 "aws": {
                     "credentials": {"name": "test", "profile_name": "test-profile"},
@@ -124,7 +126,7 @@ async def test_access_key_credential(hass: HomeAssistant) -> None:
     ):
         await async_setup_component(
             hass,
-            "aws",
+            DOMAIN,
             {
                 "aws": {
                     "credentials": [
@@ -171,7 +173,7 @@ async def test_notify_credential(hass: HomeAssistant) -> None:
     ):
         await async_setup_component(
             hass,
-            "aws",
+            DOMAIN,
             {
                 "aws": {
                     "notify": [
@@ -208,7 +210,7 @@ async def test_notify_credential_profile(hass: HomeAssistant) -> None:
     ):
         await async_setup_component(
             hass,
-            "aws",
+            DOMAIN,
             {
                 "aws": {
                     "notify": [
@@ -238,7 +240,7 @@ async def test_credential_skip_validate(hass: HomeAssistant) -> None:
     ):
         await async_setup_component(
             hass,
-            "aws",
+            DOMAIN,
             {
                 "aws": {
                     "credentials": [
@@ -265,7 +267,7 @@ async def test_service_call_extra_data(hass: HomeAssistant) -> None:
     ):
         await async_setup_component(
             hass,
-            "aws",
+            DOMAIN,
             {
                 "aws": {
                     "notify": [
@@ -309,7 +311,7 @@ async def test_events_service_call(hass: HomeAssistant) -> None:
     ):
         await async_setup_component(
             hass,
-            "aws",
+            DOMAIN,
             {
                 "aws": {
                     "notify": [
@@ -362,7 +364,7 @@ async def test_events_service_call_10_targets(hass: HomeAssistant) -> None:
     ):
         await async_setup_component(
             hass,
-            "aws",
+            DOMAIN,
             {
                 "aws": {
                     "notify": [

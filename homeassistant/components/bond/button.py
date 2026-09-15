@@ -1,14 +1,13 @@
 """Support for bond buttons."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
+from typing import override
 
 from bond_async import Action
 
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import BondConfigEntry
 from .entity import BondEntity
@@ -89,6 +88,13 @@ BUTTONS: tuple[BondButtonEntityDescription, ...] = (
         name="Start Dimmer",
         translation_key="start_dimmer",
         mutually_exclusive=Action.SET_BRIGHTNESS,
+        argument=None,
+    ),
+    BondButtonEntityDescription(
+        key=Action.TOGGLE_LIGHT_TEMP,
+        name="Toggle Light Temperature",
+        translation_key="toggle_light_temp",
+        mutually_exclusive=None,  # No mutually exclusive action
         argument=None,
     ),
     BondButtonEntityDescription(
@@ -237,13 +243,35 @@ BUTTONS: tuple[BondButtonEntityDescription, ...] = (
         mutually_exclusive=Action.SET_POSITION,
         argument=STEP_SIZE,
     ),
+    BondButtonEntityDescription(
+        key=Action.OPEN_NEXT,
+        name="Open Next",
+        translation_key="open_next",
+        mutually_exclusive=None,
+        argument=None,
+    ),
+    BondButtonEntityDescription(
+        key=Action.CLOSE_NEXT,
+        name="Close Next",
+        translation_key="close_next",
+        mutually_exclusive=None,
+        argument=None,
+    ),
+)
+
+PRESET_BUTTON = BondButtonEntityDescription(
+    key=Action.PRESET,
+    name="Preset",
+    translation_key="preset",
+    mutually_exclusive=None,
+    argument=None,
 )
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: BondConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Bond button devices."""
     data = entry.runtime_data
@@ -264,6 +292,8 @@ async def async_setup_entry(
             # we only add the stop action button if we add actions
             # since its not so useful if there are no actions to stop
             device_entities.append(BondButtonEntity(data, device, STOP_BUTTON))
+        if device.has_action(PRESET_BUTTON.key):
+            device_entities.append(BondButtonEntity(data, device, PRESET_BUTTON))
         entities.extend(device_entities)
 
     async_add_entities(entities)
@@ -284,6 +314,7 @@ class BondButtonEntity(BondEntity, ButtonEntity):
         self.entity_description = description
         super().__init__(data, device, description.name, description.key.lower())
 
+    @override
     async def async_press(self) -> None:
         """Press the button."""
         description = self.entity_description
@@ -294,5 +325,6 @@ class BondButtonEntity(BondEntity, ButtonEntity):
             action = Action(key)
         await self._bond.action(self._device_id, action)
 
+    @override
     def _apply_state(self) -> None:
         """Apply the state."""

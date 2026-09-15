@@ -3,18 +3,18 @@
 import asyncio
 from dataclasses import asdict
 from datetime import timedelta
-from unittest.mock import call, patch
+from unittest.mock import _Call, call, patch
 
 import pytest
+import pywemo
 from pywemo.exceptions import ActionException, PyWeMoException
 from pywemo.subscribe import EVENT_TYPE_LONG_PRESS
 
-from homeassistant import runner
 from homeassistant.components.wemo import CONF_DISCOVERY, CONF_STATIC
 from homeassistant.components.wemo.const import DOMAIN, WEMO_SUBSCRIPTION_EVENT
 from homeassistant.components.wemo.coordinator import Options, async_get_coordinator
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.setup import async_setup_component
 from homeassistant.util.dt import utcnow
@@ -22,8 +22,6 @@ from homeassistant.util.dt import utcnow
 from .conftest import MOCK_FIRMWARE_VERSION, MOCK_HOST, MOCK_SERIAL_NUMBER
 
 from tests.common import async_fire_time_changed
-
-asyncio.set_event_loop_policy(runner.HassEventLoopPolicy(True))
 
 
 @pytest.fixture
@@ -49,7 +47,7 @@ async def test_async_register_device_longpress_fails(
             },
         )
         await hass.async_block_till_done()
-    device_entries = list(device_registry.devices.values())
+    device_entries = list(device_registry.devices)
     assert len(device_entries) == 1
     device = async_get_coordinator(hass, device_entries[0].id)
     assert device.supports_long_press is False
@@ -169,7 +167,7 @@ async def test_device_info(
     hass: HomeAssistant, wemo_entity, device_registry: dr.DeviceRegistry
 ) -> None:
     """Verify the DeviceInfo data is set properly."""
-    device_entries = list(device_registry.devices.values())
+    device_entries = list(device_registry.devices)
 
     assert len(device_entries) == 1
     assert device_entries[0].connections == {
@@ -177,6 +175,7 @@ async def test_device_info(
     }
     assert device_entries[0].manufacturer == "Belkin"
     assert device_entries[0].model == "LightSwitch"
+    assert device_entries[0].model_id == "LightSwitch"
     assert device_entries[0].sw_version == MOCK_FIRMWARE_VERSION
 
 
@@ -184,7 +183,7 @@ async def test_dli_device_info(
     hass: HomeAssistant, wemo_dli_entity, device_registry: dr.DeviceRegistry
 ) -> None:
     """Verify the DeviceInfo data for Digital Loggers emulated wemo device."""
-    device_entries = list(device_registry.devices.values())
+    device_entries = list(device_registry.devices)
 
     assert device_entries[0].configuration_url == "http://127.0.0.1"
     assert device_entries[0].identifiers == {(DOMAIN, "123456789")}
@@ -248,14 +247,14 @@ class TestInsight:
     )
     async def test_should_poll(
         self,
-        hass,
-        subscribed,
-        state,
-        expected_calls,
-        wemo_entity,
-        pywemo_device,
-        pywemo_registry,
-    ):
+        hass: HomeAssistant,
+        subscribed: bool,
+        state: int,
+        expected_calls: list[_Call],
+        wemo_entity: er.RegistryEntry,
+        pywemo_device: pywemo.WeMoDevice,
+        pywemo_registry: pywemo.SubscriptionRegistry,
+    ) -> None:
         """Validate the should_poll returns the correct value."""
         pywemo_registry.is_subscribed.return_value = subscribed
         pywemo_device.get_state.reset_mock()

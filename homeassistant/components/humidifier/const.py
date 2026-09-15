@@ -1,15 +1,7 @@
 """Provides the constants needed for component."""
 
 from enum import IntFlag, StrEnum
-from functools import partial
-
-from homeassistant.helpers.deprecation import (
-    DeprecatedConstant,
-    DeprecatedConstantEnum,
-    all_with_deprecated_constants,
-    check_if_deprecated_constant,
-    dir_with_deprecated_constants,
-)
+from typing import Final
 
 MODE_NORMAL = "normal"
 MODE_ECO = "eco"
@@ -37,40 +29,36 @@ ATTR_CURRENT_HUMIDITY = "current_humidity"
 ATTR_HUMIDITY = "humidity"
 ATTR_MAX_HUMIDITY = "max_humidity"
 ATTR_MIN_HUMIDITY = "min_humidity"
+ATTR_TARGET_HUMIDITY_STEP = "target_humidity_step"
 
 DEFAULT_MIN_HUMIDITY = 0
 DEFAULT_MAX_HUMIDITY = 100
 
-DOMAIN = "humidifier"
-
-# DEVICE_CLASS_* below are deprecated as of 2021.12
-# use the HumidifierDeviceClass enum instead.
-_DEPRECATED_DEVICE_CLASS_HUMIDIFIER = DeprecatedConstant(
-    "humidifier", "HumidifierDeviceClass.HUMIDIFIER", "2025.1"
-)
-_DEPRECATED_DEVICE_CLASS_DEHUMIDIFIER = DeprecatedConstant(
-    "dehumidifier", "HumidifierDeviceClass.DEHUMIDIFIER", "2025.1"
-)
+DOMAIN: Final = "humidifier"
 
 SERVICE_SET_MODE = "set_mode"
 SERVICE_SET_HUMIDITY = "set_humidity"
 
 
+class HumidifierEntityCapabilityAttribute(StrEnum):
+    """Capability attributes for humidifier entities."""
+
+    MIN_HUMIDITY = "min_humidity"
+    MAX_HUMIDITY = "max_humidity"
+    TARGET_HUMIDITY_STEP = "target_humidity_step"
+    AVAILABLE_MODES = "available_modes"
+
+
+class HumidifierEntityStateAttribute(StrEnum):
+    """State attributes for humidifier entities."""
+
+    ACTION = "action"
+    CURRENT_HUMIDITY = "current_humidity"
+    HUMIDITY = "humidity"
+    MODE = "mode"
+
+
 class HumidifierEntityFeature(IntFlag):
-    """Supported features of the alarm control panel entity."""
+    """Supported features of the humidifier entity."""
 
     MODES = 1
-
-
-# The SUPPORT_MODES constant is deprecated as of Home Assistant 2022.5.
-# Please use the HumidifierEntityFeature enum instead.
-_DEPRECATED_SUPPORT_MODES = DeprecatedConstantEnum(
-    HumidifierEntityFeature.MODES, "2025.1"
-)
-
-# These can be removed if no deprecated constant are in this module anymore
-__getattr__ = partial(check_if_deprecated_constant, module_globals=globals())
-__dir__ = partial(
-    dir_with_deprecated_constants, module_globals_keys=[*globals().keys()]
-)
-__all__ = all_with_deprecated_constants(globals())

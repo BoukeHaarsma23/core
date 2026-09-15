@@ -1,11 +1,9 @@
 """Database executor helpers."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from concurrent.futures.thread import _threads_queues, _worker
 import threading
-from typing import Any
+from typing import Any, override
 import weakref
 
 from homeassistant.util.executor import InterruptibleThreadPoolExecutor
@@ -34,6 +32,7 @@ class DBInterruptibleThreadPoolExecutor(InterruptibleThreadPoolExecutor):
         self.recorder_and_worker_thread_ids = recorder_and_worker_thread_ids
         super().__init__(*args, **kwargs)
 
+    @override
     def _adjust_thread_count(self) -> None:
         """Overridden to add support for shutdown hook.
 
@@ -53,9 +52,14 @@ class DBInterruptibleThreadPoolExecutor(InterruptibleThreadPoolExecutor):
         ) -> None:
             q.put(None)
 
+        additional_args = (
+            self._create_worker_context(),
+            self._work_queue,
+        )
+
         num_threads = len(self._threads)
         if num_threads < self._max_workers:
-            thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
+            thread_name = f"{self._thread_name_prefix or self}_{num_threads}"
             executor_thread = threading.Thread(
                 name=thread_name,
                 target=_worker_with_shutdown_hook,
@@ -63,9 +67,7 @@ class DBInterruptibleThreadPoolExecutor(InterruptibleThreadPoolExecutor):
                     self._shutdown_hook,
                     self.recorder_and_worker_thread_ids,
                     weakref.ref(self, weakref_cb),
-                    self._work_queue,
-                    self._initializer,
-                    self._initargs,
+                    *(additional_args),
                 ),
             )
             executor_thread.start()

@@ -1,14 +1,12 @@
 """Component to pressing a button as platforms."""
 
-from __future__ import annotations
-
 from datetime import timedelta
 from enum import StrEnum
-from functools import cached_property
 import logging
-from typing import final
+from typing import final, override
 
-import voluptuous as vol
+import probatio
+from propcache.api import cached_property
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE
@@ -19,11 +17,13 @@ from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
+from homeassistant.util.hass_dict import HassKey
 
 from .const import DOMAIN, SERVICE_PRESS
 
 _LOGGER = logging.getLogger(__name__)
 
+DATA_COMPONENT: HassKey[EntityComponent[ButtonEntity]] = HassKey(DOMAIN)
 ENTITY_ID_FORMAT = DOMAIN + ".{}"
 PLATFORM_SCHEMA = cv.PLATFORM_SCHEMA
 PLATFORM_SCHEMA_BASE = cv.PLATFORM_SCHEMA_BASE
@@ -40,21 +40,21 @@ class ButtonDeviceClass(StrEnum):
     UPDATE = "update"
 
 
-DEVICE_CLASSES_SCHEMA = vol.All(vol.Lower, vol.Coerce(ButtonDeviceClass))
+DEVICE_CLASSES_SCHEMA = probatio.All(probatio.Lower, probatio.Coerce(ButtonDeviceClass))
 
 # mypy: disallow-any-generics
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up Button entities."""
-    component = hass.data[DOMAIN] = EntityComponent[ButtonEntity](
+    component = hass.data[DATA_COMPONENT] = EntityComponent[ButtonEntity](
         _LOGGER, DOMAIN, hass, SCAN_INTERVAL
     )
     await component.async_setup(config)
 
     component.async_register_entity_service(
         SERVICE_PRESS,
-        {},
+        None,
         "_async_press_action",
     )
 
@@ -63,14 +63,12 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a config entry."""
-    component: EntityComponent[ButtonEntity] = hass.data[DOMAIN]
-    return await component.async_setup_entry(entry)
+    return await hass.data[DATA_COMPONENT].async_setup_entry(entry)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    component: EntityComponent[ButtonEntity] = hass.data[DOMAIN]
-    return await component.async_unload_entry(entry)
+    return await hass.data[DATA_COMPONENT].async_unload_entry(entry)
 
 
 class ButtonEntityDescription(EntityDescription, frozen_or_thawed=True):
@@ -93,6 +91,7 @@ class ButtonEntity(RestoreEntity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_
     _attr_state: None = None
     __last_pressed_isoformat: str | None = None
 
+    @override
     def _default_to_device_class_name(self) -> bool:
         """Return True if an unnamed entity should be named by its device class.
 
@@ -101,6 +100,7 @@ class ButtonEntity(RestoreEntity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_
         return self.device_class is not None
 
     @cached_property
+    @override
     def device_class(self) -> ButtonDeviceClass | None:
         """Return the class of this entity."""
         if hasattr(self, "_attr_device_class"):
@@ -111,6 +111,7 @@ class ButtonEntity(RestoreEntity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_
 
     @cached_property
     @final
+    @override
     def state(self) -> str | None:
         """Return the entity state."""
         return self.__last_pressed_isoformat
@@ -131,6 +132,7 @@ class ButtonEntity(RestoreEntity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_
         self.async_write_ha_state()
         await self.async_press()
 
+    @override
     async def async_internal_added_to_hass(self) -> None:
         """Call when the button is added to hass."""
         await super().async_internal_added_to_hass()

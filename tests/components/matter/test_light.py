@@ -1,57 +1,65 @@
 """Test Matter lights."""
 
+from typing import Any
 from unittest.mock import MagicMock, call
 
 from chip.clusters import Objects as clusters
+from chip.clusters.Objects import NullValue
+from matter_server.client.models.node import MatterNode
 import pytest
+from syrupy.assertion import SnapshotAssertion
 
 from homeassistant.components.light import ColorMode
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 
 from .common import (
     set_node_attribute,
-    setup_integration_with_node_fixture,
+    snapshot_matter_entities,
     trigger_subscription_callback,
 )
 
 
-# This tests needs to be adjusted to remove lingering tasks
-@pytest.mark.parametrize("expected_lingering_tasks", [True])
+@pytest.mark.usefixtures("matter_devices")
+async def test_lights(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    snapshot: SnapshotAssertion,
+) -> None:
+    """Test lights."""
+    snapshot_matter_entities(hass, entity_registry, snapshot, Platform.LIGHT)
+
+
 @pytest.mark.parametrize(
-    ("fixture", "entity_id", "supported_color_modes"),
+    ("node_fixture", "entity_id", "supported_color_modes"),
     [
         (
-            "extended-color-light",
-            "light.mock_extended_color_light_light",
+            "extended_color_light",
+            "light.mock_extended_color_light",
             ["color_temp", "hs", "xy"],
         ),
         (
-            "color-temperature-light",
-            "light.mock_color_temperature_light_light",
+            "color_temperature_light",
+            "light.mock_color_temperature_light",
             ["color_temp"],
         ),
-        ("dimmable-light", "light.mock_dimmable_light_light", ["brightness"]),
-        ("onoff-light", "light.mock_onoff_light_light", ["onoff"]),
-        ("onoff-light-with-levelcontrol-present", "light.d215s_light", ["onoff"]),
+        ("mock_dimmable_light", "light.mock_dimmable_light", ["brightness"]),
+        ("mock_onoff_light", "light.mock_onoff_light", ["onoff"]),
+        ("onoff_light_with_levelcontrol_present", "light.d215s", ["onoff"]),
     ],
 )
 async def test_light_turn_on_off(
     hass: HomeAssistant,
     matter_client: MagicMock,
-    fixture: str,
+    matter_node: MatterNode,
     entity_id: str,
     supported_color_modes: list[str],
 ) -> None:
     """Test basic light discovery and turn on/off."""
 
-    light_node = await setup_integration_with_node_fixture(
-        hass,
-        fixture,
-        matter_client,
-    )
-
     # Test that the light is off
-    set_node_attribute(light_node, 1, 6, 0, False)
+    set_node_attribute(matter_node, 1, 6, 0, False)
     await trigger_subscription_callback(hass, matter_client)
 
     state = hass.states.get(entity_id)
@@ -64,7 +72,7 @@ async def test_light_turn_on_off(
     assert state.attributes["supported_color_modes"] == supported_color_modes
 
     # Test that the light is on
-    set_node_attribute(light_node, 1, 6, 0, True)
+    set_node_attribute(matter_node, 1, 6, 0, True)
     await trigger_subscription_callback(hass, matter_client)
 
     state = hass.states.get(entity_id)
@@ -83,7 +91,7 @@ async def test_light_turn_on_off(
 
     assert matter_client.send_device_command.call_count == 1
     assert matter_client.send_device_command.call_args == call(
-        node_id=light_node.node_id,
+        node_id=matter_node.node_id,
         endpoint_id=1,
         command=clusters.OnOff.Commands.Off(),
     )
@@ -101,40 +109,41 @@ async def test_light_turn_on_off(
 
     assert matter_client.send_device_command.call_count == 1
     assert matter_client.send_device_command.call_args == call(
-        node_id=light_node.node_id,
+        node_id=matter_node.node_id,
         endpoint_id=1,
         command=clusters.OnOff.Commands.On(),
     )
     matter_client.send_device_command.reset_mock()
 
 
-# This tests needs to be adjusted to remove lingering tasks
-@pytest.mark.parametrize("expected_lingering_tasks", [True])
 @pytest.mark.parametrize(
-    ("fixture", "entity_id"),
+    ("node_fixture", "entity_id"),
     [
-        ("extended-color-light", "light.mock_extended_color_light_light"),
-        ("color-temperature-light", "light.mock_color_temperature_light_light"),
-        ("dimmable-light", "light.mock_dimmable_light_light"),
-        ("dimmable-plugin-unit", "light.dimmable_plugin_unit_light"),
+        ("extended_color_light", "light.mock_extended_color_light"),
+        ("color_temperature_light", "light.mock_color_temperature_light"),
+        ("mock_dimmable_light", "light.mock_dimmable_light"),
+        ("mock_dimmable_plugin_unit", "light.dimmable_plugin_unit"),
     ],
 )
 async def test_dimmable_light(
     hass: HomeAssistant,
     matter_client: MagicMock,
-    fixture: str,
+    matter_node: MatterNode,
     entity_id: str,
 ) -> None:
     """Test a dimmable light."""
 
-    light_node = await setup_integration_with_node_fixture(
-        hass,
-        fixture,
-        matter_client,
-    )
+    # Test for currentLevel is None
+    set_node_attribute(matter_node, 1, 8, 0, None)
+    await trigger_subscription_callback(hass, matter_client)
+
+    state = hass.states.get(entity_id)
+    assert state is not None
+    assert state.state == "on"
+    assert state.attributes["brightness"] is None
 
     # Test that the light brightness is 50 (out of 254)
-    set_node_attribute(light_node, 1, 8, 0, 50)
+    set_node_attribute(matter_node, 1, 8, 0, 50)
     await trigger_subscription_callback(hass, matter_client)
 
     state = hass.states.get(entity_id)
@@ -155,11 +164,11 @@ async def test_dimmable_light(
 
     assert matter_client.send_device_command.call_count == 1
     assert matter_client.send_device_command.call_args == call(
-        node_id=light_node.node_id,
+        node_id=matter_node.node_id,
         endpoint_id=1,
         command=clusters.LevelControl.Commands.MoveToLevelWithOnOff(
             level=128,
-            transitionTime=2,
+            transitionTime=0,
         ),
     )
     matter_client.send_device_command.reset_mock()
@@ -174,7 +183,7 @@ async def test_dimmable_light(
 
     assert matter_client.send_device_command.call_count == 1
     assert matter_client.send_device_command.call_args == call(
-        node_id=light_node.node_id,
+        node_id=matter_node.node_id,
         endpoint_id=1,
         command=clusters.LevelControl.Commands.MoveToLevelWithOnOff(
             level=128,
@@ -184,39 +193,30 @@ async def test_dimmable_light(
     matter_client.send_device_command.reset_mock()
 
 
-# This tests needs to be adjusted to remove lingering tasks
-@pytest.mark.parametrize("expected_lingering_tasks", [True])
 @pytest.mark.parametrize(
-    ("fixture", "entity_id"),
+    ("node_fixture", "entity_id"),
     [
-        ("extended-color-light", "light.mock_extended_color_light_light"),
-        ("color-temperature-light", "light.mock_color_temperature_light_light"),
+        ("extended_color_light", "light.mock_extended_color_light"),
+        ("color_temperature_light", "light.mock_color_temperature_light"),
     ],
 )
 async def test_color_temperature_light(
     hass: HomeAssistant,
     matter_client: MagicMock,
-    fixture: str,
+    matter_node: MatterNode,
     entity_id: str,
 ) -> None:
     """Test a color temperature light."""
-
-    light_node = await setup_integration_with_node_fixture(
-        hass,
-        fixture,
-        matter_client,
-    )
-
     # Test that the light color temperature is 3000 (out of 50000)
-    set_node_attribute(light_node, 1, 768, 8, 2)
-    set_node_attribute(light_node, 1, 768, 7, 3000)
+    set_node_attribute(matter_node, 1, 768, 8, 2)
+    set_node_attribute(matter_node, 1, 768, 7, 3000)
     await trigger_subscription_callback(hass, matter_client)
 
     state = hass.states.get(entity_id)
     assert state is not None
     assert state.state == "on"
     assert state.attributes["color_mode"] == ColorMode.COLOR_TEMP
-    assert state.attributes["color_temp"] == 3003
+    assert state.attributes["color_temp_kelvin"] == 333
 
     # Change color temperature
     await hass.services.async_call(
@@ -224,7 +224,7 @@ async def test_color_temperature_light(
         "turn_on",
         {
             "entity_id": entity_id,
-            "color_temp": 300,
+            "color_temp_kelvin": 3333,
         },
         blocking=True,
     )
@@ -233,17 +233,52 @@ async def test_color_temperature_light(
     matter_client.send_device_command.assert_has_calls(
         [
             call(
-                node_id=light_node.node_id,
+                node_id=matter_node.node_id,
                 endpoint_id=1,
                 command=clusters.ColorControl.Commands.MoveToColorTemperature(
                     colorTemperatureMireds=300,
-                    transitionTime=2,
+                    transitionTime=0,
                     optionsMask=1,
                     optionsOverride=1,
                 ),
             ),
             call(
-                node_id=light_node.node_id,
+                node_id=matter_node.node_id,
+                endpoint_id=1,
+                command=clusters.OnOff.Commands.On(),
+            ),
+        ]
+    )
+    matter_client.send_device_command.reset_mock()
+    # Change color temperature with 15 Kelvin to test capping of mireds at 65279
+    # 15 Kelvin is 66666 Mireds which is above the maximum of
+    # 65279 Mireds permitted by Matter, so it should be capped at
+    # 65279 mireds which is 15.3 Kelvin
+    await hass.services.async_call(
+        "light",
+        "turn_on",
+        {
+            "entity_id": entity_id,
+            "color_temp_kelvin": 15,
+        },
+        blocking=True,
+    )
+
+    assert matter_client.send_device_command.call_count == 2
+    matter_client.send_device_command.assert_has_calls(
+        [
+            call(
+                node_id=matter_node.node_id,
+                endpoint_id=1,
+                command=clusters.ColorControl.Commands.MoveToColorTemperature(
+                    colorTemperatureMireds=65279,
+                    transitionTime=0,
+                    optionsMask=1,
+                    optionsOverride=1,
+                ),
+            ),
+            call(
+                node_id=matter_node.node_id,
                 endpoint_id=1,
                 command=clusters.OnOff.Commands.On(),
             ),
@@ -255,7 +290,7 @@ async def test_color_temperature_light(
     await hass.services.async_call(
         "light",
         "turn_on",
-        {"entity_id": entity_id, "color_temp": 300, "transition": 4.0},
+        {"entity_id": entity_id, "color_temp_kelvin": 3333, "transition": 4.0},
         blocking=True,
     )
 
@@ -263,7 +298,7 @@ async def test_color_temperature_light(
     matter_client.send_device_command.assert_has_calls(
         [
             call(
-                node_id=light_node.node_id,
+                node_id=matter_node.node_id,
                 endpoint_id=1,
                 command=clusters.ColorControl.Commands.MoveToColorTemperature(
                     colorTemperatureMireds=300,
@@ -273,7 +308,7 @@ async def test_color_temperature_light(
                 ),
             ),
             call(
-                node_id=light_node.node_id,
+                node_id=matter_node.node_id,
                 endpoint_id=1,
                 command=clusters.OnOff.Commands.On(),
             ),
@@ -282,32 +317,24 @@ async def test_color_temperature_light(
     matter_client.send_device_command.reset_mock()
 
 
-# This tests needs to be adjusted to remove lingering tasks
-@pytest.mark.parametrize("expected_lingering_tasks", [True])
 @pytest.mark.parametrize(
-    ("fixture", "entity_id"),
+    ("node_fixture", "entity_id"),
     [
-        ("extended-color-light", "light.mock_extended_color_light_light"),
+        ("extended_color_light", "light.mock_extended_color_light"),
     ],
 )
 async def test_extended_color_light(
     hass: HomeAssistant,
     matter_client: MagicMock,
-    fixture: str,
+    matter_node: MatterNode,
     entity_id: str,
 ) -> None:
     """Test an extended color light."""
 
-    light_node = await setup_integration_with_node_fixture(
-        hass,
-        fixture,
-        matter_client,
-    )
-
     # Test that the XY color changes
-    set_node_attribute(light_node, 1, 768, 8, 1)
-    set_node_attribute(light_node, 1, 768, 3, 50)
-    set_node_attribute(light_node, 1, 768, 4, 100)
+    set_node_attribute(matter_node, 1, 768, 8, 1)
+    set_node_attribute(matter_node, 1, 768, 3, 50)
+    set_node_attribute(matter_node, 1, 768, 4, 100)
     await trigger_subscription_callback(hass, matter_client)
 
     state = hass.states.get(entity_id)
@@ -317,9 +344,9 @@ async def test_extended_color_light(
     assert state.attributes["xy_color"] == (0.0007630, 0.001526)
 
     # Test that the HS color changes
-    set_node_attribute(light_node, 1, 768, 8, 0)
-    set_node_attribute(light_node, 1, 768, 1, 50)
-    set_node_attribute(light_node, 1, 768, 0, 100)
+    set_node_attribute(matter_node, 1, 768, 8, 0)
+    set_node_attribute(matter_node, 1, 768, 1, 50)
+    set_node_attribute(matter_node, 1, 768, 0, 100)
     await trigger_subscription_callback(hass, matter_client)
 
     state = hass.states.get(entity_id)
@@ -343,18 +370,18 @@ async def test_extended_color_light(
     matter_client.send_device_command.assert_has_calls(
         [
             call(
-                node_id=light_node.node_id,
+                node_id=matter_node.node_id,
                 endpoint_id=1,
                 command=clusters.ColorControl.Commands.MoveToColor(
                     colorX=0.5 * 65536,
                     colorY=0.5 * 65536,
-                    transitionTime=2,
+                    transitionTime=0,
                     optionsMask=1,
                     optionsOverride=1,
                 ),
             ),
             call(
-                node_id=light_node.node_id,
+                node_id=matter_node.node_id,
                 endpoint_id=1,
                 command=clusters.OnOff.Commands.On(),
             ),
@@ -374,7 +401,7 @@ async def test_extended_color_light(
     matter_client.send_device_command.assert_has_calls(
         [
             call(
-                node_id=light_node.node_id,
+                node_id=matter_node.node_id,
                 endpoint_id=1,
                 command=clusters.ColorControl.Commands.MoveToColor(
                     colorX=0.5 * 65536,
@@ -385,7 +412,7 @@ async def test_extended_color_light(
                 ),
             ),
             call(
-                node_id=light_node.node_id,
+                node_id=matter_node.node_id,
                 endpoint_id=1,
                 command=clusters.OnOff.Commands.On(),
             ),
@@ -408,18 +435,18 @@ async def test_extended_color_light(
     matter_client.send_device_command.assert_has_calls(
         [
             call(
-                node_id=1,
+                node_id=matter_node.node_id,
                 endpoint_id=1,
                 command=clusters.ColorControl.Commands.MoveToHueAndSaturation(
                     hue=167,
                     saturation=254,
-                    transitionTime=2,
+                    transitionTime=0,
                     optionsMask=1,
                     optionsOverride=1,
                 ),
             ),
             call(
-                node_id=light_node.node_id,
+                node_id=matter_node.node_id,
                 endpoint_id=1,
                 command=clusters.OnOff.Commands.On(),
             ),
@@ -443,7 +470,7 @@ async def test_extended_color_light(
     matter_client.send_device_command.assert_has_calls(
         [
             call(
-                node_id=1,
+                node_id=matter_node.node_id,
                 endpoint_id=1,
                 command=clusters.ColorControl.Commands.MoveToHueAndSaturation(
                     hue=167,
@@ -454,10 +481,87 @@ async def test_extended_color_light(
                 ),
             ),
             call(
-                node_id=light_node.node_id,
+                node_id=matter_node.node_id,
                 endpoint_id=1,
                 command=clusters.OnOff.Commands.On(),
             ),
         ]
     )
     matter_client.send_device_command.reset_mock()
+
+
+@pytest.mark.parametrize("node_fixture", ["color_temperature_light"])
+async def test_light_null_color_temperature(
+    hass: HomeAssistant,
+    matter_client: MagicMock,
+    matter_node: MatterNode,
+) -> None:
+    """Test a light that stops reporting a color temperature."""
+    entity_id = "light.mock_color_temperature_light"
+
+    set_node_attribute(matter_node, 1, 768, 7, 300)
+    await trigger_subscription_callback(hass, matter_client)
+
+    state = hass.states.get(entity_id)
+    assert state is not None
+    assert state.attributes["color_temp_kelvin"] == 3333
+
+    set_node_attribute(matter_node, 1, 768, 7, NullValue)
+    await trigger_subscription_callback(hass, matter_client)
+
+    # the last known value is not the current one, so it is not reported
+    state = hass.states.get(entity_id)
+    assert state is not None
+    assert state.attributes["color_temp_kelvin"] is None
+
+
+@pytest.mark.parametrize(
+    "color_mode",
+    [
+        pytest.param(NullValue, id="null"),
+        pytest.param(255, id="out_of_range"),
+    ],
+)
+@pytest.mark.parametrize("node_fixture", ["extended_color_light"])
+async def test_light_unexpected_color_mode(
+    hass: HomeAssistant,
+    matter_client: MagicMock,
+    matter_node: MatterNode,
+    color_mode: Any,
+) -> None:
+    """Test a light that reports a color mode we cannot map."""
+    entity_id = "light.mock_extended_color_light"
+
+    set_node_attribute(matter_node, 1, 768, 8, 0)
+    set_node_attribute(matter_node, 1, 8, 0, 128)
+    await trigger_subscription_callback(hass, matter_client)
+
+    state = hass.states.get(entity_id)
+    assert state is not None
+    assert state.attributes["color_mode"] == ColorMode.HS
+
+    set_node_attribute(matter_node, 1, 768, 8, color_mode)
+    await trigger_subscription_callback(hass, matter_client)
+
+    state = hass.states.get(entity_id)
+    assert state is not None
+    assert state.state == "on"
+    # the color the light is showing is anyone's guess, but it is still a light
+    assert state.attributes["color_mode"] == ColorMode.UNKNOWN
+
+    await hass.services.async_call(
+        "light",
+        "turn_on",
+        {"entity_id": entity_id, "brightness": 128},
+        blocking=True,
+    )
+
+    assert matter_client.send_device_command.call_count == 1
+    assert matter_client.send_device_command.call_args == call(
+        node_id=matter_node.node_id,
+        endpoint_id=1,
+        command=clusters.LevelControl.Commands.MoveToLevelWithOnOff(
+            level=128,
+            transitionTime=0,
+        ),
+    )

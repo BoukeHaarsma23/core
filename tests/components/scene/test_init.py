@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from homeassistant.components import light, scene
+from homeassistant.components.scene import DOMAIN
 from homeassistant.const import (
     ATTR_ENTITY_ID,
     ENTITY_MATCH_ALL,
@@ -222,7 +223,7 @@ async def test_restore_state_does_not_restore_unavailable(
     assert hass.states.get("scene.test").state == STATE_UNKNOWN
 
 
-async def activate(hass, entity_id=ENTITY_MATCH_ALL):
+async def activate(hass: HomeAssistant, entity_id: str = ENTITY_MATCH_ALL) -> None:
     """Activate a scene."""
     data = {}
 
@@ -234,14 +235,16 @@ async def activate(hass, entity_id=ENTITY_MATCH_ALL):
 
 async def test_services_registered(hass: HomeAssistant) -> None:
     """Test we register services with empty config."""
-    assert await async_setup_component(hass, "scene", {})
+    assert await async_setup_component(hass, DOMAIN, {})
     await hass.async_block_till_done()
     assert hass.services.has_service("scene", "reload")
     assert hass.services.has_service("scene", "turn_on")
     assert hass.services.has_service("scene", "apply")
 
 
-async def setup_lights(hass, entities):
+async def setup_lights(
+    hass: HomeAssistant, entities: list[MockLight]
+) -> tuple[MockLight, MockLight]:
     """Set up the light component."""
     assert await async_setup_component(
         hass, light.DOMAIN, {light.DOMAIN: {"platform": "test"}}
@@ -261,7 +264,7 @@ async def setup_lights(hass, entities):
     return light_1, light_2
 
 
-async def turn_off_lights(hass, entity_ids):
+async def turn_off_lights(hass: HomeAssistant, entity_ids: list[str]) -> None:
     """Turn lights off."""
     await hass.services.async_call(
         "light",

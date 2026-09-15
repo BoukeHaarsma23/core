@@ -1,18 +1,16 @@
 """The lookin integration config_flow."""
 
-from __future__ import annotations
-
 import logging
-from typing import Any
+from typing import Any, override
 
 import aiohttp
 from aiolookin import Device, LookInHttpProtocol, NoUsableService
-import voluptuous as vol
+import probatio
 
-from homeassistant.components import zeroconf
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_HOST
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from .const import DOMAIN
 
@@ -27,8 +25,9 @@ class LookinFlowHandler(ConfigFlow, domain=DOMAIN):
         self._host: str | None = None
         self._name: str | None = None
 
+    @override
     async def async_step_zeroconf(
-        self, discovery_info: zeroconf.ZeroconfServiceInfo
+        self, discovery_info: ZeroconfServiceInfo
     ) -> ConfigFlowResult:
         """Start a discovery flow from zeroconf."""
         uid: str = discovery_info.hostname.removesuffix(".local.")
@@ -38,7 +37,7 @@ class LookinFlowHandler(ConfigFlow, domain=DOMAIN):
 
         try:
             device: Device = await self._validate_device(host=host)
-        except (aiohttp.ClientError, NoUsableService):
+        except aiohttp.ClientError, NoUsableService:
             return self.async_abort(reason="cannot_connect")
         except Exception:
             LOGGER.exception("Unexpected exception")
@@ -47,9 +46,13 @@ class LookinFlowHandler(ConfigFlow, domain=DOMAIN):
         self._name = device.name
         self._host = host
         self._set_confirm_only()
-        self.context["title_placeholders"] = {"name": self._name, "host": host}
+        self.context["title_placeholders"] = {
+            "name": self._name or "LOOKin",
+            "host": host,
+        }
         return await self.async_step_discovery_confirm()
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -60,7 +63,7 @@ class LookinFlowHandler(ConfigFlow, domain=DOMAIN):
             host = user_input[CONF_HOST]
             try:
                 device = await self._validate_device(host=host)
-            except (aiohttp.ClientError, NoUsableService):
+            except aiohttp.ClientError, NoUsableService:
                 errors[CONF_HOST] = "cannot_connect"
             except Exception:
                 LOGGER.exception("Unexpected exception")
@@ -76,7 +79,7 @@ class LookinFlowHandler(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({vol.Required(CONF_HOST): str}),
+            data_schema=probatio.Schema({probatio.Required(CONF_HOST): str}),
             errors=errors,
         )
 
@@ -92,13 +95,12 @@ class LookinFlowHandler(ConfigFlow, domain=DOMAIN):
         """Confirm the discover flow."""
         assert self._host is not None
         if user_input is None:
-            self.context["title_placeholders"] = {
-                "name": self._name,
-                "host": self._host,
-            }
             return self.async_show_form(
                 step_id="discovery_confirm",
-                description_placeholders={"name": self._name, "host": self._host},
+                description_placeholders={
+                    "name": self._name or "LOOKin",
+                    "host": self._host,
+                },
             )
 
         return self.async_create_entry(

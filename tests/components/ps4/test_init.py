@@ -29,9 +29,9 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.setup import async_setup_component
-from homeassistant.util import location
+from homeassistant.util import location as location_util
 
 from tests.common import MockConfigEntry
 
@@ -52,13 +52,14 @@ MOCK_FLOW_RESULT = {
     "title": "test_ps4",
     "data": MOCK_DATA,
     "options": {},
+    "subentries": (),
 }
 
 MOCK_ENTRY_ID = "SomeID"
 
 MOCK_CONFIG = MockConfigEntry(domain=DOMAIN, data=MOCK_DATA, entry_id=MOCK_ENTRY_ID)
 
-MOCK_LOCATION = location.LocationInfo(
+MOCK_LOCATION = location_util.LocationInfo(
     "0.0.0.0",
     "US",
     "USD",
@@ -79,8 +80,6 @@ MOCK_DEVICE_VERSION_1 = {
 }
 
 MOCK_DATA_VERSION_1 = {CONF_TOKEN: MOCK_CREDS, "devices": [MOCK_DEVICE_VERSION_1]}
-
-MOCK_DEVICE_ID = "somedeviceid"
 
 MOCK_ENTRY_VERSION_1 = MockConfigEntry(
     domain=DOMAIN, data=MOCK_DATA_VERSION_1, entry_id=MOCK_ENTRY_ID, version=1
@@ -113,13 +112,6 @@ MOCK_GAMES = {MOCK_ID: MOCK_GAMES_DATA}
 MOCK_GAMES_LOCKED = {MOCK_ID: MOCK_GAMES_DATA_LOCKED}
 
 
-async def test_ps4_integration_setup(hass: HomeAssistant) -> None:
-    """Test PS4 integration is setup."""
-    await ps4.async_setup(hass, {})
-    await hass.async_block_till_done()
-    assert hass.data[PS4_DATA].protocol is not None
-
-
 async def test_creating_entry_sets_up_media_player(hass: HomeAssistant) -> None:
     """Test setting up PS4 loads the media player."""
     mock_flow = "homeassistant.components.ps4.PlayStation4FlowHandler.async_step_user"
@@ -141,23 +133,35 @@ async def test_creating_entry_sets_up_media_player(hass: HomeAssistant) -> None:
 
 
 async def test_config_flow_entry_migrate(
-    hass: HomeAssistant, entity_registry: er.EntityRegistry
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    entity_registry: er.EntityRegistry,
 ) -> None:
     """Test that config flow entry is migrated correctly."""
     # Start with the config entry at Version 1.
     manager = hass.config_entries
     mock_entry = MOCK_ENTRY_VERSION_1
     mock_entry.add_to_manager(manager)
-    mock_entity_id = f"media_player.ps4_{MOCK_UNIQUE_ID}"
+    # The integration registers the PS4 device with a name (the console host name),
+    # so the entity id is derived from the device name.
+    mock_device_entry = device_registry.async_get_or_create(
+        config_entry_id=mock_entry.entry_id,
+        connections={(dr.CONNECTION_NETWORK_MAC, "12:34:56:AB:CD:EF")},
+        identifiers={(DOMAIN, MOCK_UNIQUE_ID)},
+        manufacturer="Sony Interactive Entertainment Inc.",
+        model="PlayStation 4",
+        name="My PS4",
+    )
     mock_e_entry = entity_registry.async_get_or_create(
         "media_player",
         "ps4",
         MOCK_UNIQUE_ID,
         config_entry=mock_entry,
-        device_id=MOCK_DEVICE_ID,
+        device_id=mock_device_entry.id,
     )
+    mock_entity_id = mock_e_entry.entity_id
     assert len(entity_registry.entities) == 1
-    assert mock_e_entry.entity_id == mock_entity_id
+    assert mock_entity_id == "media_player.my_ps4"
     assert mock_e_entry.unique_id == MOCK_UNIQUE_ID
 
     with (
@@ -170,17 +174,16 @@ async def test_config_flow_entry_migrate(
             return_value=entity_registry,
         ),
     ):
-        await ps4.async_migrate_entry(hass, mock_entry)
+        await hass.config_entries.async_setup(mock_entry.entry_id)
 
     await hass.async_block_till_done()
 
     assert len(entity_registry.entities) == 1
-    for entity in entity_registry.entities.values():
-        mock_entity = entity
-
-    # Test that entity_id remains the same.
+    # The migration must keep the entity_id unchanged.
+    mock_entity = entity_registry.async_get(mock_entity_id)
+    assert mock_entity is not None
     assert mock_entity.entity_id == mock_entity_id
-    assert mock_entity.device_id == MOCK_DEVICE_ID
+    assert mock_entity.device_id == mock_device_entry.id
 
     # Test that last four of credentials is appended to the unique_id.
     assert mock_entity.unique_id == f"{MOCK_UNIQUE_ID}_{MOCK_CREDS[-4:]}"
@@ -199,7 +202,7 @@ async def test_media_player_is_setup(hass: HomeAssistant) -> None:
     assert len(hass.data[PS4_DATA].devices) == 1
 
 
-async def setup_mock_component(hass):
+async def setup_mock_component(hass: HomeAssistant) -> None:
     """Set up Mock Media Player."""
     entry = MockConfigEntry(domain=ps4.DOMAIN, data=MOCK_DATA, version=VERSION)
     entry.add_to_manager(hass.config_entries)
@@ -269,9 +272,7 @@ async def test_send_command(hass: HomeAssistant) -> None:
     """Test send_command service."""
     await setup_mock_component(hass)
 
-    mock_func = "{}{}".format(
-        "homeassistant.components.ps4", ".media_player.PS4Device.async_send_command"
-    )
+    mock_func = "homeassistant.components.ps4.media_player.PS4Device.async_send_command"
 
     mock_devices = hass.data[PS4_DATA].devices
     assert len(mock_devices) == 1

@@ -8,8 +8,9 @@ import pytest
 
 from homeassistant import config_entries
 from homeassistant.components import dialogflow, intent_script
-from homeassistant.config import async_process_ha_core_config
+from homeassistant.components.dialogflow import DOMAIN
 from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.core_config import async_process_ha_core_config
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.setup import async_setup_component
 
@@ -89,7 +90,7 @@ async def fixture(hass: HomeAssistant, hass_client_no_auth: ClientSessionGenerat
     )
 
     result = await hass.config_entries.flow.async_init(
-        "dialogflow", context={"source": config_entries.SOURCE_USER}
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
     assert result["type"] is FlowResultType.FORM, result
 

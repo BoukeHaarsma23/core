@@ -1,41 +1,37 @@
 """The Modern Forms integration."""
 
-from __future__ import annotations
-
 from collections.abc import Callable, Coroutine
-import logging
 from typing import Any, Concatenate
 
 from aiomodernforms import ModernFormsConnectionError, ModernFormsError
 
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, Platform
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.exceptions import HomeAssistantError
 
 from .const import DOMAIN
-from .coordinator import ModernFormsDataUpdateCoordinator
+from .coordinator import ModernFormsConfigEntry, ModernFormsDataUpdateCoordinator
+from .entity import ModernFormsDeviceEntity
 
 PLATFORMS = [
     Platform.BINARY_SENSOR,
+    Platform.BUTTON,
     Platform.FAN,
     Platform.LIGHT,
+    Platform.NUMBER,
     Platform.SENSOR,
     Platform.SWITCH,
 ]
-_LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: ModernFormsConfigEntry) -> bool:
     """Set up a Modern Forms device from a config entry."""
 
     # Create Modern Forms instance for this entry
-    coordinator = ModernFormsDataUpdateCoordinator(hass, host=entry.data[CONF_HOST])
+    coordinator = ModernFormsDataUpdateCoordinator(hass, entry)
     await coordinator.async_config_entry_first_refresh()
 
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = coordinator
+    entry.runtime_data = coordinator
 
     # Set up all platforms for this device/entry.
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -43,17 +39,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(
+    hass: HomeAssistant, entry: ModernFormsConfigEntry
+) -> bool:
     """Unload Modern Forms config entry."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-
-    if unload_ok:
-        del hass.data[DOMAIN][entry.entry_id]
-
-    if not hass.data[DOMAIN]:
-        del hass.data[DOMAIN]
-
-    return unload_ok
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
 def modernforms_exception_handler[
@@ -65,7 +55,7 @@ def modernforms_exception_handler[
     """Decorate Modern Forms calls to handle Modern Forms exceptions.
 
     A decorator that wraps the passed in function, catches Modern Forms errors,
-    and handles the availability of the device in the data coordinator.
+    and raises translated HomeAssistantError exceptions.
     """
 
     async def handler(
@@ -76,43 +66,17 @@ def modernforms_exception_handler[
             self.coordinator.async_update_listeners()
 
         except ModernFormsConnectionError as error:
-            _LOGGER.error("Error communicating with API: %s", error)
             self.coordinator.last_update_success = False
             self.coordinator.async_update_listeners()
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="communication_error",
+            ) from error
 
         except ModernFormsError as error:
-            _LOGGER.error("Invalid response from API: %s", error)
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="invalid_response",
+            ) from error
 
     return handler
-
-
-class ModernFormsDeviceEntity(CoordinatorEntity[ModernFormsDataUpdateCoordinator]):
-    """Defines a Modern Forms device entity."""
-
-    _attr_has_entity_name = True
-
-    def __init__(
-        self,
-        *,
-        entry_id: str,
-        coordinator: ModernFormsDataUpdateCoordinator,
-        enabled_default: bool = True,
-    ) -> None:
-        """Initialize the Modern Forms entity."""
-        super().__init__(coordinator)
-        self._attr_enabled_default = enabled_default
-        self._entry_id = entry_id
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device information about this Modern Forms device."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.coordinator.data.info.mac_address)},
-            name=self.coordinator.data.info.device_name,
-            manufacturer="Modern Forms",
-            model=self.coordinator.data.info.fan_type,
-            sw_version=(
-                f"{self.coordinator.data.info.firmware_version} /"
-                f" {self.coordinator.data.info.main_mcu_firmware_version}"
-            ),
-        )

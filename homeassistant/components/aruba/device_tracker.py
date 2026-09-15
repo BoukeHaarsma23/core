@@ -1,22 +1,20 @@
 """Support for Aruba Access Points."""
 
-from __future__ import annotations
-
 import logging
 import re
-from typing import Any
+from typing import Any, override
 
 import pexpect
-import voluptuous as vol
+import probatio
 
 from homeassistant.components.device_tracker import (
-    DOMAIN,
+    DOMAIN as DEVICE_TRACKER_DOMAIN,
     PLATFORM_SCHEMA as DEVICE_TRACKER_PLATFORM_SCHEMA,
     DeviceScanner,
 )
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
 _LOGGER = logging.getLogger(__name__)
@@ -29,16 +27,16 @@ _DEVICES_REGEX = re.compile(
 
 PLATFORM_SCHEMA = DEVICE_TRACKER_PLATFORM_SCHEMA.extend(
     {
-        vol.Required(CONF_HOST): cv.string,
-        vol.Required(CONF_PASSWORD): cv.string,
-        vol.Required(CONF_USERNAME): cv.string,
+        probatio.Required(CONF_HOST): cv.string,
+        probatio.Required(CONF_PASSWORD): cv.string,
+        probatio.Required(CONF_USERNAME): cv.string,
     }
 )
 
 
 def get_scanner(hass: HomeAssistant, config: ConfigType) -> ArubaDeviceScanner | None:
     """Validate the configuration and return a Aruba scanner."""
-    scanner = ArubaDeviceScanner(config[DOMAIN])
+    scanner = ArubaDeviceScanner(config[DEVICE_TRACKER_DOMAIN])
 
     return scanner if scanner.success_init else None
 
@@ -58,11 +56,13 @@ class ArubaDeviceScanner(DeviceScanner):
         data = self.get_aruba_data()
         self.success_init = data is not None
 
+    @override
     def scan_devices(self) -> list[str]:
         """Scan for new devices and return a list with found device IDs."""
         self._update_info()
         return [client["mac"] for client in self.last_results.values()]
 
+    @override
     def get_device_name(self, device: str) -> str | None:
         """Return the name of the given device or None if we don't know."""
         if not self.last_results:
@@ -89,8 +89,8 @@ class ArubaDeviceScanner(DeviceScanner):
     def get_aruba_data(self) -> dict[str, dict[str, str]] | None:
         """Retrieve data from Aruba Access Point and return parsed result."""
 
-        connect = f"ssh {self.username}@{self.host} -o HostKeyAlgorithms=ssh-rsa"
-        ssh = pexpect.spawn(connect)
+        connect = f"ssh {self.username}@{self.host}"
+        ssh: pexpect.spawn[str] = pexpect.spawn(connect, encoding="utf-8")
         query = ssh.expect(
             [
                 "password:",
@@ -125,12 +125,12 @@ class ArubaDeviceScanner(DeviceScanner):
         ssh.expect("#")
         ssh.sendline("show clients")
         ssh.expect("#")
-        devices_result = ssh.before.split(b"\r\n")
+        devices_result = (ssh.before or "").splitlines()
         ssh.sendline("exit")
 
         devices: dict[str, dict[str, str]] = {}
         for device in devices_result:
-            if match := _DEVICES_REGEX.search(device.decode("utf-8")):
+            if match := _DEVICES_REGEX.search(device):
                 devices[match.group("ip")] = {
                     "ip": match.group("ip"),
                     "mac": match.group("mac").upper(),

@@ -1,18 +1,16 @@
 """Config flow for DoorBird integration."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
 from http import HTTPStatus
 import logging
-from typing import Any
+from typing import Any, override
 
 from aiohttp import ClientResponseError
 from doorbirdpy import DoorBird
-import voluptuous as vol
+import probatio
 
-from homeassistant.components import zeroconf
 from homeassistant.config_entries import (
+    SOURCE_IGNORE,
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
@@ -20,8 +18,11 @@ from homeassistant.config_entries import (
 )
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.device_registry import format_mac
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 from homeassistant.helpers.typing import VolDictType
 
 from .const import (
@@ -39,20 +40,22 @@ DEFAULT_OPTIONS = {CONF_EVENTS: [DEFAULT_DOORBELL_EVENT, DEFAULT_MOTION_EVENT]}
 
 
 AUTH_VOL_DICT: VolDictType = {
-    vol.Required(CONF_USERNAME): str,
-    vol.Required(CONF_PASSWORD): str,
+    probatio.Required(CONF_USERNAME): str,
+    probatio.Required(CONF_PASSWORD): str,
 }
-AUTH_SCHEMA = vol.Schema(AUTH_VOL_DICT)
+AUTH_SCHEMA = probatio.Schema(AUTH_VOL_DICT)
 
 
 def _schema_with_defaults(
     host: str | None = None, name: str | None = None
-) -> vol.Schema:
-    return vol.Schema(
+) -> probatio.Schema:
+    return probatio.Schema(
         {
-            vol.Required(CONF_HOST, default=host): str,
+            probatio.Required(CONF_HOST, default=host): str,
             **AUTH_VOL_DICT,
-            vol.Optional(CONF_NAME, default=name): str,
+            # Name field is no longer allowed in config flow schemas
+            # pylint: disable-next=home-assistant-config-flow-name-field
+            probatio.Optional(CONF_NAME, default=name): str,
         }
     )
 
@@ -97,17 +100,55 @@ class DoorBirdConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    reauth_entry: ConfigEntry
+
     def __init__(self) -> None:
         """Initialize the DoorBird config flow."""
-        self.discovery_schema: vol.Schema | None = None
-        self.reauth_entry: ConfigEntry | None = None
+        self.discovery_schema: probatio.Schema | None = None
+
+    async def _async_verify_existing_device_for_discovery(
+        self,
+        existing_entry: ConfigEntry,
+        host: str,
+        macaddress: str,
+    ) -> None:
+        """Verify discovered device matches existing entry before updating IP.
+
+        This method performs the following verification steps:
+        1. Ensures that the stored credentials work before updating the entry.
+        2. Verifies that the device at the discovered IP
+           address has the expected MAC address.
+        """
+        info, errors = await self._async_validate_or_error(
+            {
+                **existing_entry.data,
+                CONF_HOST: host,
+            }
+        )
+
+        if errors:
+            _LOGGER.debug(
+                "Cannot validate DoorBird at %s with existing credentials: %s",
+                host,
+                errors,
+            )
+            raise AbortFlow("cannot_connect")
+
+        # Verify the MAC address matches what was advertised
+        if format_mac(info["mac_addr"]) != format_mac(macaddress):
+            _LOGGER.debug(
+                "DoorBird at %s reports MAC %s but zeroconf advertised %s, ignoring",
+                host,
+                info["mac_addr"],
+                macaddress,
+            )
+            raise AbortFlow("wrong_device")
 
     async def async_step_reauth(
         self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
         """Handle reauth."""
-        entry_id = self.context["entry_id"]
-        self.reauth_entry = self.hass.config_entries.async_get_entry(entry_id)
+        self.reauth_entry = self._get_reauth_entry()
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
@@ -115,9 +156,7 @@ class DoorBirdConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Handle reauth input."""
         errors: dict[str, str] = {}
-        existing_entry = self.reauth_entry
-        assert existing_entry
-        existing_data = existing_entry.data
+        existing_data = self.reauth_entry.data
         placeholders: dict[str, str] = {
             CONF_NAME: existing_data[CONF_NAME],
             CONF_HOST: existing_data[CONF_HOST],
@@ -132,7 +171,7 @@ class DoorBirdConfigFlow(ConfigFlow, domain=DOMAIN):
             _, errors = await self._async_validate_or_error(new_config)
             if not errors:
                 return self.async_update_reload_and_abort(
-                    existing_entry, data=new_config
+                    self.reauth_entry, data=new_config
                 )
 
         return self.async_show_form(
@@ -142,6 +181,7 @@ class DoorBirdConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -159,8 +199,9 @@ class DoorBirdConfigFlow(ConfigFlow, domain=DOMAIN):
         data = self.discovery_schema or _schema_with_defaults()
         return self.async_show_form(step_id="user", data_schema=data, errors=errors)
 
+    @override
     async def async_step_zeroconf(
-        self, discovery_info: zeroconf.ZeroconfServiceInfo
+        self, discovery_info: ZeroconfServiceInfo
     ) -> ConfigFlowResult:
         """Prepare configuration for a discovered doorbird device."""
         macaddress = discovery_info.properties["macaddress"]
@@ -174,7 +215,25 @@ class DoorBirdConfigFlow(ConfigFlow, domain=DOMAIN):
 
         await self.async_set_unique_id(macaddress)
         host = discovery_info.host
-        self._abort_if_unique_id_configured(updates={CONF_HOST: host})
+
+        # Check if we have an existing entry for this MAC
+        existing_entry = self.hass.config_entries.async_entry_for_domain_unique_id(
+            DOMAIN, macaddress
+        )
+
+        if existing_entry:
+            if existing_entry.source == SOURCE_IGNORE:
+                return self.async_abort(reason="already_configured")
+
+            # Check if the host is actually changing
+            if existing_entry.data.get(CONF_HOST) != host:
+                await self._async_verify_existing_device_for_discovery(
+                    existing_entry, host, macaddress
+                )
+
+            # All checks passed or no change needed, abort
+            # if already configured with potential IP update
+            self._abort_if_unique_id_configured(updates={CONF_HOST: host})
 
         self._async_abort_entries_match({CONF_HOST: host})
 
@@ -211,19 +270,16 @@ class DoorBirdConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
+    @override
     def async_get_options_flow(
         config_entry: ConfigEntry,
     ) -> OptionsFlowHandler:
         """Get the options flow for this handler."""
-        return OptionsFlowHandler(config_entry)
+        return OptionsFlowHandler()
 
 
 class OptionsFlowHandler(OptionsFlow):
     """Handle a option flow for doorbird."""
-
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -237,8 +293,8 @@ class OptionsFlowHandler(OptionsFlow):
 
         # We convert to a comma separated list for the UI
         # since there really isn't anything better
-        options_schema = vol.Schema(
-            {vol.Optional(CONF_EVENTS, default=", ".join(current_events)): str}
+        options_schema = probatio.Schema(
+            {probatio.Optional(CONF_EVENTS, default=", ".join(current_events)): str}
         )
         return self.async_show_form(step_id="init", data_schema=options_schema)
 

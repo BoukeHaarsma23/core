@@ -2,10 +2,10 @@
 
 from typing import Any
 
+import probatio
 from pyinsteon import devices
 from pyinsteon.address import Address
 from pyinsteon.constants import DeviceAction
-import voluptuous as vol
 
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
@@ -26,16 +26,12 @@ from ..const import (
     TYPE,
 )
 from ..schemas import build_x10_schema
+from ..utils import compute_device_name
 from .config import add_x10_device, remove_device_override, remove_x10_device
 
 X10_DEVICE = "x10_device"
 X10_DEVICE_SCHEMA = build_x10_schema()
 REMOVE_ALL_REFS = "remove_all_refs"
-
-
-def compute_device_name(ha_device):
-    """Return the HA device name."""
-    return ha_device.name_by_user if ha_device.name_by_user else ha_device.name
 
 
 async def async_add_devices(address, multiple):
@@ -52,25 +48,15 @@ def get_insteon_device_from_ha_device(ha_device):
     return None
 
 
-async def async_device_name(dev_registry, address):
-    """Get the Insteon device name from a device registry id."""
-    ha_device = dev_registry.async_get_device(identifiers={(DOMAIN, str(address))})
-    if not ha_device:
-        if device := devices[address]:
-            return f"{device.description} ({device.model})"
-        return ""
-    return compute_device_name(ha_device)
-
-
 def notify_device_not_found(connection, msg, text):
     """Notify the caller that the device was not found."""
     connection.send_message(
-        websocket_api.error_message(msg[ID], websocket_api.ERR_NOT_FOUND, text)
+        websocket_api.error_message(msg[ID], websocket_api.const.ERR_NOT_FOUND, text)
     )
 
 
 @websocket_api.websocket_command(
-    {vol.Required(TYPE): "insteon/device/get", vol.Required(DEVICE_ID): str}
+    {probatio.Required(TYPE): "insteon/device/get", probatio.Required(DEVICE_ID): str}
 )
 @websocket_api.require_admin
 @websocket_api.async_response
@@ -88,20 +74,28 @@ async def websocket_get_device(
         notify_device_not_found(connection, msg, INSTEON_DEVICE_NOT_FOUND)
         return
     ha_name = compute_device_name(ha_device)
+    groups = getattr(device, "groups", None) or {}
     device_info = {
         "name": ha_name,
         "address": str(device.address),
         "is_battery": device.is_battery,
         "aldb_status": str(device.aldb.status),
+        "cat": int(device.cat) if device.cat is not None else None,
+        "subcat": int(device.subcat) if device.subcat is not None else None,
+        "model": device.model,
+        "description": device.description,
+        "engine_version": str(device.engine_version),
+        "firmware": device.firmware,
+        "buttons": {group: state.name for group, state in groups.items()},
     }
     connection.send_result(msg[ID], device_info)
 
 
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "insteon/device/add",
-        vol.Required(MULTIPLE): bool,
-        vol.Optional(DEVICE_ADDRESS): str,
+        probatio.Required(TYPE): "insteon/device/add",
+        probatio.Required(MULTIPLE): bool,
+        probatio.Optional(DEVICE_ADDRESS): str,
     }
 )
 @websocket_api.require_admin
@@ -139,7 +133,7 @@ async def websocket_add_device(
     connection.send_result(msg[ID])
 
 
-@websocket_api.websocket_command({vol.Required(TYPE): "insteon/device/add/cancel"})
+@websocket_api.websocket_command({probatio.Required(TYPE): "insteon/device/add/cancel"})
 @websocket_api.require_admin
 @websocket_api.async_response
 async def websocket_cancel_add_device(
@@ -154,9 +148,9 @@ async def websocket_cancel_add_device(
 
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "insteon/device/remove",
-        vol.Required(DEVICE_ADDRESS): str,
-        vol.Required(REMOVE_ALL_REFS): bool,
+        probatio.Required(TYPE): "insteon/device/remove",
+        probatio.Required(DEVICE_ADDRESS): str,
+        probatio.Required(REMOVE_ALL_REFS): bool,
     }
 )
 @websocket_api.require_admin
@@ -188,8 +182,8 @@ async def websocket_remove_device(
 
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "insteon/device/add_x10",
-        vol.Required(X10_DEVICE): X10_DEVICE_SCHEMA,
+        probatio.Required(TYPE): "insteon/device/add_x10",
+        probatio.Required(X10_DEVICE): X10_DEVICE_SCHEMA,
     }
 )
 @websocket_api.require_admin

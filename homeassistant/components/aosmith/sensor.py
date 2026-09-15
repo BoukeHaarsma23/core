@@ -2,8 +2,9 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import override
 
-from py_aosmith.models import Device as AOSmithDevice, HotWaterStatus
+from py_aosmith.models import Device as AOSmithDevice
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -11,14 +12,15 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfEnergy
+from homeassistant.const import PERCENTAGE, UnitOfEnergy
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import AOSmithData
-from .const import DOMAIN
-from .coordinator import AOSmithEnergyCoordinator, AOSmithStatusCoordinator
+from .coordinator import (
+    AOSmithConfigEntry,
+    AOSmithEnergyCoordinator,
+    AOSmithStatusCoordinator,
+)
 from .entity import AOSmithEnergyEntity, AOSmithStatusEntity
 
 
@@ -33,26 +35,19 @@ STATUS_ENTITY_DESCRIPTIONS: tuple[AOSmithStatusSensorEntityDescription, ...] = (
     AOSmithStatusSensorEntityDescription(
         key="hot_water_availability",
         translation_key="hot_water_availability",
-        device_class=SensorDeviceClass.ENUM,
-        options=["low", "medium", "high"],
-        value_fn=lambda device: HOT_WATER_STATUS_MAP.get(
-            device.status.hot_water_status
-        ),
+        native_unit_of_measurement=PERCENTAGE,
+        value_fn=lambda device: device.status.hot_water_status,
     ),
 )
 
-HOT_WATER_STATUS_MAP: dict[HotWaterStatus, str] = {
-    HotWaterStatus.LOW: "low",
-    HotWaterStatus.MEDIUM: "medium",
-    HotWaterStatus.HIGH: "high",
-}
-
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: AOSmithConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up A. O. Smith sensor platform."""
-    data: AOSmithData = hass.data[DOMAIN][entry.entry_id]
+    data = entry.runtime_data
 
     async_add_entities(
         AOSmithStatusSensorEntity(data.status_coordinator, description, junction_id)
@@ -83,6 +78,7 @@ class AOSmithStatusSensorEntity(AOSmithStatusEntity, SensorEntity):
         self._attr_unique_id = f"{description.key}_{junction_id}"
 
     @property
+    @override
     def native_value(self) -> str | int | None:
         """Return the state of the sensor."""
         return self.entity_description.value_fn(self.device)
@@ -107,6 +103,7 @@ class AOSmithEnergySensorEntity(AOSmithEnergyEntity, SensorEntity):
         self._attr_unique_id = f"energy_usage_{junction_id}"
 
     @property
+    @override
     def native_value(self) -> float | None:
         """Return the state of the sensor."""
         return self.energy_usage

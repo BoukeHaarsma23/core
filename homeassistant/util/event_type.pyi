@@ -2,15 +2,15 @@
 # ruff: noqa: PYI021  # Allow docstrings
 
 from collections.abc import Mapping
-from typing import Any, Generic
-
-from typing_extensions import TypeVar
+from typing import Any, Generic, TypeVar, override
 
 __all__ = [
     "EventType",
 ]
 
-_DataT = TypeVar("_DataT", bound=Mapping[str, Any], default=Mapping[str, Any])
+_DataT = TypeVar(  # needs to be invariant
+    "_DataT", bound=Mapping[str, Any], default=Mapping[str, Any]
+)
 
 class EventType(Generic[_DataT]):
     """Custom type for Event.event_type. At runtime delegated to str.
@@ -20,6 +20,8 @@ class EventType(Generic[_DataT]):
 
     def __init__(self, value: str, /) -> None: ...
     def __len__(self) -> int: ...
+    @override
     def __hash__(self) -> int: ...
+    @override
     def __eq__(self, value: object, /) -> bool: ...
     def __getitem__(self, index: int) -> str: ...

@@ -18,11 +18,9 @@ from homeassistant.components.screenlogic.const import (
     SERVICE_STOP_SUPER_CHLORINATION,
 )
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import ATTR_AREA_ID, ATTR_DEVICE_ID, ATTR_ENTITY_ID, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import device_registry as dr
-from homeassistant.util import slugify
 
 from . import (
     DATA_FULL_CHEM,
@@ -102,22 +100,6 @@ async def setup_screenlogic_services_fixture(
             },
             None,
         ),
-        (
-            {
-                ATTR_COLOR_MODE: COLOR_MODE.ALL_ON.name.lower(),
-            },
-            {
-                ATTR_AREA_ID: MOCK_DEVICE_AREA,
-            },
-        ),
-        (
-            {
-                ATTR_COLOR_MODE: COLOR_MODE.ALL_ON.name.lower(),
-            },
-            {
-                ATTR_ENTITY_ID: f"{Platform.SENSOR}.{slugify(f'{MOCK_ADAPTER_NAME} Air Temperature')}",
-            },
-        ),
     ],
 )
 async def test_service_set_color_mode(
@@ -148,30 +130,6 @@ async def test_service_set_color_mode(
     mocked_async_set_color_lights.assert_awaited_once()
 
 
-async def test_service_set_color_mode_with_device(
-    hass: HomeAssistant,
-    service_fixture: dict[str, Any],
-) -> None:
-    """Test set_color_mode service with a device target."""
-    mocked_async_set_color_lights: AsyncMock = service_fixture["gateway"][
-        "async_set_color_lights"
-    ]
-
-    assert hass.services.has_service(DOMAIN, SERVICE_SET_COLOR_MODE)
-
-    sl_device: dr.DeviceEntry = service_fixture["device"]
-
-    await hass.services.async_call(
-        DOMAIN,
-        SERVICE_SET_COLOR_MODE,
-        service_data={ATTR_COLOR_MODE: COLOR_MODE.ALL_ON.name.lower()},
-        blocking=True,
-        target={ATTR_DEVICE_ID: sl_device.id},
-    )
-
-    mocked_async_set_color_lights.assert_awaited_once()
-
-
 @pytest.mark.parametrize(
     ("data", "target", "error_msg"),
     [
@@ -181,8 +139,8 @@ async def test_service_set_color_mode_with_device(
                 ATTR_CONFIG_ENTRY: "invalidconfigentry",
             },
             None,
-            f"Failed to call service '{SERVICE_SET_COLOR_MODE}'. Config entry "
-            "'invalidconfigentry' not found",
+            f"Integration {DOMAIN} config entry with ID invalidconfigentry "
+            "was not found",
         ),
         (
             {
@@ -190,38 +148,7 @@ async def test_service_set_color_mode_with_device(
                 ATTR_CONFIG_ENTRY: NON_SL_CONFIG_ENTRY_ID,
             },
             None,
-            f"Failed to call service '{SERVICE_SET_COLOR_MODE}'. Config entry "
-            "'test' is not a screenlogic config",
-        ),
-        (
-            {
-                ATTR_COLOR_MODE: COLOR_MODE.ALL_ON.name.lower(),
-            },
-            {
-                ATTR_AREA_ID: "invalidareaid",
-            },
-            f"Failed to call service '{SERVICE_SET_COLOR_MODE}'. Config entry for "
-            "target not found",
-        ),
-        (
-            {
-                ATTR_COLOR_MODE: COLOR_MODE.ALL_ON.name.lower(),
-            },
-            {
-                ATTR_DEVICE_ID: "invaliddeviceid",
-            },
-            f"Failed to call service '{SERVICE_SET_COLOR_MODE}'. Config entry for "
-            "target not found",
-        ),
-        (
-            {
-                ATTR_COLOR_MODE: COLOR_MODE.ALL_ON.name.lower(),
-            },
-            {
-                ATTR_ENTITY_ID: "sensor.invalidentityid",
-            },
-            f"Failed to call service '{SERVICE_SET_COLOR_MODE}'. Config entry for "
-            "target not found",
+            f"Config entry Mock Title does not belong to integration {DOMAIN}",
         ),
     ],
 )
@@ -305,8 +232,8 @@ async def test_service_start_super_chlorination(
                 ATTR_RUNTIME: 24,
             },
             None,
-            f"Failed to call service '{SERVICE_START_SUPER_CHLORINATION}'. "
-            "Config entry 'invalidconfigentry' not found",
+            f"Integration {DOMAIN} config entry with ID invalidconfigentry "
+            "was not found",
         ),
         (
             {
@@ -394,8 +321,8 @@ async def test_service_stop_super_chlorination(
                 ATTR_CONFIG_ENTRY: "invalidconfigentry",
             },
             None,
-            f"Failed to call service '{SERVICE_STOP_SUPER_CHLORINATION}'. "
-            "Config entry 'invalidconfigentry' not found",
+            f"Integration {DOMAIN} config entry with ID invalidconfigentry "
+            "was not found",
         ),
         (
             {
@@ -480,8 +407,8 @@ async def test_service_config_entry_not_loaded(
 
         with pytest.raises(
             ServiceValidationError,
-            match=f"Failed to call service '{SERVICE_SET_COLOR_MODE}'. "
-            f"Config entry '{MOCK_CONFIG_ENTRY_ID}' not loaded",
+            match=f"Config entry {MOCK_ADAPTER_NAME} for integration {DOMAIN} "
+            "is not loaded",
         ):
             await hass.services.async_call(
                 DOMAIN,

@@ -1,10 +1,8 @@
 """The sensor websocket API."""
 
-from __future__ import annotations
-
 from typing import Any
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
@@ -15,6 +13,8 @@ from .const import (
     UNIT_CONVERTERS,
     SensorDeviceClass,
 )
+
+_NUMERIC_DEVICE_CLASSES = list(set(SensorDeviceClass) - NON_NUMERIC_DEVICE_CLASSES)
 
 
 @callback
@@ -27,8 +27,8 @@ def async_setup(hass: HomeAssistant) -> None:
 @callback
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "sensor/device_class_convertible_units",
-        vol.Required("device_class"): str,
+        probatio.Required("type"): "sensor/device_class_convertible_units",
+        probatio.Required("device_class"): str,
     }
 )
 def ws_device_class_units(
@@ -48,14 +48,13 @@ def ws_device_class_units(
 @callback
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "sensor/numeric_device_classes",
+        probatio.Required("type"): "sensor/numeric_device_classes",
     }
 )
 def ws_numeric_device_classes(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Return numeric sensor device classes."""
-    numeric_device_classes = set(SensorDeviceClass) - NON_NUMERIC_DEVICE_CLASSES
     connection.send_result(
-        msg["id"], {"numeric_device_classes": list(numeric_device_classes)}
+        msg["id"], {"numeric_device_classes": _NUMERIC_DEVICE_CLASSES}
     )

@@ -1,18 +1,19 @@
 """API calls to manage Insteon configuration changes."""
 
-from __future__ import annotations
-
 from typing import Any, TypedDict
 
+import probatio
 from pyinsteon import async_close, async_connect, devices
 from pyinsteon.address import Address
-import voluptuous as vol
-import voluptuous_serialize
+from pyinsteon.aldb.aldb_record import ALDBRecord
+from pyinsteon.constants import LinkStatus
+from pyinsteon.managers.link_manager import get_broken_links
 
 from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, CONF_DEVICE
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from ..const import (
@@ -34,7 +35,7 @@ from ..schemas import (
     build_plm_manual_schema,
     build_plm_schema,
 )
-from ..utils import async_get_usb_ports
+from ..utils import async_device_name, async_get_usb_ports
 
 HUB_V1_SCHEMA = build_hub_schema(hub_version=1)
 HUB_V2_SCHEMA = build_hub_schema(hub_version=2)
@@ -134,6 +135,34 @@ def remove_device_override(hass: HomeAssistant, address: Address):
     hass.config_entries.async_update_entry(entry=config_entry, options=new_options)
 
 
+async def async_link_to_dict(
+    address: Address,
+    record: ALDBRecord,
+    dev_registry: dr.DeviceRegistry,
+    config_entry_id: str,
+    status=None,
+) -> dict[str, str | int]:
+    """Convert a link to a dictionary."""
+    link_dict: dict[str, str | int] = {}
+    device_name = await async_device_name(dev_registry, address, config_entry_id)
+    target_name = await async_device_name(dev_registry, record.target, config_entry_id)
+    link_dict["address"] = str(address)
+    link_dict["device_name"] = device_name or str(address)
+    link_dict["mem_addr"] = record.mem_addr
+    link_dict["in_use"] = record.is_in_use
+    link_dict["group"] = record.group
+    link_dict["is_controller"] = record.is_controller
+    link_dict["highwater"] = record.is_high_water_mark
+    link_dict["target"] = str(record.target)
+    link_dict["target_name"] = target_name or str(record.target)
+    link_dict["data1"] = record.data1
+    link_dict["data2"] = record.data2
+    link_dict["data3"] = record.data3
+    if status:
+        link_dict["status"] = status.name.lower()
+    return link_dict
+
+
 async def _async_connect(**kwargs):
     """Connect to the Insteon modem."""
     if devices.modem:
@@ -145,7 +174,7 @@ async def _async_connect(**kwargs):
     return True
 
 
-@websocket_api.websocket_command({vol.Required(TYPE): "insteon/config/get"})
+@websocket_api.websocket_command({probatio.Required(TYPE): "insteon/config/get"})
 @websocket_api.require_admin
 @websocket_api.async_response
 async def websocket_get_config(
@@ -171,7 +200,7 @@ async def websocket_get_config(
 
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "insteon/config/get_modem_schema",
+        probatio.Required(TYPE): "insteon/config/get_modem_schema",
     }
 )
 @websocket_api.require_admin
@@ -186,19 +215,21 @@ async def websocket_get_modem_schema(
     config_data = config_entry.data
     if device := config_data.get(CONF_DEVICE):
         ports = await async_get_usb_ports(hass=hass)
-        plm_schema = voluptuous_serialize.convert(
+        plm_schema = probatio.to_field_list(
             build_plm_schema(ports=ports, device=device)
         )
         connection.send_result(msg[ID], plm_schema)
     else:
-        hub_schema = voluptuous_serialize.convert(build_hub_schema(**config_data))
+        hub_schema = probatio.to_field_list(build_hub_schema(**config_data))
         connection.send_result(msg[ID], hub_schema)
 
 
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "insteon/config/update_modem_config",
-        vol.Required("config"): vol.Any(PLM_SCHEMA, HUB_V2_SCHEMA, HUB_V1_SCHEMA),
+        probatio.Required(TYPE): "insteon/config/update_modem_config",
+        probatio.Required("config"): probatio.Any(
+            PLM_SCHEMA, HUB_V2_SCHEMA, HUB_V1_SCHEMA
+        ),
     }
 )
 @websocket_api.require_admin
@@ -211,7 +242,7 @@ async def websocket_update_modem_config(
     """Get the schema for the modem configuration."""
     config = msg["config"]
     config_entry = get_insteon_config_entry(hass)
-    is_connected = devices.modem.connected
+    is_connected = devices.modem is not None and devices.modem.connected
 
     if not await _async_connect(**config):
         connection.send_error(
@@ -231,8 +262,8 @@ async def websocket_update_modem_config(
 
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "insteon/config/device_override/add",
-        vol.Required(OVERRIDE): DEVICE_OVERRIDE_SCHEMA,
+        probatio.Required(TYPE): "insteon/config/device_override/add",
+        probatio.Required(OVERRIDE): DEVICE_OVERRIDE_SCHEMA,
     }
 )
 @websocket_api.require_admin
@@ -254,8 +285,8 @@ async def websocket_add_device_override(
 
 @websocket_api.websocket_command(
     {
-        vol.Required(TYPE): "insteon/config/device_override/remove",
-        vol.Required(DEVICE_ADDRESS): str,
+        probatio.Required(TYPE): "insteon/config/device_override/remove",
+        probatio.Required(DEVICE_ADDRESS): str,
     }
 )
 @websocket_api.require_admin
@@ -270,3 +301,45 @@ async def websocket_remove_device_override(
     remove_device_override(hass, address)
     async_dispatcher_send(hass, SIGNAL_REMOVE_DEVICE_OVERRIDE, address)
     connection.send_result(msg[ID])
+
+
+@websocket_api.websocket_command(
+    {probatio.Required(TYPE): "insteon/config/get_broken_links"}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def websocket_get_broken_links(
+    hass: HomeAssistant,
+    connection: websocket_api.connection.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Get any broken links between devices."""
+    broken_links = get_broken_links(devices=devices)
+    dev_registry = dr.async_get(hass)
+    config_entry_id = get_insteon_config_entry(hass).entry_id
+    broken_links_list = [
+        await async_link_to_dict(address, record, dev_registry, config_entry_id, status)
+        for address, record, status in broken_links
+        if status != LinkStatus.MISSING_TARGET
+    ]
+    connection.send_result(msg[ID], broken_links_list)
+
+
+@websocket_api.websocket_command(
+    {probatio.Required(TYPE): "insteon/config/get_unknown_devices"}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def websocket_get_unknown_devices(
+    hass: HomeAssistant,
+    connection: websocket_api.connection.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Get any broken links between devices."""
+    broken_links = get_broken_links(devices=devices)
+    unknown_devices = {
+        str(record.target)
+        for _, record, status in broken_links
+        if status == LinkStatus.MISSING_TARGET
+    }
+    connection.send_result(msg[ID], unknown_devices)

@@ -1,20 +1,19 @@
 """Config flow for pvpc_hourly_pricing."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, override
 
-from aiopvpc import DEFAULT_POWER_KW, PVPCData
-import voluptuous as vol
+from esios_api import DEFAULT_POWER_KW, PVPCData
+import probatio
 
 from homeassistant.config_entries import (
+    SOURCE_REAUTH,
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
-    OptionsFlowWithConfigEntry,
+    OptionsFlowWithReload,
 )
-from homeassistant.const import CONF_API_TOKEN, CONF_NAME
+from homeassistant.const import CONF_API_TOKEN
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
@@ -48,16 +47,17 @@ class TariffSelectorConfigFlow(ConfigFlow, domain=DOMAIN):
     _use_api_token: bool = False
     _api_token: str | None = None
     _api: PVPCData | None = None
-    _reauth_entry: ConfigEntry | None = None
 
     @staticmethod
     @callback
+    @override
     def async_get_options_flow(
         config_entry: ConfigEntry,
     ) -> PVPCOptionsFlowHandler:
         """Get the options flow for this handler."""
-        return PVPCOptionsFlowHandler(config_entry)
+        return PVPCOptionsFlowHandler()
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -65,11 +65,11 @@ class TariffSelectorConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             await self.async_set_unique_id(user_input[ATTR_TARIFF])
             self._abort_if_unique_id_configured()
+            calc_name = f"{DEFAULT_NAME} - {user_input[ATTR_TARIFF]}"
             if not user_input[CONF_USE_API_TOKEN]:
                 return self.async_create_entry(
-                    title=user_input[CONF_NAME],
+                    title=calc_name,
                     data={
-                        CONF_NAME: user_input[CONF_NAME],
                         ATTR_TARIFF: user_input[ATTR_TARIFF],
                         ATTR_POWER: user_input[ATTR_POWER],
                         ATTR_POWER_P3: user_input[ATTR_POWER_P3],
@@ -77,20 +77,19 @@ class TariffSelectorConfigFlow(ConfigFlow, domain=DOMAIN):
                     },
                 )
 
-            self._name = user_input[CONF_NAME]
+            self._name = calc_name
             self._tariff = user_input[ATTR_TARIFF]
             self._power = user_input[ATTR_POWER]
             self._power_p3 = user_input[ATTR_POWER_P3]
             self._use_api_token = user_input[CONF_USE_API_TOKEN]
             return await self.async_step_api_token()
 
-        data_schema = vol.Schema(
+        data_schema = probatio.Schema(
             {
-                vol.Required(CONF_NAME, default=DEFAULT_NAME): str,
-                vol.Required(ATTR_TARIFF, default=DEFAULT_TARIFF): VALID_TARIFF,
-                vol.Required(ATTR_POWER, default=DEFAULT_POWER_KW): VALID_POWER,
-                vol.Required(ATTR_POWER_P3, default=DEFAULT_POWER_KW): VALID_POWER,
-                vol.Required(CONF_USE_API_TOKEN, default=False): bool,
+                probatio.Required(ATTR_TARIFF, default=DEFAULT_TARIFF): VALID_TARIFF,
+                probatio.Required(ATTR_POWER, default=DEFAULT_POWER_KW): VALID_POWER,
+                probatio.Required(ATTR_POWER_P3, default=DEFAULT_POWER_KW): VALID_POWER,
+                probatio.Required(CONF_USE_API_TOKEN, default=False): bool,
             }
         )
         return self.async_show_form(step_id="user", data_schema=data_schema)
@@ -103,20 +102,20 @@ class TariffSelectorConfigFlow(ConfigFlow, domain=DOMAIN):
             self._api_token = user_input[CONF_API_TOKEN]
             return await self._async_verify(
                 "api_token",
-                data_schema=vol.Schema(
-                    {vol.Required(CONF_API_TOKEN, default=self._api_token): str}
+                data_schema=probatio.Schema(
+                    {probatio.Required(CONF_API_TOKEN, default=self._api_token): str}
                 ),
             )
         return self.async_show_form(
             step_id="api_token",
-            data_schema=vol.Schema(
-                {vol.Required(CONF_API_TOKEN, default=self._api_token): str}
+            data_schema=probatio.Schema(
+                {probatio.Required(CONF_API_TOKEN, default=self._api_token): str}
             ),
             description_placeholders={"mail_to_link": _MAIL_TO_LINK},
         )
 
     async def _async_verify(
-        self, step_id: str, data_schema: vol.Schema
+        self, step_id: str, data_schema: probatio.Schema
     ) -> ConfigFlowResult:
         """Attempt to verify the provided configuration."""
         errors: dict[str, str] = {}
@@ -135,18 +134,15 @@ class TariffSelectorConfigFlow(ConfigFlow, domain=DOMAIN):
             )
 
         data = {
-            CONF_NAME: self._name,
             ATTR_TARIFF: self._tariff,
             ATTR_POWER: self._power,
             ATTR_POWER_P3: self._power_p3,
             CONF_API_TOKEN: self._api_token if self._use_api_token else None,
         }
-        if self._reauth_entry:
-            self.hass.config_entries.async_update_entry(self._reauth_entry, data=data)
-            self.hass.async_create_task(
-                self.hass.config_entries.async_reload(self._reauth_entry.entry_id)
+        if self.source == SOURCE_REAUTH:
+            return self.async_update_reload_and_abort(
+                self._get_reauth_entry(), data=data
             )
-            return self.async_abort(reason="reauth_successful")
 
         assert self._name is not None
         return self.async_create_entry(title=self._name, data=data)
@@ -155,12 +151,9 @@ class TariffSelectorConfigFlow(ConfigFlow, domain=DOMAIN):
         self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
         """Handle re-authentication with ESIOS Token."""
-        self._reauth_entry = self.hass.config_entries.async_get_entry(
-            self.context["entry_id"]
-        )
         self._api_token = entry_data.get(CONF_API_TOKEN)
         self._use_api_token = self._api_token is not None
-        self._name = entry_data[CONF_NAME]
+        self._name = f"{DEFAULT_NAME} - {entry_data[ATTR_TARIFF]}"
         self._tariff = entry_data[ATTR_TARIFF]
         self._power = entry_data[ATTR_POWER]
         self._power_p3 = entry_data[ATTR_POWER_P3]
@@ -170,10 +163,12 @@ class TariffSelectorConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Confirm reauth dialog."""
-        data_schema = vol.Schema(
+        data_schema = probatio.Schema(
             {
-                vol.Required(CONF_USE_API_TOKEN, default=self._use_api_token): bool,
-                vol.Optional(CONF_API_TOKEN, default=self._api_token): str,
+                probatio.Required(
+                    CONF_USE_API_TOKEN, default=self._use_api_token
+                ): bool,
+                probatio.Optional(CONF_API_TOKEN, default=self._api_token): str,
             }
         )
         if user_input:
@@ -183,7 +178,7 @@ class TariffSelectorConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(step_id="reauth_confirm", data_schema=data_schema)
 
 
-class PVPCOptionsFlowHandler(OptionsFlowWithConfigEntry):
+class PVPCOptionsFlowHandler(OptionsFlowWithReload):
     """Handle PVPC options."""
 
     _power: float | None = None
@@ -204,13 +199,13 @@ class PVPCOptionsFlowHandler(OptionsFlowWithConfigEntry):
             )
 
         # Fill options with entry data
-        api_token = self.options.get(
+        api_token = self.config_entry.options.get(
             CONF_API_TOKEN, self.config_entry.data.get(CONF_API_TOKEN)
         )
         return self.async_show_form(
             step_id="api_token",
-            data_schema=vol.Schema(
-                {vol.Required(CONF_API_TOKEN, default=api_token): str}
+            data_schema=probatio.Schema(
+                {probatio.Required(CONF_API_TOKEN, default=api_token): str}
             ),
             description_placeholders={"mail_to_link": _MAIL_TO_LINK},
         )
@@ -234,19 +229,17 @@ class PVPCOptionsFlowHandler(OptionsFlowWithConfigEntry):
             )
 
         # Fill options with entry data
-        power = self.options.get(ATTR_POWER, self.config_entry.data[ATTR_POWER])
-        power_valley = self.options.get(
-            ATTR_POWER_P3, self.config_entry.data[ATTR_POWER_P3]
-        )
-        api_token = self.options.get(
-            CONF_API_TOKEN, self.config_entry.data.get(CONF_API_TOKEN)
-        )
+        options = self.config_entry.options
+        data = self.config_entry.data
+        power = options.get(ATTR_POWER, data[ATTR_POWER])
+        power_valley = options.get(ATTR_POWER_P3, data[ATTR_POWER_P3])
+        api_token = options.get(CONF_API_TOKEN, data.get(CONF_API_TOKEN))
         use_api_token = api_token is not None
-        schema = vol.Schema(
+        schema = probatio.Schema(
             {
-                vol.Required(ATTR_POWER, default=power): VALID_POWER,
-                vol.Required(ATTR_POWER_P3, default=power_valley): VALID_POWER,
-                vol.Required(CONF_USE_API_TOKEN, default=use_api_token): bool,
+                probatio.Required(ATTR_POWER, default=power): VALID_POWER,
+                probatio.Required(ATTR_POWER_P3, default=power_valley): VALID_POWER,
+                probatio.Required(CONF_USE_API_TOKEN, default=use_api_token): bool,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

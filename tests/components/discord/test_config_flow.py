@@ -4,7 +4,7 @@ import nextcord
 
 from homeassistant import config_entries
 from homeassistant.components.discord.const import DOMAIN
-from homeassistant.const import CONF_API_TOKEN, CONF_SOURCE
+from homeassistant.const import CONF_API_TOKEN
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 
@@ -56,9 +56,15 @@ async def test_flow_user_invalid_auth(hass: HomeAssistant) -> None:
     with patch_discord_login() as mock:
         mock.side_effect = nextcord.LoginFailure
         result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": config_entries.SOURCE_USER},
-            data=CONF_DATA,
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "user"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input=CONF_INPUT,
         )
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
@@ -79,9 +85,15 @@ async def test_flow_user_cannot_connect(hass: HomeAssistant) -> None:
     with patch_discord_login() as mock:
         mock.side_effect = mock_exception()
         result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": config_entries.SOURCE_USER},
-            data=CONF_DATA,
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "user"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input=CONF_INPUT,
         )
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
@@ -102,9 +114,15 @@ async def test_flow_user_unknown_error(hass: HomeAssistant) -> None:
     with patch_discord_login() as mock:
         mock.side_effect = Exception
         result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": config_entries.SOURCE_USER},
-            data=CONF_DATA,
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "user"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input=CONF_INPUT,
         )
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
@@ -123,16 +141,7 @@ async def test_flow_user_unknown_error(hass: HomeAssistant) -> None:
 async def test_flow_reauth(hass: HomeAssistant) -> None:
     """Test a reauth flow."""
     entry = create_entry(hass)
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={
-            CONF_SOURCE: config_entries.SOURCE_REAUTH,
-            "entry_id": entry.entry_id,
-            "unique_id": entry.unique_id,
-        },
-        data=entry.data,
-    )
-
+    result = await entry.start_reauth_flow(hass)
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "reauth_confirm"
 

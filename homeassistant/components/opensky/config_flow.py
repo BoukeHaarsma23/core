@@ -1,31 +1,23 @@
 """Config flow for OpenSky integration."""
 
-from __future__ import annotations
-
-from typing import Any
+from typing import Any, override
 
 from aiohttp import BasicAuth
+import probatio
 from python_opensky import OpenSky
 from python_opensky.exceptions import OpenSkyUnauthenticatedError
-import voluptuous as vol
 
-from homeassistant.config_entries import (
-    ConfigEntry,
-    ConfigFlow,
-    ConfigFlowResult,
-    OptionsFlowWithConfigEntry,
-)
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import (
     CONF_LATITUDE,
     CONF_LONGITUDE,
-    CONF_NAME,
     CONF_PASSWORD,
     CONF_RADIUS,
     CONF_USERNAME,
 )
 from homeassistant.core import callback
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-import homeassistant.helpers.config_validation as cv
 
 from .const import (
     CONF_ALTITUDE,
@@ -34,6 +26,7 @@ from .const import (
     DEFAULT_NAME,
     DOMAIN,
 )
+from .coordinator import OpenSkyConfigEntry
 
 
 class OpenSkyConfigFlowHandler(ConfigFlow, domain=DOMAIN):
@@ -41,12 +34,14 @@ class OpenSkyConfigFlowHandler(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
+    @override
     def async_get_options_flow(
-        config_entry: ConfigEntry,
+        config_entry: OpenSkyConfigEntry,
     ) -> OpenSkyOptionsFlowHandler:
         """Get the options flow for this handler."""
-        return OpenSkyOptionsFlowHandler(config_entry)
+        return OpenSkyOptionsFlowHandler()
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -66,12 +61,12 @@ class OpenSkyConfigFlowHandler(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=self.add_suggested_values_to_schema(
-                vol.Schema(
+                probatio.Schema(
                     {
-                        vol.Required(CONF_RADIUS): vol.Coerce(float),
-                        vol.Required(CONF_LATITUDE): cv.latitude,
-                        vol.Required(CONF_LONGITUDE): cv.longitude,
-                        vol.Optional(CONF_ALTITUDE): vol.Coerce(float),
+                        probatio.Required(CONF_RADIUS): probatio.Coerce(float),
+                        probatio.Required(CONF_LATITUDE): cv.latitude,
+                        probatio.Required(CONF_LONGITUDE): cv.longitude,
+                        probatio.Optional(CONF_ALTITUDE): probatio.Coerce(float),
                     }
                 ),
                 {
@@ -83,7 +78,7 @@ class OpenSkyConfigFlowHandler(ConfigFlow, domain=DOMAIN):
         )
 
 
-class OpenSkyOptionsFlowHandler(OptionsFlowWithConfigEntry):
+class OpenSkyOptionsFlowHandler(OptionsFlow):
     """OpenSky Options flow handler."""
 
     async def async_step_init(
@@ -112,24 +107,21 @@ class OpenSkyOptionsFlowHandler(OptionsFlowWithConfigEntry):
                 except OpenSkyUnauthenticatedError:
                     errors["base"] = "invalid_auth"
             if not errors:
-                return self.async_create_entry(
-                    title=self.options.get(CONF_NAME, "OpenSky"),
-                    data=user_input,
-                )
+                return self.async_create_entry(data=user_input)
 
         return self.async_show_form(
             step_id="init",
             errors=errors,
             data_schema=self.add_suggested_values_to_schema(
-                vol.Schema(
+                probatio.Schema(
                     {
-                        vol.Required(CONF_RADIUS): vol.Coerce(float),
-                        vol.Optional(CONF_ALTITUDE): vol.Coerce(float),
-                        vol.Optional(CONF_USERNAME): str,
-                        vol.Optional(CONF_PASSWORD): str,
-                        vol.Optional(CONF_CONTRIBUTING_USER, default=False): bool,
+                        probatio.Required(CONF_RADIUS): probatio.Coerce(float),
+                        probatio.Optional(CONF_ALTITUDE): probatio.Coerce(float),
+                        probatio.Optional(CONF_USERNAME): str,
+                        probatio.Optional(CONF_PASSWORD): str,
+                        probatio.Optional(CONF_CONTRIBUTING_USER, default=False): bool,
                     }
                 ),
-                user_input or self.options,
+                user_input or self.config_entry.options,
             ),
         )

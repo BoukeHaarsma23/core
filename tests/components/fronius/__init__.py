@@ -1,7 +1,5 @@
 """Tests for the Fronius integration."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 import json
 from typing import Any
@@ -10,10 +8,9 @@ from homeassistant.components.fronius.const import DOMAIN
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.typing import UNDEFINED, UndefinedType
 
-from tests.common import MockConfigEntry, async_fire_time_changed, load_fixture
+from tests.common import MockConfigEntry, load_fixture
 from tests.test_util.aiohttp import AiohttpClientMocker
 
 MOCK_HOST = "http://fronius"
@@ -21,9 +18,16 @@ MOCK_UID = "123.4567890"
 
 
 async def setup_fronius_integration(
-    hass: HomeAssistant, is_logger: bool = True, unique_id: str = MOCK_UID
+    hass: HomeAssistant,
+    is_logger: bool = True,
+    unique_id: str = MOCK_UID,
+    modbus_port: int | None = None,
 ) -> ConfigEntry:
-    """Create the Fronius integration."""
+    """Create the Fronius integration.
+
+    Without ``modbus_port`` an old config entry is created to exercise
+    the migration adding the default port.
+    """
     entry = MockConfigEntry(
         domain=DOMAIN,
         entry_id="f1e2b9837e8adaed6fa682acaa216fd8",
@@ -31,7 +35,9 @@ async def setup_fronius_integration(
         data={
             CONF_HOST: MOCK_HOST,
             "is_logger": is_logger,
+            **({"modbus_port": modbus_port} if modbus_port is not None else {}),
         },
+        minor_version=1 if modbus_port is None else 2,
     )
     entry.add_to_hass(hass)
     await hass.config_entries.async_setup(entry.entry_id)
@@ -42,7 +48,7 @@ async def setup_fronius_integration(
 def _load_and_patch_fixture(
     override_data: dict[str, list[tuple[list[str], Any]]],
 ) -> Callable[[str, str | None], str]:
-    """Return a fixture loader that patches values at nested keys for a given filename."""
+    """Return a fixture loader that patches nested key values."""
 
     def load_and_patch(filename: str, integration: str):
         """Load a fixture and patch given values."""
@@ -112,19 +118,3 @@ def mock_responses(
         f"{host}/solar_api/v1/GetOhmPilotRealtimeData.cgi?Scope=System",
         text=_load(f"{fixture_set}/GetOhmPilotRealtimeData.json", "fronius"),
     )
-
-
-async def enable_all_entities(hass, freezer, config_entry_id, time_till_next_update):
-    """Enable all entities for a config entry and fast forward time to receive data."""
-    registry = er.async_get(hass)
-    entities = er.async_entries_for_config_entry(registry, config_entry_id)
-    for entry in [
-        entry
-        for entry in entities
-        if entry.disabled_by is er.RegistryEntryDisabler.INTEGRATION
-    ]:
-        registry.async_update_entity(entry.entity_id, disabled_by=None)
-    await hass.async_block_till_done()
-    freezer.tick(time_till_next_update)
-    async_fire_time_changed(hass)
-    await hass.async_block_till_done()

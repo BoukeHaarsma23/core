@@ -2,6 +2,7 @@
 
 import copy
 import json
+from typing import Any
 from unittest.mock import patch
 
 from hatasmota.utils import (
@@ -464,7 +465,9 @@ async def test_controlling_state_via_mqtt_inverted(
     assert state.attributes["current_position"] == 0
 
 
-async def call_service(hass, entity_id, service, **kwargs):
+async def call_service(
+    hass: HomeAssistant, entity_id: str, service: str, **kwargs: Any
+) -> None:
     """Call a fan service."""
     await hass.services.async_call(
         cover.DOMAIN,
@@ -503,7 +506,7 @@ async def test_sending_mqtt_commands(
     # Close the cover and verify MQTT message is sent
     await call_service(hass, "cover.test_cover_1", "close_cover")
     mqtt_mock.async_publish.assert_called_once_with(
-        "tasmota_49A3BC/cmnd/ShutterClose1", "", 0, False
+        "tasmota_49A3BC/cmnd/ShutterClose1", "", 0, False, message_expiry_interval=None
     )
     mqtt_mock.async_publish.reset_mock()
 
@@ -514,49 +517,65 @@ async def test_sending_mqtt_commands(
     # Open the cover and verify MQTT message is sent
     await call_service(hass, "cover.test_cover_1", "open_cover")
     mqtt_mock.async_publish.assert_called_once_with(
-        "tasmota_49A3BC/cmnd/ShutterOpen1", "", 0, False
+        "tasmota_49A3BC/cmnd/ShutterOpen1", "", 0, False, message_expiry_interval=None
     )
     mqtt_mock.async_publish.reset_mock()
 
     # Stop the cover and verify MQTT message is sent
     await call_service(hass, "cover.test_cover_1", "stop_cover")
     mqtt_mock.async_publish.assert_called_once_with(
-        "tasmota_49A3BC/cmnd/ShutterStop1", "", 0, False
+        "tasmota_49A3BC/cmnd/ShutterStop1", "", 0, False, message_expiry_interval=None
     )
     mqtt_mock.async_publish.reset_mock()
 
     # Set position and verify MQTT message is sent
     await call_service(hass, "cover.test_cover_1", "set_cover_position", position=0)
     mqtt_mock.async_publish.assert_called_once_with(
-        "tasmota_49A3BC/cmnd/ShutterPosition1", "0", 0, False
+        "tasmota_49A3BC/cmnd/ShutterPosition1",
+        "0",
+        0,
+        False,
+        message_expiry_interval=None,
     )
     mqtt_mock.async_publish.reset_mock()
 
     # Set position and verify MQTT message is sent
     await call_service(hass, "cover.test_cover_1", "set_cover_position", position=99)
     mqtt_mock.async_publish.assert_called_once_with(
-        "tasmota_49A3BC/cmnd/ShutterPosition1", "99", 0, False
+        "tasmota_49A3BC/cmnd/ShutterPosition1",
+        "99",
+        0,
+        False,
+        message_expiry_interval=None,
     )
     mqtt_mock.async_publish.reset_mock()
 
     # Close the cover tilt and verify MQTT message is sent
     await call_service(hass, "cover.test_cover_1", "close_cover_tilt")
     mqtt_mock.async_publish.assert_called_once_with(
-        "tasmota_49A3BC/cmnd/ShutterTilt1", "CLOSE", 0, False
+        "tasmota_49A3BC/cmnd/ShutterTilt1",
+        "CLOSE",
+        0,
+        False,
+        message_expiry_interval=None,
     )
     mqtt_mock.async_publish.reset_mock()
 
     # Open the cover tilt and verify MQTT message is sent
     await call_service(hass, "cover.test_cover_1", "open_cover_tilt")
     mqtt_mock.async_publish.assert_called_once_with(
-        "tasmota_49A3BC/cmnd/ShutterTilt1", "OPEN", 0, False
+        "tasmota_49A3BC/cmnd/ShutterTilt1",
+        "OPEN",
+        0,
+        False,
+        message_expiry_interval=None,
     )
     mqtt_mock.async_publish.reset_mock()
 
     # Stop the cover tilt and verify MQTT message is sent
     await call_service(hass, "cover.test_cover_1", "stop_cover_tilt")
     mqtt_mock.async_publish.assert_called_once_with(
-        "tasmota_49A3BC/cmnd/ShutterStop1", "", 0, False
+        "tasmota_49A3BC/cmnd/ShutterStop1", "", 0, False, message_expiry_interval=None
     )
     mqtt_mock.async_publish.reset_mock()
 
@@ -565,7 +584,11 @@ async def test_sending_mqtt_commands(
         hass, "cover.test_cover_1", "set_cover_tilt_position", tilt_position=0
     )
     mqtt_mock.async_publish.assert_called_once_with(
-        "tasmota_49A3BC/cmnd/ShutterTilt1", "-90", 0, False
+        "tasmota_49A3BC/cmnd/ShutterTilt1",
+        "-90",
+        0,
+        False,
+        message_expiry_interval=None,
     )
     mqtt_mock.async_publish.reset_mock()
 
@@ -574,7 +597,7 @@ async def test_sending_mqtt_commands(
         hass, "cover.test_cover_1", "set_cover_tilt_position", tilt_position=100
     )
     mqtt_mock.async_publish.assert_called_once_with(
-        "tasmota_49A3BC/cmnd/ShutterTilt1", "90", 0, False
+        "tasmota_49A3BC/cmnd/ShutterTilt1", "90", 0, False, message_expiry_interval=None
     )
     mqtt_mock.async_publish.reset_mock()
 
@@ -608,7 +631,7 @@ async def test_sending_mqtt_commands_inverted(
     # Close the cover and verify MQTT message is sent
     await call_service(hass, "cover.test_cover_1", "close_cover")
     mqtt_mock.async_publish.assert_called_once_with(
-        "tasmota_49A3BC/cmnd/ShutterClose1", "", 0, False
+        "tasmota_49A3BC/cmnd/ShutterClose1", "", 0, False, message_expiry_interval=None
     )
     mqtt_mock.async_publish.reset_mock()
 
@@ -619,28 +642,36 @@ async def test_sending_mqtt_commands_inverted(
     # Open the cover and verify MQTT message is sent
     await call_service(hass, "cover.test_cover_1", "open_cover")
     mqtt_mock.async_publish.assert_called_once_with(
-        "tasmota_49A3BC/cmnd/ShutterOpen1", "", 0, False
+        "tasmota_49A3BC/cmnd/ShutterOpen1", "", 0, False, message_expiry_interval=None
     )
     mqtt_mock.async_publish.reset_mock()
 
     # Stop the cover and verify MQTT message is sent
     await call_service(hass, "cover.test_cover_1", "stop_cover")
     mqtt_mock.async_publish.assert_called_once_with(
-        "tasmota_49A3BC/cmnd/ShutterStop1", "", 0, False
+        "tasmota_49A3BC/cmnd/ShutterStop1", "", 0, False, message_expiry_interval=None
     )
     mqtt_mock.async_publish.reset_mock()
 
     # Set position and verify MQTT message is sent
     await call_service(hass, "cover.test_cover_1", "set_cover_position", position=0)
     mqtt_mock.async_publish.assert_called_once_with(
-        "tasmota_49A3BC/cmnd/ShutterPosition1", "100", 0, False
+        "tasmota_49A3BC/cmnd/ShutterPosition1",
+        "100",
+        0,
+        False,
+        message_expiry_interval=None,
     )
     mqtt_mock.async_publish.reset_mock()
 
     # Set position and verify MQTT message is sent
     await call_service(hass, "cover.test_cover_1", "set_cover_position", position=99)
     mqtt_mock.async_publish.assert_called_once_with(
-        "tasmota_49A3BC/cmnd/ShutterPosition1", "1", 0, False
+        "tasmota_49A3BC/cmnd/ShutterPosition1",
+        "1",
+        0,
+        False,
+        message_expiry_interval=None,
     )
     mqtt_mock.async_publish.reset_mock()
 

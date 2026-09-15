@@ -1,22 +1,23 @@
 """Config flow for israel rail."""
 
 import logging
-from typing import Any
+from typing import Any, override
 
 from israelrailapi import TrainSchedule
 from israelrailapi.stations import STATIONS
-import voluptuous as vol
+import probatio
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 
 from .const import CONF_DESTINATION, CONF_START, DOMAIN
 
 STATIONS_NAMES = [station["Heb"] for station in STATIONS.values()]
+STATIONS_NAMES.sort()
 
-DATA_SCHEMA = vol.Schema(
+DATA_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_START): vol.In(STATIONS_NAMES),
-        vol.Required(CONF_DESTINATION): vol.In(STATIONS_NAMES),
+        probatio.Required(CONF_START): probatio.In(STATIONS_NAMES),
+        probatio.Required(CONF_DESTINATION): probatio.In(STATIONS_NAMES),
     }
 )
 
@@ -28,6 +29,7 @@ class IsraelRailConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:

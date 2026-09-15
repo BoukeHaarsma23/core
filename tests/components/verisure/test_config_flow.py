@@ -1,14 +1,15 @@
 """Test the Verisure config flow."""
 
-from __future__ import annotations
-
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from verisure import Error as VerisureError, LoginError as VerisureLoginError
+from verisure import (
+    Error as VerisureError,
+    LoginError as VerisureLoginError,
+    RateLimitError,
+)
 
 from homeassistant import config_entries
-from homeassistant.components import dhcp
 from homeassistant.components.verisure.const import (
     CONF_GIID,
     CONF_LOCK_CODE_DIGITS,
@@ -18,6 +19,7 @@ from homeassistant.components.verisure.const import (
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
 from tests.common import MockConfigEntry
 
@@ -226,8 +228,8 @@ async def test_full_user_flow_multiple_installations_with_mfa(
 @pytest.mark.parametrize(
     ("side_effect", "error"),
     [
-        (VerisureLoginError, "invalid_auth"),
-        (VerisureError, "unknown"),
+        (VerisureLoginError("Login failed"), "invalid_auth"),
+        (VerisureError("Unknown error"), "unknown"),
     ],
 )
 async def test_verisure_errors(
@@ -333,7 +335,7 @@ async def test_dhcp(hass: HomeAssistant) -> None:
     """Test that DHCP discovery works."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
-        data=dhcp.DhcpServiceInfo(
+        data=DhcpServiceInfo(
             ip="1.2.3.4", macaddress="0123456789ab", hostname="mock_hostname"
         ),
         context={"source": config_entries.SOURCE_DHCP},
@@ -352,15 +354,7 @@ async def test_reauth_flow(
     """Test a reauthentication flow."""
     mock_config_entry.add_to_hass(hass)
 
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={
-            "source": config_entries.SOURCE_REAUTH,
-            "unique_id": mock_config_entry.unique_id,
-            "entry_id": mock_config_entry.entry_id,
-        },
-        data=mock_config_entry.data,
-    )
+    result = await mock_config_entry.start_reauth_flow(hass)
     assert result.get("step_id") == "reauth_confirm"
     assert result.get("type") is FlowResultType.FORM
     assert result.get("errors") == {}
@@ -395,15 +389,7 @@ async def test_reauth_flow_with_mfa(
     """Test a reauthentication flow."""
     mock_config_entry.add_to_hass(hass)
 
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={
-            "source": config_entries.SOURCE_REAUTH,
-            "unique_id": mock_config_entry.unique_id,
-            "entry_id": mock_config_entry.entry_id,
-        },
-        data=mock_config_entry.data,
-    )
+    result = await mock_config_entry.start_reauth_flow(hass)
     assert result.get("step_id") == "reauth_confirm"
     assert result.get("type") is FlowResultType.FORM
     assert result.get("errors") == {}
@@ -442,7 +428,7 @@ async def test_reauth_flow_with_mfa(
         CONF_PASSWORD: "correct horse battery staple!",
     }
 
-    assert len(mock_verisure_config_flow.login.mock_calls) == 2
+    assert len(mock_verisure_config_flow.login.mock_calls) == 1
     assert len(mock_verisure_config_flow.request_mfa.mock_calls) == 1
     assert len(mock_verisure_config_flow.validate_mfa.mock_calls) == 1
     assert len(mock_setup_entry.mock_calls) == 1
@@ -451,8 +437,8 @@ async def test_reauth_flow_with_mfa(
 @pytest.mark.parametrize(
     ("side_effect", "error"),
     [
-        (VerisureLoginError, "invalid_auth"),
-        (VerisureError, "unknown"),
+        (VerisureLoginError("Login failed"), "invalid_auth"),
+        (VerisureError("Unknown error"), "unknown"),
     ],
 )
 async def test_reauth_flow_errors(
@@ -466,15 +452,7 @@ async def test_reauth_flow_errors(
     """Test a reauthentication flow."""
     mock_config_entry.add_to_hass(hass)
 
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={
-            "source": config_entries.SOURCE_REAUTH,
-            "unique_id": mock_config_entry.unique_id,
-            "entry_id": mock_config_entry.entry_id,
-        },
-        data=mock_config_entry.data,
-    )
+    result = await mock_config_entry.start_reauth_flow(hass)
 
     mock_verisure_config_flow.login.side_effect = side_effect
     result2 = await hass.config_entries.flow.async_configure(
@@ -555,10 +533,71 @@ async def test_reauth_flow_errors(
         CONF_PASSWORD: "SuperS3cr3t!",
     }
 
-    assert len(mock_verisure_config_flow.login.mock_calls) == 4
+    assert len(mock_verisure_config_flow.login.mock_calls) == 3
     assert len(mock_verisure_config_flow.request_mfa.mock_calls) == 2
     assert len(mock_verisure_config_flow.validate_mfa.mock_calls) == 2
     assert len(mock_setup_entry.mock_calls) == 1
+
+
+async def test_user_flow_mfa_rate_limited(
+    hass: HomeAssistant,
+    mock_verisure_config_flow: MagicMock,
+) -> None:
+    """MFA step-up rate limits surface a dedicated config flow error."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+
+    mock_verisure_config_flow.login.side_effect = VerisureLoginError(
+        "Multifactor authentication enabled, disable or create MFA cookie"
+    )
+    mock_verisure_config_flow.request_mfa.side_effect = RateLimitError(
+        '{"errorCode": "ACC_00002","tooManyStepUpTokens": "true"}'
+    )
+
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "email": "verisure_my_pages@example.com",
+            "password": "SuperS3cr3t!",
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert result2.get("type") is FlowResultType.FORM
+    assert result2.get("step_id") == "user"
+    assert result2.get("errors") == {"base": "mfa_rate_limited"}
+
+
+async def test_reauth_flow_mfa_rate_limited(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_verisure_config_flow: MagicMock,
+) -> None:
+    """Reauth MFA step-up rate limits surface a dedicated config flow error."""
+    mock_config_entry.add_to_hass(hass)
+
+    result = await mock_config_entry.start_reauth_flow(hass)
+
+    mock_verisure_config_flow.login.side_effect = VerisureLoginError(
+        "Multifactor authentication enabled, disable or create MFA cookie"
+    )
+    mock_verisure_config_flow.request_mfa.side_effect = RateLimitError(
+        '{"errorCode": "ACC_00002","tooManyStepUpTokens": "true"}'
+    )
+
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "email": "verisure_my_pages@example.com",
+            "password": "SuperS3cr3t!",
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert result2.get("type") is FlowResultType.FORM
+    assert result2.get("step_id") == "reauth_confirm"
+    assert result2.get("errors") == {"base": "mfa_rate_limited"}
 
 
 async def test_options_flow(hass: HomeAssistant) -> None:

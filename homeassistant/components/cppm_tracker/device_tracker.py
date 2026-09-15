@@ -1,21 +1,20 @@
 """Support for ClearPass Policy Manager."""
 
-from __future__ import annotations
-
 from datetime import timedelta
 import logging
+from typing import override
 
 from clearpasspy import ClearPass
-import voluptuous as vol
+import probatio
 
 from homeassistant.components.device_tracker import (
-    DOMAIN,
+    DOMAIN as DEVICE_TRACKER_DOMAIN,
     PLATFORM_SCHEMA as DEVICE_TRACKER_PLATFORM_SCHEMA,
     DeviceScanner,
 )
 from homeassistant.const import CONF_API_KEY, CONF_CLIENT_ID, CONF_HOST
 from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
 SCAN_INTERVAL = timedelta(seconds=120)
@@ -24,9 +23,9 @@ GRANT_TYPE = "client_credentials"
 
 PLATFORM_SCHEMA = DEVICE_TRACKER_PLATFORM_SCHEMA.extend(
     {
-        vol.Required(CONF_HOST): cv.string,
-        vol.Required(CONF_CLIENT_ID): cv.string,
-        vol.Required(CONF_API_KEY): cv.string,
+        probatio.Required(CONF_HOST): cv.string,
+        probatio.Required(CONF_CLIENT_ID): cv.string,
+        probatio.Required(CONF_API_KEY): cv.string,
     }
 )
 
@@ -36,11 +35,13 @@ _LOGGER = logging.getLogger(__name__)
 def get_scanner(hass: HomeAssistant, config: ConfigType) -> CPPMDeviceScanner | None:
     """Initialize Scanner."""
 
+    config = config[DEVICE_TRACKER_DOMAIN]
+
     data = {
-        "server": config[DOMAIN][CONF_HOST],
+        "server": config[CONF_HOST],
         "grant_type": GRANT_TYPE,
-        "secret": config[DOMAIN][CONF_API_KEY],
-        "client": config[DOMAIN][CONF_CLIENT_ID],
+        "secret": config[CONF_API_KEY],
+        "client": config[CONF_CLIENT_ID],
     }
     cppm = ClearPass(data)
     if cppm.access_token is None:
@@ -57,11 +58,13 @@ class CPPMDeviceScanner(DeviceScanner):
         self._cppm = cppm
         self.results = None
 
+    @override
     def scan_devices(self):
         """Initialize scanner."""
         self.get_cppm_data()
         return [device["mac"] for device in self.results]
 
+    @override
     def get_device_name(self, device):
         """Retrieve device name."""
         return next(

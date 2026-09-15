@@ -1,16 +1,21 @@
 """Test the ROMY config flow."""
 
+from collections.abc import Generator
 from ipaddress import ip_address
-from unittest.mock import Mock, PropertyMock, patch
+from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
+import pytest
 from romy import RomyRobot
 
 from homeassistant import config_entries
-from homeassistant.components import zeroconf
 from homeassistant.components.romy.const import DOMAIN
 from homeassistant.const import CONF_HOST, CONF_PASSWORD
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers.service_info.zeroconf import (
+    ATTR_PROPERTIES_ID,
+    ZeroconfServiceInfo,
+)
 
 
 def _create_mocked_romy(
@@ -41,6 +46,15 @@ INPUT_CONFIG_HOST = {
 }
 
 
+@pytest.fixture(autouse=True)
+def mock_setup_entry() -> Generator[AsyncMock]:
+    """Override async_setup_entry."""
+    with patch(
+        "homeassistant.components.romy.async_setup_entry", return_value=True
+    ) as mock_setup_entry:
+        yield mock_setup_entry
+
+
 async def test_show_user_form_robot_is_offline_and_locked(hass: HomeAssistant) -> None:
     """Test that the user set up form with config."""
 
@@ -50,9 +64,14 @@ async def test_show_user_form_robot_is_offline_and_locked(hass: HomeAssistant) -
         return_value=_create_mocked_romy(False, False),
     ):
         result1 = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": config_entries.SOURCE_USER},
-            data=INPUT_CONFIG_HOST,
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+
+        assert result1["type"] is FlowResultType.FORM
+        assert result1["step_id"] == "user"
+
+        result1 = await hass.config_entries.flow.async_configure(
+            result1["flow_id"], user_input=INPUT_CONFIG_HOST
         )
 
         assert result1["errors"].get("host") == "cannot_connect"
@@ -92,9 +111,14 @@ async def test_show_user_form_robot_unlock_with_password(hass: HomeAssistant) ->
         return_value=_create_mocked_romy(True, False),
     ):
         result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": config_entries.SOURCE_USER},
-            data=INPUT_CONFIG_HOST,
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "user"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input=INPUT_CONFIG_HOST
         )
 
     with patch(
@@ -142,9 +166,14 @@ async def test_show_user_form_robot_reachable_again(hass: HomeAssistant) -> None
         return_value=_create_mocked_romy(False, False),
     ):
         result1 = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": config_entries.SOURCE_USER},
-            data=INPUT_CONFIG_HOST,
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+
+        assert result1["type"] is FlowResultType.FORM
+        assert result1["step_id"] == "user"
+
+        result1 = await hass.config_entries.flow.async_configure(
+            result1["flow_id"], user_input=INPUT_CONFIG_HOST
         )
 
         assert result1["errors"].get("host") == "cannot_connect"
@@ -164,14 +193,14 @@ async def test_show_user_form_robot_reachable_again(hass: HomeAssistant) -> None
         assert result2["type"] is FlowResultType.CREATE_ENTRY
 
 
-DISCOVERY_INFO = zeroconf.ZeroconfServiceInfo(
+DISCOVERY_INFO = ZeroconfServiceInfo(
     ip_address=ip_address("1.2.3.4"),
     ip_addresses=[ip_address("1.2.3.4")],
     port=8080,
     hostname="aicu-aicgsbksisfapcjqmqjq.local",
     type="mock_type",
     name="myROMY",
-    properties={zeroconf.ATTR_PROPERTIES_ID: "aicu-aicgsbksisfapcjqmqjqZERO"},
+    properties={ATTR_PROPERTIES_ID: "aicu-aicgsbksisfapcjqmqjqZERO"},
 )
 
 

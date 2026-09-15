@@ -1,11 +1,14 @@
 """Config flow for Transmission Bittorrent Client."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, override
 
-import voluptuous as vol
+import probatio
+from transmission_rpc.error import (
+    TransmissionAuthError,
+    TransmissionConnectError,
+    TransmissionError,
+)
 
 from homeassistant.config_entries import (
     ConfigEntry,
@@ -15,6 +18,7 @@ from homeassistant.config_entries import (
 )
 from homeassistant.const import (
     CONF_HOST,
+    CONF_NAME,
     CONF_PASSWORD,
     CONF_PATH,
     CONF_PORT,
@@ -34,37 +38,39 @@ from .const import (
     DEFAULT_PORT,
     DEFAULT_SSL,
     DOMAIN,
+    MIN_REQUIRED_TRANSMISSION_VERSION,
     SUPPORTED_ORDER_MODES,
 )
-from .errors import AuthenticationError, CannotConnect, UnknownError
+from .helpers import create_version
 
-DATA_SCHEMA = vol.Schema(
+DATA_SCHEMA = probatio.Schema(
     {
-        vol.Optional(CONF_SSL, default=DEFAULT_SSL): bool,
-        vol.Required(CONF_HOST): str,
-        vol.Required(CONF_PATH, default=DEFAULT_PATH): str,
-        vol.Optional(CONF_USERNAME): str,
-        vol.Optional(CONF_PASSWORD): str,
-        vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
+        probatio.Optional(CONF_SSL, default=DEFAULT_SSL): bool,
+        probatio.Required(CONF_HOST): str,
+        probatio.Required(CONF_PATH, default=DEFAULT_PATH): str,
+        probatio.Optional(CONF_USERNAME): str,
+        probatio.Optional(CONF_PASSWORD): str,
+        probatio.Required(CONF_PORT, default=DEFAULT_PORT): int,
     }
 )
 
 
 class TransmissionFlowHandler(ConfigFlow, domain=DOMAIN):
-    """Handle Tansmission config flow."""
+    """Handle Transmission config flow."""
 
     VERSION = 1
     MINOR_VERSION = 2
-    _reauth_entry: ConfigEntry | None
 
     @staticmethod
     @callback
+    @override
     def async_get_options_flow(
         config_entry: ConfigEntry,
     ) -> TransmissionOptionsFlowHandler:
         """Get the options flow for this handler."""
-        return TransmissionOptionsFlowHandler(config_entry)
+        return TransmissionOptionsFlowHandler()
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -76,13 +82,17 @@ class TransmissionFlowHandler(ConfigFlow, domain=DOMAIN):
                 {CONF_HOST: user_input[CONF_HOST], CONF_PORT: user_input[CONF_PORT]}
             )
             try:
-                await get_api(self.hass, user_input)
+                api = await get_api(self.hass, user_input)
 
-            except AuthenticationError:
+            except TransmissionAuthError:
                 errors[CONF_USERNAME] = "invalid_auth"
                 errors[CONF_PASSWORD] = "invalid_auth"
-            except (CannotConnect, UnknownError):
+            except TransmissionConnectError, TransmissionError:
                 errors["base"] = "cannot_connect"
+            else:
+                version = create_version(api.server_version)
+                if version.valid and version < MIN_REQUIRED_TRANSMISSION_VERSION:
+                    errors["base"] = "transmission_version"
 
             if not errors:
                 return self.async_create_entry(
@@ -100,9 +110,6 @@ class TransmissionFlowHandler(ConfigFlow, domain=DOMAIN):
         self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
         """Perform reauth upon an API authentication error."""
-        self._reauth_entry = self.hass.config_entries.async_get_entry(
-            self.context["entry_id"]
-        )
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
@@ -110,31 +117,34 @@ class TransmissionFlowHandler(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Confirm reauth dialog."""
         errors = {}
-        assert self._reauth_entry
+        reauth_entry = self._get_reauth_entry()
         if user_input is not None:
-            user_input = {**self._reauth_entry.data, **user_input}
+            user_input = {**reauth_entry.data, **user_input}
             try:
-                await get_api(self.hass, user_input)
+                api = await get_api(self.hass, user_input)
 
-            except AuthenticationError:
+            except TransmissionAuthError:
                 errors[CONF_PASSWORD] = "invalid_auth"
-            except (CannotConnect, UnknownError):
+            except TransmissionConnectError, TransmissionError:
                 errors["base"] = "cannot_connect"
             else:
-                self.hass.config_entries.async_update_entry(
-                    self._reauth_entry, data=user_input
-                )
-                await self.hass.config_entries.async_reload(self._reauth_entry.entry_id)
-                return self.async_abort(reason="reauth_successful")
+                version = create_version(api.server_version)
+                if version.valid and version < MIN_REQUIRED_TRANSMISSION_VERSION:
+                    errors["base"] = "transmission_version"
+                else:
+                    return self.async_update_reload_and_abort(
+                        reauth_entry, data=user_input
+                    )
 
         return self.async_show_form(
             description_placeholders={
-                CONF_USERNAME: self._reauth_entry.data[CONF_USERNAME]
+                CONF_USERNAME: reauth_entry.data[CONF_USERNAME],
+                CONF_NAME: reauth_entry.title,
             },
             step_id="reauth_confirm",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(CONF_PASSWORD): str,
+                    probatio.Required(CONF_PASSWORD): str,
                 }
             ),
             errors=errors,
@@ -144,10 +154,6 @@ class TransmissionFlowHandler(ConfigFlow, domain=DOMAIN):
 class TransmissionOptionsFlowHandler(OptionsFlow):
     """Handle Transmission client options."""
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialize Transmission options flow."""
-        self.config_entry = config_entry
-
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -156,14 +162,18 @@ class TransmissionOptionsFlowHandler(OptionsFlow):
             return self.async_create_entry(title="", data=user_input)
 
         options = {
-            vol.Optional(
+            probatio.Optional(
                 CONF_LIMIT,
                 default=self.config_entry.options.get(CONF_LIMIT, DEFAULT_LIMIT),
-            ): vol.All(vol.Coerce(int), vol.Range(min=1, max=500)),
-            vol.Optional(
+            ): probatio.All(probatio.Coerce(int), probatio.Range(min=1, max=500)),
+            probatio.Optional(
                 CONF_ORDER,
                 default=self.config_entry.options.get(CONF_ORDER, DEFAULT_ORDER),
-            ): vol.All(vol.Coerce(str), vol.In(SUPPORTED_ORDER_MODES.keys())),
+            ): probatio.All(
+                probatio.Coerce(str), probatio.In(SUPPORTED_ORDER_MODES.keys())
+            ),
         }
 
-        return self.async_show_form(step_id="init", data_schema=vol.Schema(options))
+        return self.async_show_form(
+            step_id="init", data_schema=probatio.Schema(options)
+        )

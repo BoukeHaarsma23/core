@@ -10,12 +10,11 @@ allows the tests to pause the worker thread before finalizing the stream
 so that it can inspect the output.
 """
 
-from __future__ import annotations
-
 import asyncio
 from collections.abc import Generator
 import logging
 import threading
+from typing import Any
 from unittest.mock import Mock, patch
 
 from aiohttp import web
@@ -26,13 +25,15 @@ from homeassistant.components.stream.worker import StreamState
 
 from .common import generate_h264_video, stream_teardown
 
+_LOGGER = logging.getLogger(__name__)
+
 TEST_TIMEOUT = 7.0  # Lower than 9s home assistant timeout
 
 
 class WorkerSync:
     """Test fixture that intercepts stream worker calls to StreamOutput."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize WorkerSync."""
         self._event = None
         self._original = StreamState.discontinuity
@@ -43,7 +44,7 @@ class WorkerSync:
 
     def resume(self):
         """Allow the worker thread to finalize the stream."""
-        logging.debug("waking blocked worker")
+        _LOGGER.debug("waking blocked worker")
         self._event.set()
 
     def blocking_discontinuity(self, stream_state: StreamState):
@@ -51,7 +52,7 @@ class WorkerSync:
         # Worker is ending the stream, which clears all output buffers.
         # Block the worker thread until the test has a chance to verify
         # the segments under test.
-        logging.debug("blocking worker")
+        _LOGGER.debug("blocking worker")
         if self._event:
             self._event.wait()
 
@@ -60,7 +61,7 @@ class WorkerSync:
 
 
 @pytest.fixture
-def stream_worker_sync(hass):
+def stream_worker_sync() -> Generator[WorkerSync]:
     """Patch StreamOutput to allow test to synchronize worker stream end."""
     sync = WorkerSync()
     with patch(
@@ -74,7 +75,7 @@ def stream_worker_sync(hass):
 class HLSSync:
     """Test fixture that intercepts stream worker calls to StreamOutput."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize HLSSync."""
         self._request_event = asyncio.Event()
         self._original_recv = StreamOutput.recv
@@ -91,7 +92,7 @@ class HLSSync:
             self.check_requests_ready()
 
         class SyncResponse(web.Response):
-            def __init__(self, *args, **kwargs) -> None:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
                 super().__init__(*args, **kwargs)
                 on_resp()
 
@@ -119,13 +120,13 @@ class HLSSync:
         return False
 
     def bad_request(self):
-        """Intercept the HTTPBadRequest call so we know when the web handler is finished."""
+        """Intercept HTTPBadRequest to detect web handler completion."""
         self._num_finished += 1
         self.check_requests_ready()
         return self._original_bad_request()
 
     def not_found(self):
-        """Intercept the HTTPNotFound call so we know when the web handler is finished."""
+        """Intercept HTTPNotFound to detect web handler completion."""
         self._num_finished += 1
         self.check_requests_ready()
         return self._original_not_found()

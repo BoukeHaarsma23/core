@@ -1,12 +1,10 @@
 """Config flow for AEMET OpenData."""
 
-from __future__ import annotations
-
-from typing import Any
+from typing import Any, override
 
 from aemet_opendata.exceptions import AuthError
 from aemet_opendata.interface import AEMET, ConnectionOptions
-import voluptuous as vol
+import probatio
 
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_API_KEY, CONF_LATITUDE, CONF_LONGITUDE, CONF_NAME
@@ -17,11 +15,12 @@ from homeassistant.helpers.schema_config_entry_flow import (
     SchemaOptionsFlowHandler,
 )
 
-from .const import CONF_STATION_UPDATES, DEFAULT_NAME, DOMAIN
+from .const import CONF_RADAR_UPDATES, CONF_STATION_UPDATES, DEFAULT_NAME, DOMAIN
 
-OPTIONS_SCHEMA = vol.Schema(
+OPTIONS_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_STATION_UPDATES, default=True): bool,
+        probatio.Required(CONF_RADAR_UPDATES, default=False): bool,
+        probatio.Required(CONF_STATION_UPDATES, default=True): bool,
     }
 )
 OPTIONS_FLOW = {
@@ -32,6 +31,7 @@ OPTIONS_FLOW = {
 class AemetConfigFlow(ConfigFlow, domain=DOMAIN):
     """Config flow for AEMET OpenData."""
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -45,7 +45,7 @@ class AemetConfigFlow(ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(f"{latitude}-{longitude}")
             self._abort_if_unique_id_configured()
 
-            options = ConnectionOptions(user_input[CONF_API_KEY], False)
+            options = ConnectionOptions(user_input[CONF_API_KEY])
             aemet = AEMET(aiohttp_client.async_get_clientsession(self.hass), options)
             try:
                 await aemet.select_coordinates(latitude, longitude)
@@ -57,23 +57,33 @@ class AemetConfigFlow(ConfigFlow, domain=DOMAIN):
                     title=user_input[CONF_NAME], data=user_input
                 )
 
-        schema = vol.Schema(
+        schema = probatio.Schema(
             {
-                vol.Required(CONF_API_KEY): str,
-                vol.Optional(CONF_NAME, default=DEFAULT_NAME): str,
-                vol.Optional(
+                probatio.Required(CONF_API_KEY): str,
+                # Name field is no longer allowed in config flow schemas
+                # pylint: disable-next=home-assistant-config-flow-name-field
+                probatio.Optional(CONF_NAME, default=DEFAULT_NAME): str,
+                probatio.Optional(
                     CONF_LATITUDE, default=self.hass.config.latitude
                 ): cv.latitude,
-                vol.Optional(
+                probatio.Optional(
                     CONF_LONGITUDE, default=self.hass.config.longitude
                 ): cv.longitude,
             }
         )
 
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+        return self.async_show_form(
+            step_id="user",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={
+                "api_key_url": "https://opendata.aemet.es/centrodedescargas/altaUsuario"
+            },
+        )
 
     @staticmethod
     @callback
+    @override
     def async_get_options_flow(
         config_entry: ConfigEntry,
     ) -> SchemaOptionsFlowHandler:

@@ -12,6 +12,7 @@ import pytest
 
 from homeassistant.components.stream import Stream, create_stream
 from homeassistant.components.stream.const import (
+    DOMAIN,
     HLS_PROVIDER,
     OUTPUT_IDLE_TIMEOUT,
     RECORDER_PROVIDER,
@@ -21,7 +22,7 @@ from homeassistant.components.stream.fmp4utils import find_box
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.setup import async_setup_component
-import homeassistant.util.dt as dt_util
+from homeassistant.util import dt as dt_util
 
 from .common import (
     DefaultSegment as Segment,
@@ -37,7 +38,7 @@ from tests.common import async_fire_time_changed
 @pytest.fixture(autouse=True)
 async def stream_component(hass: HomeAssistant) -> None:
     """Set up the component before each test."""
-    await async_setup_component(hass, "stream", {"stream": {}})
+    await async_setup_component(hass, DOMAIN, {"stream": {}})
 
 
 @pytest.fixture

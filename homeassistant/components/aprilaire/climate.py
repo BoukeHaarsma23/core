@@ -1,12 +1,12 @@
 """The Aprilaire climate component."""
 
-from __future__ import annotations
-
-from typing import Any
+from typing import Any, override
 
 from pyaprilaire.const import Attribute
 
 from homeassistant.components.climate import (
+    ATTR_TARGET_TEMP_HIGH,
+    ATTR_TARGET_TEMP_LOW,
     FAN_AUTO,
     FAN_ON,
     PRESET_AWAY,
@@ -16,19 +16,22 @@ from homeassistant.components.climate import (
     HVACAction,
     HVACMode,
 )
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PRECISION_HALVES, PRECISION_WHOLE, UnitOfTemperature
+from homeassistant.const import (
+    ATTR_TEMPERATURE,
+    PRECISION_HALVES,
+    PRECISION_WHOLE,
+    UnitOfTemperature,
+)
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import (
-    DOMAIN,
     FAN_CIRCULATE,
     PRESET_PERMANENT_HOLD,
     PRESET_TEMPORARY_HOLD,
     PRESET_VACATION,
 )
-from .coordinator import AprilaireCoordinator
+from .coordinator import AprilaireConfigEntry
 from .entity import BaseAprilaireEntity
 
 HVAC_MODE_MAP = {
@@ -64,14 +67,14 @@ FAN_MODE_MAP = {
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    config_entry: AprilaireConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Add climates for passed config_entry in HA."""
 
-    coordinator: AprilaireCoordinator = hass.data[DOMAIN][config_entry.unique_id]
-
-    async_add_entities([AprilaireClimate(coordinator, config_entry.unique_id)])
+    async_add_entities(
+        [AprilaireClimate(config_entry.runtime_data, config_entry.unique_id)]
+    )
 
 
 class AprilaireClimate(BaseAprilaireEntity, ClimateEntity):
@@ -84,6 +87,7 @@ class AprilaireClimate(BaseAprilaireEntity, ClimateEntity):
     _attr_translation_key = "thermostat"
 
     @property
+    @override
     def precision(self) -> float:
         """Get the precision based on the unit."""
         return (
@@ -93,6 +97,7 @@ class AprilaireClimate(BaseAprilaireEntity, ClimateEntity):
         )
 
     @property
+    @override
     def supported_features(self) -> ClimateEntityFeature:
         """Get supported features."""
         features = 0
@@ -110,6 +115,7 @@ class AprilaireClimate(BaseAprilaireEntity, ClimateEntity):
         return features | ClimateEntityFeature.FAN_MODE
 
     @property
+    @override
     def current_humidity(self) -> int | None:
         """Get current humidity."""
         return self.coordinator.data.get(
@@ -117,11 +123,13 @@ class AprilaireClimate(BaseAprilaireEntity, ClimateEntity):
         )
 
     @property
+    @override
     def target_humidity(self) -> int | None:
         """Get current target humidity."""
         return self.coordinator.data.get(Attribute.HUMIDIFICATION_SETPOINT)
 
     @property
+    @override
     def hvac_mode(self) -> HVACMode | None:
         """Get HVAC mode."""
 
@@ -132,6 +140,7 @@ class AprilaireClimate(BaseAprilaireEntity, ClimateEntity):
         return None
 
     @property
+    @override
     def hvac_modes(self) -> list[HVACMode]:
         """Get supported HVAC modes."""
 
@@ -142,6 +151,7 @@ class AprilaireClimate(BaseAprilaireEntity, ClimateEntity):
         return []
 
     @property
+    @override
     def hvac_action(self) -> HVACAction | None:
         """Get the current HVAC action."""
 
@@ -154,6 +164,7 @@ class AprilaireClimate(BaseAprilaireEntity, ClimateEntity):
         return HVACAction.IDLE
 
     @property
+    @override
     def current_temperature(self) -> float | None:
         """Get current temperature."""
         return self.coordinator.data.get(
@@ -161,6 +172,7 @@ class AprilaireClimate(BaseAprilaireEntity, ClimateEntity):
         )
 
     @property
+    @override
     def target_temperature(self) -> float | None:
         """Get the target temperature."""
 
@@ -174,6 +186,7 @@ class AprilaireClimate(BaseAprilaireEntity, ClimateEntity):
         return None
 
     @property
+    @override
     def target_temperature_step(self) -> float | None:
         """Get the step for the target temperature based on the unit."""
         return (
@@ -183,16 +196,19 @@ class AprilaireClimate(BaseAprilaireEntity, ClimateEntity):
         )
 
     @property
+    @override
     def target_temperature_high(self) -> float | None:
         """Get cool setpoint."""
         return self.coordinator.data.get(Attribute.COOL_SETPOINT)
 
     @property
+    @override
     def target_temperature_low(self) -> float | None:
         """Get heat setpoint."""
         return self.coordinator.data.get(Attribute.HEAT_SETPOINT)
 
     @property
+    @override
     def preset_mode(self) -> str | None:
         """Get the current preset mode."""
         if hold := self.coordinator.data.get(Attribute.HOLD):
@@ -202,6 +218,7 @@ class AprilaireClimate(BaseAprilaireEntity, ClimateEntity):
         return PRESET_NONE
 
     @property
+    @override
     def preset_modes(self) -> list[str] | None:
         """Get the supported preset modes."""
         presets = [PRESET_NONE, PRESET_VACATION]
@@ -219,6 +236,7 @@ class AprilaireClimate(BaseAprilaireEntity, ClimateEntity):
         return presets
 
     @property
+    @override
     def fan_mode(self) -> str | None:
         """Get fan mode."""
 
@@ -228,21 +246,22 @@ class AprilaireClimate(BaseAprilaireEntity, ClimateEntity):
 
         return None
 
+    @override
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
 
         cool_setpoint = 0
         heat_setpoint = 0
 
-        if temperature := kwargs.get("temperature"):
+        if temperature := kwargs.get(ATTR_TEMPERATURE):
             if self.coordinator.data.get(Attribute.MODE) == 3:
                 cool_setpoint = temperature
             else:
                 heat_setpoint = temperature
         else:
-            if target_temp_low := kwargs.get("target_temp_low"):
+            if target_temp_low := kwargs.get(ATTR_TARGET_TEMP_LOW):
                 heat_setpoint = target_temp_low
-            if target_temp_high := kwargs.get("target_temp_high"):
+            if target_temp_high := kwargs.get(ATTR_TARGET_TEMP_HIGH):
                 cool_setpoint = target_temp_high
 
         if cool_setpoint == 0 and heat_setpoint == 0:
@@ -252,11 +271,13 @@ class AprilaireClimate(BaseAprilaireEntity, ClimateEntity):
 
         await self.coordinator.client.read_control()
 
+    @override
     async def async_set_humidity(self, humidity: int) -> None:
         """Set the target humidification setpoint."""
 
         await self.coordinator.client.set_humidification_setpoint(humidity)
 
+    @override
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         """Set the fan mode."""
 
@@ -271,6 +292,7 @@ class AprilaireClimate(BaseAprilaireEntity, ClimateEntity):
 
         await self.coordinator.client.read_control()
 
+    @override
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set the HVAC mode."""
 
@@ -285,6 +307,7 @@ class AprilaireClimate(BaseAprilaireEntity, ClimateEntity):
 
         await self.coordinator.client.read_control()
 
+    @override
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Set the preset mode."""
 

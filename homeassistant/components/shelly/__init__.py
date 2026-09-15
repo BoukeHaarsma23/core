@@ -1,9 +1,10 @@
 """The Shelly integration."""
 
-from __future__ import annotations
-
+import asyncio
+from functools import partial
 from typing import Final
 
+from aioshelly.ble.const import BLE_SCRIPT_NAME
 from aioshelly.block_device import BlockDevice
 from aioshelly.common import ConnectionOptions
 from aioshelly.const import DEFAULT_COAP_PORT, RPC_GENERATIONS
@@ -11,16 +12,26 @@ from aioshelly.exceptions import (
     DeviceConnectionError,
     InvalidAuthError,
     MacAddressMismatchError,
+    RpcCallError,
 )
-from aioshelly.rpc_device import RpcDevice
-import voluptuous as vol
+from aioshelly.rpc_device import RpcDevice, bluetooth_mac_from_primary_mac
+import probatio
 
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, Platform
+from homeassistant.components.bluetooth import async_remove_scanner
+from homeassistant.const import (
+    CONF_HOST,
+    CONF_MODEL,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    CONF_VERIFY_SSL,
+    Platform,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import (
     config_validation as cv,
     device_registry as dr,
+    entity_registry as er,
     issue_registry as ir,
 )
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -30,6 +41,7 @@ from homeassistant.helpers.typing import ConfigType
 from .const import (
     BLOCK_EXPECTED_SLEEP_PERIOD,
     BLOCK_WRONG_SLEEP_PERIOD,
+    CONF_BLE_SCANNER_MODE,
     CONF_COAP_PORT,
     CONF_SLEEP_PERIOD,
     DOMAIN,
@@ -37,6 +49,7 @@ from .const import (
     LOGGER,
     MODELS_WITH_WRONG_SLEEP_PERIOD,
     PUSH_UPDATE_ISSUE_ID,
+    BLEScannerMode,
 )
 from .coordinator import (
     ShellyBlockCoordinator,
@@ -46,21 +59,37 @@ from .coordinator import (
     ShellyRpcCoordinator,
     ShellyRpcPollingCoordinator,
 )
+from .repairs import (
+    async_manage_ble_scanner_firmware_unsupported_issue,
+    async_manage_deprecated_firmware_issue,
+    async_manage_open_wifi_ap_issue,
+    async_manage_outbound_websocket_incorrectly_enabled_issue,
+    async_manage_rtsp_disabled_issue,
+)
+from .services import async_setup_services
 from .utils import (
     async_create_issue_unsupported_firmware,
+    async_migrate_rpc_sensor_description_unique_ids,
+    async_migrate_rpc_virtual_components_unique_ids,
     get_coap_context,
     get_device_entry_gen,
     get_http_port,
+    get_rpc_scripts_event_types,
     get_ws_context,
+    is_rpc_ble_scanner_supported,
+    remove_empty_sub_devices,
+    remove_stale_blu_trv_devices,
 )
 
 PLATFORMS: Final = [
     Platform.BINARY_SENSOR,
     Platform.BUTTON,
+    Platform.CAMERA,
     Platform.CLIMATE,
     Platform.COVER,
     Platform.EVENT,
     Platform.LIGHT,
+    Platform.MEDIA_PLAYER,
     Platform.NUMBER,
     Platform.SELECT,
     Platform.SENSOR,
@@ -78,28 +107,54 @@ BLOCK_SLEEPING_PLATFORMS: Final = [
 ]
 RPC_SLEEPING_PLATFORMS: Final = [
     Platform.BINARY_SENSOR,
+    Platform.BUTTON,
     Platform.SENSOR,
     Platform.UPDATE,
 ]
 
-COAP_SCHEMA: Final = vol.Schema(
+COAP_SCHEMA: Final = probatio.Schema(
     {
-        vol.Optional(CONF_COAP_PORT, default=DEFAULT_COAP_PORT): cv.port,
+        probatio.Optional(CONF_COAP_PORT, default=DEFAULT_COAP_PORT): cv.port,
     }
 )
-CONFIG_SCHEMA: Final = vol.Schema({DOMAIN: COAP_SCHEMA}, extra=vol.ALLOW_EXTRA)
+CONFIG_SCHEMA: Final = probatio.Schema(
+    {DOMAIN: COAP_SCHEMA}, extra=probatio.ALLOW_EXTRA
+)
+
+# Max time to wait at startup for a BLE proxy to register its scanner.
+STARTUP_SCANNER_WAIT: Final = 3.0
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the Shelly component."""
     if (conf := config.get(DOMAIN)) is not None:
+        # Uses legacy hass.data[DOMAIN] pattern
+        # pylint: disable-next=home-assistant-use-runtime-data
         hass.data[DOMAIN] = {CONF_COAP_PORT: conf[CONF_COAP_PORT]}
 
+    async_setup_services(hass)
+
+    return True
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ShellyConfigEntry) -> bool:
+    """Migrate old config entries."""
+
+    if entry.minor_version < 3:
+        # One-time flip of explicit Active scanning to Auto so existing
+        # installs get the new battery-friendly default; Passive stays
+        # Passive because users picked it deliberately.
+        options = dict(entry.options)
+        if options.get(CONF_BLE_SCANNER_MODE) == BLEScannerMode.ACTIVE:
+            options[CONF_BLE_SCANNER_MODE] = BLEScannerMode.AUTO
+        hass.config_entries.async_update_entry(entry, options=options, minor_version=3)
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ShellyConfigEntry) -> bool:
     """Set up Shelly from a config entry."""
+    entry.runtime_data = ShellyEntryData([])
+
     # The custom component for Shelly devices uses shelly domain as well as core
     # integration. If the user removes the custom component but doesn't remove the
     # config entry, core integration will try to configure that config entry with an
@@ -143,21 +198,19 @@ async def _async_setup_block_entry(
     dev_reg = dr.async_get(hass)
     device_entry = None
     if entry.unique_id is not None:
-        device_entry = dev_reg.async_get_device(
-            connections={(CONNECTION_NETWORK_MAC, dr.format_mac(entry.unique_id))},
+        device_entry = dev_reg.async_get_device_by_connection(
+            (CONNECTION_NETWORK_MAC, entry.unique_id), entry.entry_id
         )
-    # https://github.com/home-assistant/core/pull/48076
-    if device_entry and entry.entry_id not in device_entry.config_entries:
-        device_entry = None
 
     sleep_period = entry.data.get(CONF_SLEEP_PERIOD)
-    runtime_data = entry.runtime_data = ShellyEntryData(BLOCK_SLEEPING_PLATFORMS)
+    runtime_data = entry.runtime_data
+    runtime_data.platforms = BLOCK_SLEEPING_PLATFORMS
 
     # Some old firmware have a wrong sleep period hardcoded value.
     # Following code block will force the right value for affected devices
     if (
         sleep_period == BLOCK_WRONG_SLEEP_PERIOD
-        and entry.data["model"] in MODELS_WITH_WRONG_SLEEP_PERIOD
+        and entry.data[CONF_MODEL] in MODELS_WITH_WRONG_SLEEP_PERIOD
     ):
         LOGGER.warning(
             "Updating stored sleep period for %s: from %s to %s",
@@ -178,13 +231,25 @@ async def _async_setup_block_entry(
             if not device.firmware_supported:
                 async_create_issue_unsupported_firmware(hass, entry)
                 await device.shutdown()
-                raise ConfigEntryNotReady
+                raise ConfigEntryNotReady(
+                    translation_domain=DOMAIN,
+                    translation_key="firmware_unsupported",
+                    translation_placeholders={"device": entry.title},
+                )
         except (DeviceConnectionError, MacAddressMismatchError) as err:
             await device.shutdown()
-            raise ConfigEntryNotReady(repr(err)) from err
+            raise ConfigEntryNotReady(
+                translation_domain=DOMAIN,
+                translation_key="device_communication_error",
+                translation_placeholders={"device": entry.title},
+            ) from err
         except InvalidAuthError as err:
             await device.shutdown()
-            raise ConfigEntryAuthFailed(repr(err)) from err
+            raise ConfigEntryAuthFailed(
+                translation_domain=DOMAIN,
+                translation_key="auth_error",
+                translation_placeholders={"device": entry.title},
+            ) from err
 
         runtime_data.block = ShellyBlockCoordinator(hass, entry, device)
         runtime_data.block.async_setup()
@@ -192,8 +257,16 @@ async def _async_setup_block_entry(
         await hass.config_entries.async_forward_entry_setups(
             entry, runtime_data.platforms
         )
-    elif sleep_period is None or device_entry is None:
+        remove_empty_sub_devices(hass, entry)
+    elif (
+        sleep_period is None
+        or device_entry is None
+        or not er.async_entries_for_device(er.async_get(hass), device_entry.id)
+    ):
         # Need to get sleep info or first time sleeping device setup, wait for device
+        # If there are no entities for the device, it means we added the device, but
+        # Home Assistant was restarted before the device was online. In this case we
+        # cannot restore the entities, so we need to wait for the device to be online.
         LOGGER.debug(
             "Setup for device %s will resume when device is online", entry.title
         )
@@ -222,6 +295,7 @@ async def _async_setup_rpc_entry(hass: HomeAssistant, entry: ShellyConfigEntry) 
         entry.data.get(CONF_PASSWORD),
         device_mac=entry.unique_id,
         port=get_http_port(entry.data),
+        verify_ssl=entry.data.get(CONF_VERIFY_SSL, False),
     )
 
     ws_context = await get_ws_context(hass)
@@ -235,15 +309,19 @@ async def _async_setup_rpc_entry(hass: HomeAssistant, entry: ShellyConfigEntry) 
     dev_reg = dr.async_get(hass)
     device_entry = None
     if entry.unique_id is not None:
-        device_entry = dev_reg.async_get_device(
-            connections={(CONNECTION_NETWORK_MAC, dr.format_mac(entry.unique_id))},
+        device_entry = dev_reg.async_get_device_by_connection(
+            (CONNECTION_NETWORK_MAC, entry.unique_id), entry.entry_id
         )
-    # https://github.com/home-assistant/core/pull/48076
-    if device_entry and entry.entry_id not in device_entry.config_entries:
-        device_entry = None
 
     sleep_period = entry.data.get(CONF_SLEEP_PERIOD)
-    runtime_data = entry.runtime_data = ShellyEntryData(RPC_SLEEPING_PLATFORMS)
+    runtime_data = entry.runtime_data
+    runtime_data.platforms = RPC_SLEEPING_PLATFORMS
+
+    await er.async_migrate_entries(
+        hass,
+        entry.entry_id,
+        async_migrate_rpc_sensor_description_unique_ids,
+    )
 
     if sleep_period == 0:
         # Not a sleeping device, finish setup
@@ -254,27 +332,91 @@ async def _async_setup_rpc_entry(hass: HomeAssistant, entry: ShellyConfigEntry) 
             if not device.firmware_supported:
                 async_create_issue_unsupported_firmware(hass, entry)
                 await device.shutdown()
-                raise ConfigEntryNotReady
-        except (DeviceConnectionError, MacAddressMismatchError) as err:
+                raise ConfigEntryNotReady(
+                    translation_domain=DOMAIN,
+                    translation_key="firmware_unsupported",
+                    translation_placeholders={"device": entry.title},
+                )
+            runtime_data.rpc_zigbee_firmware = device.zigbee_firmware
+            runtime_data.rpc_supports_scripts = await device.supports_scripts()
+            if runtime_data.rpc_supports_scripts:
+                runtime_data.rpc_script_events = await get_rpc_scripts_event_types(
+                    device, ignore_scripts=[BLE_SCRIPT_NAME]
+                )
+            remove_stale_blu_trv_devices(hass, device, entry)
+        except (DeviceConnectionError, MacAddressMismatchError, RpcCallError) as err:
             await device.shutdown()
-            raise ConfigEntryNotReady(repr(err)) from err
+            raise ConfigEntryNotReady(
+                translation_domain=DOMAIN,
+                translation_key="device_communication_error",
+                translation_placeholders={"device": entry.title},
+            ) from err
         except InvalidAuthError as err:
             await device.shutdown()
-            raise ConfigEntryAuthFailed(repr(err)) from err
+            raise ConfigEntryAuthFailed(
+                translation_domain=DOMAIN,
+                translation_key="auth_error",
+                translation_placeholders={"device": entry.title},
+            ) from err
+
+        await er.async_migrate_entries(
+            hass,
+            entry.entry_id,
+            partial(async_migrate_rpc_virtual_components_unique_ids, device.config),
+        )
 
         runtime_data.rpc = ShellyRpcCoordinator(hass, entry, device)
         runtime_data.rpc.async_setup()
+
+        if (
+            is_rpc_ble_scanner_supported(entry)
+            and entry.options.get(CONF_BLE_SCANNER_MODE, BLEScannerMode.DISABLED)
+            != BLEScannerMode.DISABLED
+        ):
+            # Wait for the proxy to register its scanner before finishing setup.
+            try:
+                async with asyncio.timeout(STARTUP_SCANNER_WAIT):
+                    await runtime_data.rpc.ble_scanner_setup_done.wait()
+            except TimeoutError:
+                LOGGER.debug(
+                    "%s: Timed out waiting for BLE scanner to register", entry.title
+                )
+
         runtime_data.rpc_poll = ShellyRpcPollingCoordinator(hass, entry, device)
         await hass.config_entries.async_forward_entry_setups(
             entry, runtime_data.platforms
         )
-    elif sleep_period is None or device_entry is None:
+        async_manage_deprecated_firmware_issue(hass, entry)
+        async_manage_ble_scanner_firmware_unsupported_issue(
+            hass,
+            entry,
+        )
+        async_manage_outbound_websocket_incorrectly_enabled_issue(
+            hass,
+            entry,
+        )
+        async_manage_open_wifi_ap_issue(hass, entry)
+        async_manage_rtsp_disabled_issue(hass, entry)
+        remove_empty_sub_devices(hass, entry)
+    elif (
+        sleep_period is None
+        or device_entry is None
+        or not er.async_entries_for_device(er.async_get(hass), device_entry.id)
+    ):
         # Need to get sleep info or first time sleeping device setup, wait for device
+        # If there are no entities for the device, it means we added the device, but
+        # Home Assistant was restarted before the device was online. In this case we
+        # cannot restore the entities, so we need to wait for the device to be online.
         LOGGER.debug(
             "Setup for device %s will resume when device is online", entry.title
         )
         runtime_data.rpc = ShellyRpcCoordinator(hass, entry, device)
         runtime_data.rpc.async_setup(runtime_data.platforms)
+        # Try to connect to the device, if we reached here from config flow
+        # and user woke up the device when adding it, we can continue setup
+        # otherwise we will wait for the device to wake up
+        if sleep_period:
+            await runtime_data.rpc.async_device_online("setup")
     else:
         # Restore sensors for sleeping device
         LOGGER.debug("Setting up offline RPC device %s", entry.title)
@@ -311,3 +453,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ShellyConfigEntry) -> b
     return await hass.config_entries.async_unload_platforms(
         entry, runtime_data.platforms
     )
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ShellyConfigEntry) -> None:
+    """Remove a config entry."""
+    if get_device_entry_gen(entry) in RPC_GENERATIONS and (
+        mac_address := entry.unique_id
+    ):
+        source = dr.format_mac(bluetooth_mac_from_primary_mac(mac_address)).upper()
+        async_remove_scanner(hass, source)

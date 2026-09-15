@@ -1,20 +1,30 @@
 """Helpers to install PyPi packages."""
 
-from __future__ import annotations
-
 import asyncio
 from functools import cache
 from importlib.metadata import PackageNotFoundError, version
 import logging
 import os
 from pathlib import Path
+import site
 from subprocess import PIPE, Popen
 import sys
+from typing import TypedDict, cast
 from urllib.parse import urlparse
 
 from packaging.requirements import InvalidRequirement, Requirement
 
+from .json import JSON_DECODE_EXCEPTIONS, json_loads_array
+from .system_info import is_official_image
+
 _LOGGER = logging.getLogger(__name__)
+
+
+class InstalledPackage(TypedDict):
+    """Represent an installed package."""
+
+    name: str
+    version: str
 
 
 def is_virtual_env() -> bool:
@@ -27,13 +37,51 @@ def is_virtual_env() -> bool:
 
 @cache
 def is_docker_env() -> bool:
-    """Return True if we run in a docker env."""
-    return Path("/.dockerenv").exists()
+    """Return True if we run in a container env."""
+    return (
+        Path("/.dockerenv").exists()
+        or Path("/run/.containerenv").exists()
+        or "KUBERNETES_SERVICE_HOST" in os.environ
+        or is_official_image()
+    )
 
 
 def get_installed_versions(specifiers: set[str]) -> set[str]:
     """Return a set of installed packages and versions."""
     return {specifier for specifier in specifiers if is_installed(specifier)}
+
+
+def parse_requirement_safe(requirement_str: str) -> Requirement | None:
+    """Parse a requirement string into a Requirement object.
+
+    expected input is a pip compatible package specifier (requirement string)
+    e.g. "package==1.0.0" or "package>=1.0.0,<2.0.0" or "package@git+https://..."
+
+    For backward compatibility, it also accepts a URL with a fragment
+    e.g. "git+https://github.com/pypa/pip#pip>=1"
+
+    Returns None on a badly-formed requirement string.
+    """
+    try:
+        return Requirement(requirement_str)
+    except InvalidRequirement:
+        if "#" not in requirement_str:
+            _LOGGER.error("Invalid requirement '%s'", requirement_str)
+            return None
+
+        # This is likely a URL with a fragment
+        # example: git+https://github.com/pypa/pip#pip>=1
+
+        # fragment support was originally used to install zip files, and
+        # we no longer do this in Home Assistant. However, custom
+        # components started using it to install packages from git
+        # urls which would make it would be a breaking change to
+        # remove it.
+        try:
+            return Requirement(urlparse(requirement_str).fragment)
+        except InvalidRequirement:
+            _LOGGER.error("Invalid requirement '%s'", requirement_str)
+            return None
 
 
 def is_installed(requirement_str: str) -> bool:
@@ -48,26 +96,8 @@ def is_installed(requirement_str: str) -> bool:
     Returns True when the requirement is met.
     Returns False when the package is not installed or doesn't meet req.
     """
-    try:
-        req = Requirement(requirement_str)
-    except InvalidRequirement:
-        if "#" not in requirement_str:
-            _LOGGER.error("Invalid requirement '%s'", requirement_str)
-            return False
-
-        # This is likely a URL with a fragment
-        # example: git+https://github.com/pypa/pip#pip>=1
-
-        # fragment support was originally used to install zip files, and
-        # we no longer do this in Home Assistant. However, custom
-        # components started using it to install packages from git
-        # urls which would make it would be a breaking change to
-        # remove it.
-        try:
-            req = Requirement(urlparse(requirement_str).fragment)
-        except InvalidRequirement:
-            _LOGGER.error("Invalid requirement '%s'", requirement_str)
-            return False
+    if (req := parse_requirement_safe(requirement_str)) is None:
+        return False
 
     try:
         if (installed_version := version(req.name)) is None:
@@ -78,9 +108,36 @@ def is_installed(requirement_str: str) -> bool:
                 "Installed version for %s resolved to None", req.name
             )
             return False
+        if req.url:
+            # If requirement is a URL, we cannot verify versions, so let
+            # the package manager handle it
+            return False
         return req.specifier.contains(installed_version, prereleases=True)
     except PackageNotFoundError:
         return False
+
+
+_UV_ENV_PYTHON_VARS = (
+    "UV_SYSTEM_PYTHON",
+    "UV_PYTHON",
+)
+
+
+def _install(args: list[str], env: dict[str, str]) -> str | None:
+    """Run the install command and return stderr output if it failed."""
+    _LOGGER.debug("Running uv pip command: args=%s", args)
+    with Popen(
+        args,
+        stdin=PIPE,
+        stdout=PIPE,
+        stderr=PIPE,
+        env=env,
+        close_fds=False,  # required for posix_spawn
+    ) as process:
+        _, stderr = process.communicate()
+        if process.returncode != 0:
+            return stderr.decode("utf-8").lstrip().strip()
+    return None
 
 
 def install_package(
@@ -94,40 +151,76 @@ def install_package(
 
     Return boolean if install successful.
     """
-    # Not using 'import pip; pip.main([])' because it breaks the logger
     _LOGGER.info("Attempting install of %s", package)
     env = os.environ.copy()
-    args = [sys.executable, "-m", "pip", "install", "--quiet", package]
+    args = [
+        sys.executable,
+        "-m",
+        "uv",
+        "pip",
+        "install",
+        "--quiet",
+        package,
+        # We need to use unsafe-first-match for custom components
+        # which can use a different version of a package than the one
+        # we have built the wheel for.
+        "--index-strategy",
+        "unsafe-first-match",
+    ]
     if timeout:
-        args += ["--timeout", str(timeout)]
+        env["HTTP_TIMEOUT"] = str(timeout)
     if upgrade:
         args.append("--upgrade")
     if constraints is not None:
         args += ["--constraint", constraints]
     if target:
-        assert not is_virtual_env()
-        # This only works if not running in venv
-        args += ["--user"]
-        env["PYTHONUSERBASE"] = os.path.abspath(target)
-    _LOGGER.debug("Running pip command: args=%s", args)
-    with Popen(
-        args,
-        stdin=PIPE,
-        stdout=PIPE,
-        stderr=PIPE,
-        env=env,
-        close_fds=False,  # required for posix_spawn
-    ) as process:
-        _, stderr = process.communicate()
-        if process.returncode != 0:
-            _LOGGER.error(
-                "Unable to install package %s: %s",
-                package,
-                stderr.decode("utf-8").lstrip().strip(),
-            )
-            return False
+        abs_target = os.path.abspath(target)
+        args += ["--target", abs_target]
+    elif (
+        not is_virtual_env()
+        and not (any(var in env for var in _UV_ENV_PYTHON_VARS))
+        and (abs_target := site.getusersitepackages())
+    ):
+        # Pip compatibility
+        # Uv has currently no support for --user
+        # See https://github.com/astral-sh/uv/issues/2077
+        # Using workaround to install to site-packages
+        # https://github.com/astral-sh/uv/issues/2077#issuecomment-2150406001
+        args += ["--python", sys.executable, "--target", abs_target]
 
-    return True
+    if (stderr := _install(args, env)) is None:
+        return True
+
+    # uv treats a failing extra index as fatal, unlike pip which skips it.
+    # If the error came from an extra index host (e.g. the wheels index
+    # being down), retry with only the healthy indexes so PyPI can serve
+    # the package. Match on the host since wheel files may live outside
+    # the index path.
+    extra_urls = env.get("UV_EXTRA_INDEX_URL", "").split()
+    # Log only the hosts since the URLs may contain credentials
+    failing = {
+        url: host
+        for url in extra_urls
+        if (host := urlparse(url).hostname) and host in stderr
+    }
+    if failing:
+        _LOGGER.warning(
+            "Unable to install package %s using extra index host %s: %s; "
+            "retrying without it",
+            package,
+            ", ".join(failing.values()),
+            stderr,
+        )
+        retry_env = env.copy()
+        if remaining := [url for url in extra_urls if url not in failing]:
+            retry_env["UV_EXTRA_INDEX_URL"] = " ".join(remaining)
+        else:
+            del retry_env["UV_EXTRA_INDEX_URL"]
+        if (stderr := _install(args, retry_env)) is None:
+            return True
+
+    _LOGGER.error("Unable to install package %s: %s", package, stderr)
+    return False
 
 
 async def async_get_user_site(deps_dir: str) -> str:
@@ -148,3 +241,26 @@ async def async_get_user_site(deps_dir: str) -> str:
     )
     stdout, _ = await process.communicate()
     return stdout.decode().strip()
+
+
+async def async_get_installed_packages() -> list[InstalledPackage]:
+    """Return a list of installed packages and versions.
+
+    Returns a list of InstalledPackage dicts with 'name' and 'version' keys.
+    """
+    args = [sys.executable, "-m", "uv", "pip", "list", "--format", "json"]
+    process = await asyncio.create_subprocess_exec(
+        *args,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        close_fds=False,  # required for posix_spawn
+    )
+    stdout, _ = await process.communicate()
+    if process.returncode != 0:
+        return []
+
+    try:
+        return cast(list[InstalledPackage], json_loads_array(stdout.decode()))
+    except (*JSON_DECODE_EXCEPTIONS, ValueError):
+        return []

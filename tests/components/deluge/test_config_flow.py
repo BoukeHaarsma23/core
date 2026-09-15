@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from homeassistant.components.deluge.const import DEFAULT_NAME, DOMAIN
-from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER
+from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import CONF_SOURCE
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
@@ -58,9 +58,15 @@ def deluge_setup_fixture():
 async def test_flow_user(hass: HomeAssistant, api) -> None:
     """Test user initialized flow."""
     result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data=CONF_DATA,
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input=CONF_DATA,
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == DEFAULT_NAME
@@ -77,7 +83,15 @@ async def test_flow_user_already_configured(hass: HomeAssistant, api) -> None:
     entry.add_to_hass(hass)
 
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={CONF_SOURCE: SOURCE_USER}, data=CONF_DATA
+        DOMAIN, context={CONF_SOURCE: SOURCE_USER}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input=CONF_DATA,
     )
 
     assert result["type"] is FlowResultType.ABORT
@@ -87,7 +101,15 @@ async def test_flow_user_already_configured(hass: HomeAssistant, api) -> None:
 async def test_flow_user_cannot_connect(hass: HomeAssistant, conn_error) -> None:
     """Test user initialized flow with unreachable server."""
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={CONF_SOURCE: SOURCE_USER}, data=CONF_DATA
+        DOMAIN, context={CONF_SOURCE: SOURCE_USER}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input=CONF_DATA,
     )
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
@@ -97,7 +119,15 @@ async def test_flow_user_cannot_connect(hass: HomeAssistant, conn_error) -> None
 async def test_flow_user_unknown_error(hass: HomeAssistant, unknown_error) -> None:
     """Test user initialized flow with unreachable server."""
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={CONF_SOURCE: SOURCE_USER}, data=CONF_DATA
+        DOMAIN, context={CONF_SOURCE: SOURCE_USER}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input=CONF_DATA,
     )
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
@@ -113,16 +143,7 @@ async def test_flow_reauth(hass: HomeAssistant, api) -> None:
 
     entry.add_to_hass(hass)
 
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={
-            CONF_SOURCE: SOURCE_REAUTH,
-            "entry_id": entry.entry_id,
-            "unique_id": entry.unique_id,
-        },
-        data=CONF_DATA,
-    )
-
+    result = await entry.start_reauth_flow(hass)
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
 

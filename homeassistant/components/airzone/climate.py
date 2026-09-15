@@ -1,8 +1,6 @@
 """Support for the Airzone climate."""
 
-from __future__ import annotations
-
-from typing import Any, Final
+from typing import Any, Final, override
 
 from aioairzone.common import OperationAction, OperationMode
 from aioairzone.const import (
@@ -27,6 +25,7 @@ from aioairzone.const import (
     AZD_TEMP_MAX,
     AZD_TEMP_MIN,
     AZD_TEMP_SET,
+    AZD_TEMP_STEP,
     AZD_TEMP_UNIT,
     AZD_ZONES,
 )
@@ -48,11 +47,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import AirzoneConfigEntry
-from .const import API_TEMPERATURE_STEP, TEMP_UNIT_LIB_TO_HASS
-from .coordinator import AirzoneUpdateCoordinator
+from .const import TEMP_UNIT_LIB_TO_HASS
+from .coordinator import AirzoneConfigEntry, AirzoneUpdateCoordinator
 from .entity import AirzoneZoneEntity
 
 BASE_FAN_SPEEDS: Final[dict[int, str]] = {
@@ -85,6 +83,7 @@ HVAC_MODE_LIB_TO_HASS: Final[dict[OperationMode, HVACMode]] = {
     OperationMode.HEATING: HVACMode.HEAT,
     OperationMode.FAN: HVACMode.FAN_ONLY,
     OperationMode.DRY: HVACMode.DRY,
+    OperationMode.AUX_HEATING: HVACMode.HEAT,
     OperationMode.AUTO: HVACMode.HEAT_COOL,
 }
 HVAC_MODE_HASS_TO_LIB: Final[dict[HVACMode, OperationMode]] = {
@@ -100,7 +99,7 @@ HVAC_MODE_HASS_TO_LIB: Final[dict[HVACMode, OperationMode]] = {
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: AirzoneConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Add Airzone climate from a config_entry."""
     coordinator = entry.runtime_data
@@ -135,7 +134,6 @@ class AirzoneClimate(AirzoneZoneEntity, ClimateEntity):
     _attr_name = None
     _speeds: dict[int, str] = {}
     _speeds_reverse: dict[str, int] = {}
-    _enable_turn_on_off_backwards_compatibility = False
 
     def __init__(
         self,
@@ -153,13 +151,14 @@ class AirzoneClimate(AirzoneZoneEntity, ClimateEntity):
             | ClimateEntityFeature.TURN_OFF
             | ClimateEntityFeature.TURN_ON
         )
-        self._attr_target_temperature_step = API_TEMPERATURE_STEP
+        self._attr_target_temperature_step = self.get_airzone_value(AZD_TEMP_STEP)
         self._attr_temperature_unit = TEMP_UNIT_LIB_TO_HASS[
             self.get_airzone_value(AZD_TEMP_UNIT)
         ]
-        self._attr_hvac_modes = [
+        _attr_hvac_modes = [
             HVAC_MODE_LIB_TO_HASS[mode] for mode in self.get_airzone_value(AZD_MODES)
         ]
+        self._attr_hvac_modes = list(dict.fromkeys(_attr_hvac_modes))
         if (
             self.get_airzone_value(AZD_SPEED) is not None
             and self.get_airzone_value(AZD_SPEEDS) is not None
@@ -193,6 +192,7 @@ class AirzoneClimate(AirzoneZoneEntity, ClimateEntity):
         self._speeds_reverse = {v: k for k, v in self._speeds.items()}
         self._attr_fan_modes = list(self._speeds_reverse)
 
+    @override
     async def async_turn_on(self) -> None:
         """Turn the entity on."""
         params = {
@@ -200,6 +200,7 @@ class AirzoneClimate(AirzoneZoneEntity, ClimateEntity):
         }
         await self._async_update_hvac_params(params)
 
+    @override
     async def async_turn_off(self) -> None:
         """Turn the entity off."""
         params = {
@@ -207,6 +208,7 @@ class AirzoneClimate(AirzoneZoneEntity, ClimateEntity):
         }
         await self._async_update_hvac_params(params)
 
+    @override
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         """Set fan mode."""
         params = {
@@ -214,6 +216,7 @@ class AirzoneClimate(AirzoneZoneEntity, ClimateEntity):
         }
         await self._async_update_hvac_params(params)
 
+    @override
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set hvac mode."""
         slave_raise = False
@@ -236,6 +239,7 @@ class AirzoneClimate(AirzoneZoneEntity, ClimateEntity):
                 f"Mode can't be changed on slave zone {self.entity_id}"
             )
 
+    @override
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
         params = {}
@@ -250,6 +254,7 @@ class AirzoneClimate(AirzoneZoneEntity, ClimateEntity):
             await self.async_set_hvac_mode(kwargs[ATTR_HVAC_MODE])
 
     @callback
+    @override
     def _handle_coordinator_update(self) -> None:
         """Update attributes when the coordinator updates."""
         self._async_update_attrs()
@@ -273,12 +278,18 @@ class AirzoneClimate(AirzoneZoneEntity, ClimateEntity):
         self._attr_min_temp = self.get_airzone_value(AZD_TEMP_MIN)
         if self.supported_features & ClimateEntityFeature.FAN_MODE:
             self._attr_fan_mode = self._speeds.get(self.get_airzone_value(AZD_SPEED))
-        if self.supported_features & ClimateEntityFeature.TARGET_TEMPERATURE_RANGE:
+        if (
+            self.supported_features & ClimateEntityFeature.TARGET_TEMPERATURE_RANGE
+            and self._attr_hvac_mode == HVACMode.HEAT_COOL
+        ):
             self._attr_target_temperature_high = self.get_airzone_value(
                 AZD_COOL_TEMP_SET
             )
             self._attr_target_temperature_low = self.get_airzone_value(
                 AZD_HEAT_TEMP_SET
             )
+            self._attr_target_temperature = None
         else:
+            self._attr_target_temperature_high = None
+            self._attr_target_temperature_low = None
             self._attr_target_temperature = self.get_airzone_value(AZD_TEMP_SET)

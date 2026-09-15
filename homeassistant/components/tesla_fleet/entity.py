@@ -1,39 +1,50 @@
 """Tesla Fleet parent entity class."""
 
 from abc import abstractmethod
-from typing import Any
+from typing import Any, override
 
-from tesla_fleet_api import EnergySpecific, VehicleSpecific
+from tesla_fleet_api.const import Scope
+from tesla_fleet_api.tesla.energysite import EnergySite
+from tesla_fleet_api.tesla.vehicle.fleet import VehicleFleet
 
+from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import (
+    TeslaFleetEnergySiteHistoryCoordinator,
     TeslaFleetEnergySiteInfoCoordinator,
     TeslaFleetEnergySiteLiveCoordinator,
     TeslaFleetVehicleDataCoordinator,
 )
+from .helpers import wake_up_vehicle
 from .models import TeslaFleetEnergyData, TeslaFleetVehicleData
 
 
-class TeslaFleetEntity(
+class TeslaFleetEntity[_ApiT: VehicleFleet | EnergySite](
     CoordinatorEntity[
         TeslaFleetVehicleDataCoordinator
         | TeslaFleetEnergySiteLiveCoordinator
+        | TeslaFleetEnergySiteHistoryCoordinator
         | TeslaFleetEnergySiteInfoCoordinator
     ]
 ):
     """Parent class for all TeslaFleet entities."""
 
     _attr_has_entity_name = True
+    read_only: bool
+    scoped: bool
+    api: _ApiT
 
     def __init__(
         self,
         coordinator: TeslaFleetVehicleDataCoordinator
         | TeslaFleetEnergySiteLiveCoordinator
+        | TeslaFleetEnergySiteHistoryCoordinator
         | TeslaFleetEnergySiteInfoCoordinator,
-        api: VehicleSpecific | EnergySpecific,
+        api: _ApiT,
         key: str,
     ) -> None:
         """Initialize common aspects of a TeslaFleet entity."""
@@ -44,6 +55,7 @@ class TeslaFleetEntity(
         self._async_update_attrs()
 
     @property
+    @override
     def available(self) -> bool:
         """Return if sensor is available."""
         return self.coordinator.last_update_success and self._attr_available
@@ -57,6 +69,12 @@ class TeslaFleetEntity(
         """Return a specific value from coordinator data."""
         return self.coordinator.data.get(key, default)
 
+    def get_number(self, key: str, default: float) -> float:
+        """Return a specific number from coordinator data."""
+        if isinstance(value := self.coordinator.data.get(key), (int, float)):
+            return value
+        return default
+
     @property
     def is_none(self) -> bool:
         """Return if the value is a literal None."""
@@ -67,6 +85,7 @@ class TeslaFleetEntity(
         """Return True if a specific value is in coordinator data."""
         return self.key in self.coordinator.data
 
+    @override
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         self._async_update_attrs()
@@ -76,8 +95,16 @@ class TeslaFleetEntity(
     def _async_update_attrs(self) -> None:
         """Update the attributes of the entity."""
 
+    def raise_for_read_only(self, scope: Scope) -> None:
+        """Raise an error if a scope is not available."""
+        if not self.scoped:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key=f"missing_scope_{scope.name.lower()}",
+            )
 
-class TeslaFleetVehicleEntity(TeslaFleetEntity):
+
+class TeslaFleetVehicleEntity(TeslaFleetEntity[VehicleFleet]):
     """Parent class for TeslaFleet Vehicle entities."""
 
     _last_update: int = 0
@@ -96,12 +123,17 @@ class TeslaFleetVehicleEntity(TeslaFleetEntity):
         super().__init__(data.coordinator, data.api, key)
 
     @property
+    @override
     def _value(self) -> Any | None:
         """Return a specific value from coordinator data."""
         return self.coordinator.data.get(self.key)
 
+    async def wake_up_if_asleep(self) -> None:
+        """Wake up the vehicle if its asleep."""
+        await wake_up_vehicle(self.vehicle)
 
-class TeslaFleetEnergyLiveEntity(TeslaFleetEntity):
+
+class TeslaFleetEnergyLiveEntity(TeslaFleetEntity[EnergySite]):
     """Parent class for TeslaFleet Energy Site Live entities."""
 
     def __init__(
@@ -116,7 +148,22 @@ class TeslaFleetEnergyLiveEntity(TeslaFleetEntity):
         super().__init__(data.live_coordinator, data.api, key)
 
 
-class TeslaFleetEnergyInfoEntity(TeslaFleetEntity):
+class TeslaFleetEnergyHistoryEntity(TeslaFleetEntity[EnergySite]):
+    """Parent class for TeslaFleet Energy Site History entities."""
+
+    def __init__(
+        self,
+        data: TeslaFleetEnergyData,
+        key: str,
+    ) -> None:
+        """Initialize common aspects of a Tesla Fleet Energy Site History entity."""
+        self._attr_unique_id = f"{data.id}-{key}"
+        self._attr_device_info = data.device
+
+        super().__init__(data.history_coordinator, data.api, key)
+
+
+class TeslaFleetEnergyInfoEntity(TeslaFleetEntity[EnergySite]):
     """Parent class for TeslaFleet Energy Site Info entities."""
 
     def __init__(
@@ -132,7 +179,7 @@ class TeslaFleetEnergyInfoEntity(TeslaFleetEntity):
 
 
 class TeslaFleetWallConnectorEntity(
-    TeslaFleetEntity, CoordinatorEntity[TeslaFleetEnergySiteLiveCoordinator]
+    TeslaFleetEntity[EnergySite], CoordinatorEntity[TeslaFleetEnergySiteLiveCoordinator]
 ):
     """Parent class for Tesla Fleet Wall Connector entities."""
 
@@ -159,14 +206,19 @@ class TeslaFleetWallConnectorEntity(
             identifiers={(DOMAIN, din)},
             manufacturer="Tesla",
             name="Wall Connector",
-            via_device=(DOMAIN, str(data.id)),
-            serial_number=din.split("-")[-1],
+            via_device_id=dr.async_get_device_id_by_identifier(
+                data.live_coordinator.hass,
+                (DOMAIN, str(data.id)),
+                config_entry_id=data.live_coordinator.config_entry.entry_id,
+            ),
+            serial_number=din.rsplit("-", maxsplit=1)[-1],
             model=model,
         )
 
         super().__init__(data.live_coordinator, data.api, key)
 
     @property
+    @override
     def _value(self) -> int:
         """Return a specific wall connector value from coordinator data."""
         return (

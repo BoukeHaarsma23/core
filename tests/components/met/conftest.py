@@ -5,6 +5,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Register the mark used to opt out of the autouse fixtures."""
+    config.addinivalue_line(
+        "markers", "disable_autouse_fixture: mark test to skip an autouse fixture"
+    )
+
+
 @pytest.fixture
 def mock_weather():
     """Mock weather data."""
@@ -17,8 +24,9 @@ def mock_weather():
             "pressure": 100,
             "humidity": 50,
             "wind_speed": 10,
-            "wind_bearing": "NE",
+            "wind_bearing": 90,
             "dew_point": 12.1,
+            "uv_index": 1.1,
         }
         mock_data.get_forecast.return_value = {}
         yield mock_data

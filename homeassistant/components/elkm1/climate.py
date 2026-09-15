@@ -1,8 +1,6 @@
 """Support for control of Elk-M1 connected thermostats."""
 
-from __future__ import annotations
-
-from typing import Any
+from typing import Any, override
 
 from elkm1_lib.const import ThermostatFan, ThermostatMode, ThermostatSetting
 from elkm1_lib.elements import Element
@@ -19,9 +17,10 @@ from homeassistant.components.climate import (
 )
 from homeassistant.const import PRECISION_WHOLE
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import ElkEntity, ElkM1ConfigEntry, create_elk_entities
+from . import ElkM1ConfigEntry
+from .entity import ElkEntity, create_elk_entities
 
 SUPPORT_HVAC = [
     HVACMode.OFF,
@@ -57,7 +56,7 @@ ELK_TO_HASS_FAN_MODES = {
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ElkM1ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Create the Elk-M1 thermostat platform."""
     elk_data = config_entry.runtime_data
@@ -75,7 +74,6 @@ class ElkThermostat(ElkEntity, ClimateEntity):
     _attr_precision = PRECISION_WHOLE
     _attr_supported_features = (
         ClimateEntityFeature.FAN_MODE
-        | ClimateEntityFeature.AUX_HEAT
         | ClimateEntityFeature.TARGET_TEMPERATURE_RANGE
         | ClimateEntityFeature.TURN_OFF
         | ClimateEntityFeature.TURN_ON
@@ -87,19 +85,21 @@ class ElkThermostat(ElkEntity, ClimateEntity):
     _attr_target_temperature_step = 1
     _attr_fan_modes = [FAN_AUTO, FAN_ON]
     _element: Thermostat
-    _enable_turn_on_off_backwards_compatibility = False
 
     @property
+    @override
     def temperature_unit(self) -> str:
         """Return the temperature unit."""
         return self._temperature_unit
 
     @property
+    @override
     def current_temperature(self) -> float | None:
         """Return the current temperature."""
         return self._element.current_temp
 
     @property
+    @override
     def target_temperature(self) -> float | None:
         """Return the temperature we are trying to reach."""
         if self._element.mode in (
@@ -107,31 +107,30 @@ class ElkThermostat(ElkEntity, ClimateEntity):
             ThermostatMode.EMERGENCY_HEAT,
         ):
             return self._element.heat_setpoint
-        if self._element.mode == ThermostatMode.COOL:
+        if self._element.mode is ThermostatMode.COOL:
             return self._element.cool_setpoint
         return None
 
     @property
+    @override
     def target_temperature_high(self) -> float | None:
         """Return the high target temperature."""
         return self._element.cool_setpoint
 
     @property
+    @override
     def target_temperature_low(self) -> float | None:
         """Return the low target temperature."""
         return self._element.heat_setpoint
 
     @property
+    @override
     def current_humidity(self) -> int | None:
         """Return the current humidity."""
         return self._element.humidity
 
     @property
-    def is_aux_heat(self) -> bool:
-        """Return if aux heater is on."""
-        return self._element.mode == ThermostatMode.EMERGENCY_HEAT
-
-    @property
+    @override
     def fan_mode(self) -> str | None:
         """Return the fan setting."""
         if self._element.fan is None:
@@ -144,24 +143,19 @@ class ElkThermostat(ElkEntity, ClimateEntity):
         if fan is not None:
             self._element.set(ThermostatSetting.FAN, fan)
 
+    @override
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set thermostat operation mode."""
         thermostat_mode, fan_mode = HASS_TO_ELK_HVAC_MODES[hvac_mode]
         self._elk_set(thermostat_mode, fan_mode)
 
-    async def async_turn_aux_heat_on(self) -> None:
-        """Turn auxiliary heater on."""
-        self._elk_set(ThermostatMode.EMERGENCY_HEAT, None)
-
-    async def async_turn_aux_heat_off(self) -> None:
-        """Turn auxiliary heater off."""
-        self._elk_set(ThermostatMode.HEAT, None)
-
+    @override
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         """Set new target fan mode."""
         thermostat_mode, elk_fan_mode = HASS_TO_ELK_FAN_MODES[fan_mode]
         self._elk_set(thermostat_mode, elk_fan_mode)
 
+    @override
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
         low_temp = kwargs.get(ATTR_TARGET_TEMP_LOW)
@@ -171,6 +165,7 @@ class ElkThermostat(ElkEntity, ClimateEntity):
         if high_temp is not None:
             self._element.set(ThermostatSetting.COOL_SETPOINT, round(high_temp))
 
+    @override
     def _element_changed(self, element: Element, changeset: Any) -> None:
         if self._element.mode is None:
             self._attr_hvac_mode = None
@@ -178,6 +173,6 @@ class ElkThermostat(ElkEntity, ClimateEntity):
             self._attr_hvac_mode = ELK_TO_HASS_HVAC_MODES[self._element.mode]
             if (
                 self._attr_hvac_mode == HVACMode.OFF
-                and self._element.fan == ThermostatFan.ON
+                and self._element.fan is ThermostatFan.ON
             ):
                 self._attr_hvac_mode = HVACMode.FAN_ONLY

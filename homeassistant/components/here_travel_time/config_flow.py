@@ -1,9 +1,8 @@
 """Config flow for HERE Travel Time integration."""
 
-from __future__ import annotations
-
+from collections.abc import Mapping
 import logging
-from typing import Any
+from typing import Any, override
 
 from here_routing import (
     HERERoutingApi,
@@ -13,24 +12,20 @@ from here_routing import (
     TransportMode,
 )
 from here_transit import HERETransitError
-import voluptuous as vol
+import probatio
 
 from homeassistant.config_entries import (
+    SOURCE_RECONFIGURE,
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlow,
 )
-from homeassistant.const import (
-    CONF_API_KEY,
-    CONF_LATITUDE,
-    CONF_LONGITUDE,
-    CONF_MODE,
-    CONF_NAME,
-)
+from homeassistant.const import CONF_API_KEY, CONF_LATITUDE, CONF_LONGITUDE, CONF_MODE
 from homeassistant.core import callback
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.selector import (
+    BooleanSelector,
     EntitySelector,
     LocationSelector,
     TimeSelector,
@@ -48,6 +43,7 @@ from .const import (
     CONF_ORIGIN_LATITUDE,
     CONF_ORIGIN_LONGITUDE,
     CONF_ROUTE_MODE,
+    CONF_TRAFFIC_MODE,
     DEFAULT_NAME,
     DOMAIN,
     ROUTE_MODE_FASTEST,
@@ -63,6 +59,7 @@ DEFAULT_OPTIONS = {
     CONF_ROUTE_MODE: ROUTE_MODE_FASTEST,
     CONF_ARRIVAL_TIME: None,
     CONF_DEPARTURE_TIME: None,
+    CONF_TRAFFIC_MODE: True,
 }
 
 
@@ -78,20 +75,17 @@ async def async_validate_api_key(api_key: str) -> None:
     )
 
 
-def get_user_step_schema(data: dict[str, Any]) -> vol.Schema:
+def get_user_step_schema(data: Mapping[str, Any]) -> probatio.Schema:
     """Get a populated schema or default."""
     travel_mode = data.get(CONF_MODE, TRAVEL_MODE_CAR)
     if travel_mode == "publicTransportTimeTable":
         travel_mode = TRAVEL_MODE_PUBLIC
-    return vol.Schema(
+    return probatio.Schema(
         {
-            vol.Optional(
-                CONF_NAME, default=data.get(CONF_NAME, DEFAULT_NAME)
-            ): cv.string,
-            vol.Required(CONF_API_KEY, default=data.get(CONF_API_KEY)): cv.string,
-            vol.Optional(
+            probatio.Required(CONF_API_KEY, default=data.get(CONF_API_KEY)): cv.string,
+            probatio.Optional(
                 CONF_MODE, default=data.get(CONF_MODE, TRAVEL_MODE_CAR)
-            ): vol.In(TRAVEL_MODES),
+            ): probatio.In(TRAVEL_MODES),
         }
     )
 
@@ -100,6 +94,7 @@ class HERETravelTimeConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for HERE Travel Time."""
 
     VERSION = 1
+    MINOR_VERSION = 2
 
     def __init__(self) -> None:
         """Init Config Flow."""
@@ -107,12 +102,14 @@ class HERETravelTimeConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
+    @override
     def async_get_options_flow(
         config_entry: ConfigEntry,
     ) -> HERETravelTimeOptionsFlow:
         """Get the options flow."""
-        return HERETravelTimeOptionsFlow(config_entry)
+        return HERETravelTimeOptionsFlow()
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -124,14 +121,24 @@ class HERETravelTimeConfigFlow(ConfigFlow, domain=DOMAIN):
                 await async_validate_api_key(user_input[CONF_API_KEY])
             except HERERoutingUnauthorizedError:
                 errors["base"] = "invalid_auth"
-            except (HERERoutingError, HERETransitError):
+            except HERERoutingError, HERETransitError:
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
             if not errors:
-                self._config = user_input
+                self._config[CONF_API_KEY] = user_input[CONF_API_KEY]
+                self._config[CONF_MODE] = user_input[CONF_MODE]
                 return await self.async_step_origin_menu()
         return self.async_show_form(
             step_id="user", data_schema=get_user_step_schema(user_input), errors=errors
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle reconfiguration."""
+        return self.async_show_form(
+            step_id="user",
+            data_schema=get_user_step_schema(self._get_reconfigure_entry().data),
         )
 
     async def async_step_origin_menu(self, _: None = None) -> ConfigFlowResult:
@@ -150,26 +157,27 @@ class HERETravelTimeConfigFlow(ConfigFlow, domain=DOMAIN):
             self._config[CONF_ORIGIN_LONGITUDE] = user_input[CONF_ORIGIN][
                 CONF_LONGITUDE
             ]
+            # Remove possible previous configuration using an entity_id
+            self._config.pop(CONF_ORIGIN_ENTITY_ID, None)
             return await self.async_step_destination_menu()
-        schema = vol.Schema(
+        schema = self.add_suggested_values_to_schema(
+            probatio.Schema(
+                {
+                    probatio.Required(
+                        CONF_ORIGIN,
+                    ): LocationSelector()
+                }
+            ),
             {
-                vol.Required(
-                    CONF_ORIGIN,
-                    default={
-                        CONF_LATITUDE: self.hass.config.latitude,
-                        CONF_LONGITUDE: self.hass.config.longitude,
-                    },
-                ): LocationSelector()
-            }
+                CONF_ORIGIN: {
+                    CONF_LATITUDE: self._config.get(CONF_ORIGIN_LATITUDE)
+                    or self.hass.config.latitude,
+                    CONF_LONGITUDE: self._config.get(CONF_ORIGIN_LONGITUDE)
+                    or self.hass.config.longitude,
+                }
+            },
         )
         return self.async_show_form(step_id="origin_coordinates", data_schema=schema)
-
-    async def async_step_destination_menu(self, _: None = None) -> ConfigFlowResult:
-        """Show the destination menu."""
-        return self.async_show_menu(
-            step_id="destination_menu",
-            menu_options=["destination_coordinates", "destination_entity"],
-        )
 
     async def async_step_origin_entity(
         self, user_input: dict[str, Any] | None = None
@@ -177,9 +185,28 @@ class HERETravelTimeConfigFlow(ConfigFlow, domain=DOMAIN):
         """Configure origin by using an entity."""
         if user_input is not None:
             self._config[CONF_ORIGIN_ENTITY_ID] = user_input[CONF_ORIGIN_ENTITY_ID]
+            # Remove possible previous configuration using coordinates
+            self._config.pop(CONF_ORIGIN_LATITUDE, None)
+            self._config.pop(CONF_ORIGIN_LONGITUDE, None)
             return await self.async_step_destination_menu()
-        schema = vol.Schema({vol.Required(CONF_ORIGIN_ENTITY_ID): EntitySelector()})
+        schema = self.add_suggested_values_to_schema(
+            probatio.Schema(
+                {
+                    probatio.Required(
+                        CONF_ORIGIN_ENTITY_ID,
+                    ): EntitySelector()
+                }
+            ),
+            {CONF_ORIGIN_ENTITY_ID: self._config.get(CONF_ORIGIN_ENTITY_ID)},
+        )
         return self.async_show_form(step_id="origin_entity", data_schema=schema)
+
+    async def async_step_destination_menu(self, _: None = None) -> ConfigFlowResult:
+        """Show the destination menu."""
+        return self.async_show_menu(
+            step_id="destination_menu",
+            menu_options=["destination_coordinates", "destination_entity"],
+        )
 
     async def async_step_destination_coordinates(
         self,
@@ -193,21 +220,34 @@ class HERETravelTimeConfigFlow(ConfigFlow, domain=DOMAIN):
             self._config[CONF_DESTINATION_LONGITUDE] = user_input[CONF_DESTINATION][
                 CONF_LONGITUDE
             ]
+            # Remove possible previous configuration using an entity_id
+            self._config.pop(CONF_DESTINATION_ENTITY_ID, None)
+            if self.source == SOURCE_RECONFIGURE:
+                return self.async_update_reload_and_abort(
+                    self._get_reconfigure_entry(),
+                    data=self._config,
+                )
             return self.async_create_entry(
-                title=self._config[CONF_NAME],
+                title=DEFAULT_NAME,
                 data=self._config,
                 options=DEFAULT_OPTIONS,
             )
-        schema = vol.Schema(
+        schema = self.add_suggested_values_to_schema(
+            probatio.Schema(
+                {
+                    probatio.Required(
+                        CONF_DESTINATION,
+                    ): LocationSelector()
+                }
+            ),
             {
-                vol.Required(
-                    CONF_DESTINATION,
-                    default={
-                        CONF_LATITUDE: self.hass.config.latitude,
-                        CONF_LONGITUDE: self.hass.config.longitude,
-                    },
-                ): LocationSelector()
-            }
+                CONF_DESTINATION: {
+                    CONF_LATITUDE: self._config.get(CONF_DESTINATION_LATITUDE)
+                    or self.hass.config.latitude,
+                    CONF_LONGITUDE: self._config.get(CONF_DESTINATION_LONGITUDE)
+                    or self.hass.config.longitude,
+                },
+            },
         )
         return self.async_show_form(
             step_id="destination_coordinates", data_schema=schema
@@ -222,13 +262,27 @@ class HERETravelTimeConfigFlow(ConfigFlow, domain=DOMAIN):
             self._config[CONF_DESTINATION_ENTITY_ID] = user_input[
                 CONF_DESTINATION_ENTITY_ID
             ]
+            # Remove possible previous configuration using coordinates
+            self._config.pop(CONF_DESTINATION_LATITUDE, None)
+            self._config.pop(CONF_DESTINATION_LONGITUDE, None)
+            if self.source == SOURCE_RECONFIGURE:
+                return self.async_update_reload_and_abort(
+                    self._get_reconfigure_entry(), data=self._config
+                )
             return self.async_create_entry(
-                title=self._config[CONF_NAME],
+                title=DEFAULT_NAME,
                 data=self._config,
                 options=DEFAULT_OPTIONS,
             )
-        schema = vol.Schema(
-            {vol.Required(CONF_DESTINATION_ENTITY_ID): EntitySelector()}
+        schema = self.add_suggested_values_to_schema(
+            probatio.Schema(
+                {
+                    probatio.Required(
+                        CONF_DESTINATION_ENTITY_ID,
+                    ): EntitySelector()
+                }
+            ),
+            {CONF_DESTINATION_ENTITY_ID: self._config.get(CONF_DESTINATION_ENTITY_ID)},
         )
         return self.async_show_form(step_id="destination_entity", data_schema=schema)
 
@@ -236,9 +290,8 @@ class HERETravelTimeConfigFlow(ConfigFlow, domain=DOMAIN):
 class HERETravelTimeOptionsFlow(OptionsFlow):
     """Handle HERE Travel Time options."""
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
+    def __init__(self) -> None:
         """Initialize HERE Travel Time options flow."""
-        self.config_entry = config_entry
         self._config: dict[str, Any] = {}
 
     async def async_step_init(
@@ -247,17 +300,35 @@ class HERETravelTimeOptionsFlow(OptionsFlow):
         """Manage the HERE Travel Time options."""
         if user_input is not None:
             self._config = user_input
-            return await self.async_step_time_menu()
+            if self._config[CONF_TRAFFIC_MODE]:
+                return await self.async_step_time_menu()
+            return self.async_create_entry(title="", data=self._config)
 
-        schema = vol.Schema(
+        schema = self.add_suggested_values_to_schema(
+            probatio.Schema(
+                {
+                    probatio.Optional(
+                        CONF_ROUTE_MODE,
+                        default=self.config_entry.options.get(
+                            CONF_ROUTE_MODE, DEFAULT_OPTIONS[CONF_ROUTE_MODE]
+                        ),
+                    ): probatio.In(ROUTE_MODES),
+                    probatio.Optional(
+                        CONF_TRAFFIC_MODE,
+                        default=self.config_entry.options.get(
+                            CONF_TRAFFIC_MODE, DEFAULT_OPTIONS[CONF_TRAFFIC_MODE]
+                        ),
+                    ): BooleanSelector(),
+                }
+            ),
             {
-                vol.Optional(
-                    CONF_ROUTE_MODE,
-                    default=self.config_entry.options.get(
-                        CONF_ROUTE_MODE, DEFAULT_OPTIONS[CONF_ROUTE_MODE]
-                    ),
-                ): vol.In(ROUTE_MODES),
-            }
+                CONF_ROUTE_MODE: self.config_entry.options.get(
+                    CONF_ROUTE_MODE, DEFAULT_OPTIONS[CONF_ROUTE_MODE]
+                ),
+                CONF_TRAFFIC_MODE: self.config_entry.options.get(
+                    CONF_TRAFFIC_MODE, DEFAULT_OPTIONS[CONF_TRAFFIC_MODE]
+                ),
+            },
         )
 
         return self.async_show_form(step_id="init", data_schema=schema)
@@ -283,8 +354,15 @@ class HERETravelTimeOptionsFlow(OptionsFlow):
             self._config[CONF_ARRIVAL_TIME] = user_input[CONF_ARRIVAL_TIME]
             return self.async_create_entry(title="", data=self._config)
 
-        schema = vol.Schema(
-            {vol.Required(CONF_ARRIVAL_TIME, default="00:00:00"): TimeSelector()}
+        schema = self.add_suggested_values_to_schema(
+            probatio.Schema(
+                {
+                    probatio.Required(
+                        CONF_ARRIVAL_TIME, default="00:00:00"
+                    ): TimeSelector()
+                }
+            ),
+            {CONF_ARRIVAL_TIME: "00:00:00"},
         )
 
         return self.async_show_form(step_id="arrival_time", data_schema=schema)
@@ -297,8 +375,15 @@ class HERETravelTimeOptionsFlow(OptionsFlow):
             self._config[CONF_DEPARTURE_TIME] = user_input[CONF_DEPARTURE_TIME]
             return self.async_create_entry(title="", data=self._config)
 
-        schema = vol.Schema(
-            {vol.Required(CONF_DEPARTURE_TIME, default="00:00:00"): TimeSelector()}
+        schema = self.add_suggested_values_to_schema(
+            probatio.Schema(
+                {
+                    probatio.Required(
+                        CONF_DEPARTURE_TIME, default="00:00:00"
+                    ): TimeSelector()
+                }
+            ),
+            {CONF_DEPARTURE_TIME: "00:00:00"},
         )
 
         return self.async_show_form(step_id="departure_time", data_schema=schema)

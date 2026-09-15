@@ -1,22 +1,50 @@
 """Support for TechnoVE switches."""
 
-from __future__ import annotations
-
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, override
 
-from technove import Station as TechnoVEStation, TechnoVE
+from technove import Station as TechnoVEStation
 
 from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import TechnoVEConfigEntry
-from .coordinator import TechnoVEDataUpdateCoordinator
+from .const import DOMAIN
+from .coordinator import TechnoVEConfigEntry, TechnoVEDataUpdateCoordinator
 from .entity import TechnoVEEntity
 from .helpers import technove_exception_handler
+
+PARALLEL_UPDATES = 1
+
+
+async def _set_charging_enabled(
+    coordinator: TechnoVEDataUpdateCoordinator, enabled: bool
+) -> None:
+    if coordinator.data.info.auto_charge:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="set_charging_enabled_on_auto_charge",
+        )
+    await coordinator.technove.set_charging_enabled(enabled=enabled)
+    await coordinator.async_request_refresh()
+
+
+async def _enable_charging(coordinator: TechnoVEDataUpdateCoordinator) -> None:
+    await _set_charging_enabled(coordinator, True)
+
+
+async def _disable_charging(coordinator: TechnoVEDataUpdateCoordinator) -> None:
+    await _set_charging_enabled(coordinator, False)
+
+
+async def _set_auto_charge(
+    coordinator: TechnoVEDataUpdateCoordinator, enabled: bool
+) -> None:
+    await coordinator.technove.set_auto_charge(enabled=enabled)
+    await coordinator.async_request_refresh()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -24,8 +52,8 @@ class TechnoVESwitchDescription(SwitchEntityDescription):
     """Describes TechnoVE binary sensor entity."""
 
     is_on_fn: Callable[[TechnoVEStation], bool]
-    turn_on_fn: Callable[[TechnoVE], Awaitable[dict[str, Any]]]
-    turn_off_fn: Callable[[TechnoVE], Awaitable[dict[str, Any]]]
+    turn_on_fn: Callable[[TechnoVEDataUpdateCoordinator], Coroutine[Any, Any, None]]
+    turn_off_fn: Callable[[TechnoVEDataUpdateCoordinator], Coroutine[Any, Any, None]]
 
 
 SWITCHES = [
@@ -34,8 +62,15 @@ SWITCHES = [
         translation_key="auto_charge",
         entity_category=EntityCategory.CONFIG,
         is_on_fn=lambda station: station.info.auto_charge,
-        turn_on_fn=lambda technoVE: technoVE.set_auto_charge(enabled=True),
-        turn_off_fn=lambda technoVE: technoVE.set_auto_charge(enabled=False),
+        turn_on_fn=lambda coordinator: _set_auto_charge(coordinator, True),
+        turn_off_fn=lambda coordinator: _set_auto_charge(coordinator, False),
+    ),
+    TechnoVESwitchDescription(
+        key="session_active",
+        translation_key="session_active",
+        is_on_fn=lambda station: station.info.is_session_active,
+        turn_on_fn=_enable_charging,
+        turn_off_fn=_disable_charging,
     ),
 ]
 
@@ -43,7 +78,7 @@ SWITCHES = [
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: TechnoVEConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up TechnoVE switch based on a config entry."""
 
@@ -68,19 +103,20 @@ class TechnoVESwitchEntity(TechnoVEEntity, SwitchEntity):
         super().__init__(coordinator, description.key)
 
     @property
+    @override
     def is_on(self) -> bool:
         """Return the state of the TechnoVE switch."""
 
         return self.entity_description.is_on_fn(self.coordinator.data)
 
     @technove_exception_handler
+    @override
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on the TechnoVE switch."""
-        await self.entity_description.turn_on_fn(self.coordinator.technove)
-        await self.coordinator.async_request_refresh()
+        await self.entity_description.turn_on_fn(self.coordinator)
 
     @technove_exception_handler
+    @override
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off the TechnoVE switch."""
-        await self.entity_description.turn_off_fn(self.coordinator.technove)
-        await self.coordinator.async_request_refresh()
+        await self.entity_description.turn_off_fn(self.coordinator)

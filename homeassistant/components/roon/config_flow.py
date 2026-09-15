@@ -2,15 +2,16 @@
 
 import asyncio
 import logging
+from typing import Any, override
 
+import probatio
 from roonapi import RoonApi, RoonDiscovery
-import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_API_KEY, CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 
 from .const import (
     AUTHENTICATE_TIMEOUT,
@@ -23,10 +24,10 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-DATA_SCHEMA = vol.Schema(
+DATA_SCHEMA = probatio.Schema(
     {
-        vol.Required("host"): cv.string,
-        vol.Required("port", default=9330): cv.port,
+        probatio.Required("host"): cv.string,
+        probatio.Required("port", default=9330): cv.port,
     }
 )
 
@@ -36,14 +37,14 @@ TIMEOUT = 120
 class RoonHub:
     """Interact with roon during config flow."""
 
-    def __init__(self, hass):
+    def __init__(self, hass: HomeAssistant) -> None:
         """Initialise the RoonHub."""
         self._hass = hass
 
-    async def discover(self):
+    async def discover(self) -> list[tuple[str, int]]:
         """Try and discover roon servers."""
 
-        def get_discovered_servers(discovery):
+        def get_discovered_servers(discovery: RoonDiscovery) -> list[tuple[str, int]]:
             servers = discovery.all()
             discovery.stop()
             return servers
@@ -75,7 +76,9 @@ class RoonHub:
             apis = [RoonApi(ROON_APPINFO, None, host, port, blocking_init=False)]
 
         while secs <= TIMEOUT:
-            # Roon can discover multiple devices - not all of which are proper servers, so try and authenticate with them all.
+            # Roon can discover multiple devices - not all of
+            # which are proper servers, so try and
+            # authenticate with them all.
             # The user will only enable one - so look for a valid token
             auth_api = [api for api in apis if api.token is not None]
 
@@ -93,7 +96,7 @@ class RoonHub:
         return (token, core_id, core_name)
 
 
-async def discover(hass):
+async def discover(hass: HomeAssistant) -> list[tuple[str, int]]:
     """Connect and authenticate home assistant."""
 
     hub = RoonHub(hass)
@@ -122,13 +125,16 @@ class RoonConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the Roon flow."""
         self._host = None
         self._port = None
-        self._servers = []
+        self._servers: list[tuple[str, int]] = []
 
-    async def async_step_user(self, user_input=None):
+    @override
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Get roon core details via discovery."""
 
         self._servers = await discover(self.hass)
@@ -139,9 +145,11 @@ class RoonConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return await self.async_step_fallback()
 
-    async def async_step_fallback(self, user_input=None):
+    async def async_step_fallback(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Get host and port details from the user."""
-        errors = {}
+        errors: dict[str, str] = {}
 
         if user_input is not None:
             self._host = user_input["host"]
@@ -152,7 +160,9 @@ class RoonConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="fallback", data_schema=DATA_SCHEMA, errors=errors
         )
 
-    async def async_step_link(self, user_input=None):
+    async def async_step_link(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle linking and authenticating with the roon server."""
         errors = {}
         if user_input is not None:

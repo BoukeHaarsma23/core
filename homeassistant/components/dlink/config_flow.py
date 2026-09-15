@@ -1,16 +1,14 @@
 """Config flow for the D-Link Power Plug integration."""
 
-from __future__ import annotations
-
 import logging
-from typing import Any
+from typing import Any, override
 
+import probatio
 from pyW215.pyW215 import SmartPlug
-import voluptuous as vol
 
-from homeassistant.components import dhcp
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
+from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
 from .const import CONF_USE_LEGACY_PROTOCOL, DEFAULT_NAME, DEFAULT_USERNAME, DOMAIN
 
@@ -24,8 +22,9 @@ class DLinkFlowHandler(ConfigFlow, domain=DOMAIN):
         """Initialize a D-Link Power Plug flow."""
         self.ip_address: str | None = None
 
+    @override
     async def async_step_dhcp(
-        self, discovery_info: dhcp.DhcpServiceInfo
+        self, discovery_info: DhcpServiceInfo
     ) -> ConfigFlowResult:
         """Handle dhcp discovery."""
         await self.async_set_unique_id(discovery_info.macaddress)
@@ -61,19 +60,20 @@ class DLinkFlowHandler(ConfigFlow, domain=DOMAIN):
         user_input = user_input or {}
         return self.async_show_form(
             step_id="confirm_discovery",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Optional(
+                    probatio.Optional(
                         CONF_USERNAME,
                         default=user_input.get(CONF_USERNAME, DEFAULT_USERNAME),
                     ): str,
-                    vol.Required(CONF_PASSWORD): str,
-                    vol.Required(CONF_USE_LEGACY_PROTOCOL): bool,
+                    probatio.Required(CONF_PASSWORD): str,
+                    probatio.Required(CONF_USE_LEGACY_PROTOCOL): bool,
                 }
             ),
             errors=errors,
         )
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -96,17 +96,17 @@ class DLinkFlowHandler(ConfigFlow, domain=DOMAIN):
         user_input = user_input or {}
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(
+                    probatio.Required(
                         CONF_HOST, default=user_input.get(CONF_HOST, self.ip_address)
                     ): str,
-                    vol.Optional(
+                    probatio.Optional(
                         CONF_USERNAME,
                         default=user_input.get(CONF_USERNAME, DEFAULT_USERNAME),
                     ): str,
-                    vol.Required(CONF_PASSWORD): str,
-                    vol.Required(CONF_USE_LEGACY_PROTOCOL): bool,
+                    probatio.Required(CONF_PASSWORD): str,
+                    probatio.Required(CONF_USE_LEGACY_PROTOCOL): bool,
                 }
             ),
             errors=errors,

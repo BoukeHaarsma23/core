@@ -1,12 +1,10 @@
 """Config flow for the Vallox integration."""
 
-from __future__ import annotations
-
 import logging
-from typing import Any
+from typing import Any, override
 
+import probatio
 from vallox_websocket_api import Vallox, ValloxApiException
-import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_NAME
@@ -18,9 +16,9 @@ from .const import DEFAULT_NAME, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-CONFIG_SCHEMA = vol.Schema(
+CONFIG_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_HOST): str,
+        probatio.Required(CONF_HOST): str,
     }
 )
 
@@ -40,6 +38,7 @@ class ValloxConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -86,20 +85,18 @@ class ValloxConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle reconfiguration of the Vallox device host address."""
-        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
-        assert entry
-
+        reconfigure_entry = self._get_reconfigure_entry()
         if not user_input:
             return self.async_show_form(
                 step_id="reconfigure",
                 data_schema=self.add_suggested_values_to_schema(
-                    CONFIG_SCHEMA, {CONF_HOST: entry.data.get(CONF_HOST)}
+                    CONFIG_SCHEMA, {CONF_HOST: reconfigure_entry.data.get(CONF_HOST)}
                 ),
             )
 
         updated_host = user_input[CONF_HOST]
 
-        if entry.data.get(CONF_HOST) != updated_host:
+        if reconfigure_entry.data.get(CONF_HOST) != updated_host:
             self._async_abort_entries_match({CONF_HOST: updated_host})
 
         errors: dict[str, str] = {}
@@ -110,14 +107,12 @@ class ValloxConfigFlow(ConfigFlow, domain=DOMAIN):
             errors[CONF_HOST] = "invalid_host"
         except ValloxApiException:
             errors[CONF_HOST] = "cannot_connect"
-        except Exception:  # pylint: disable=broad-except
+        except Exception:
             _LOGGER.exception("Unexpected exception")
             errors[CONF_HOST] = "unknown"
         else:
             return self.async_update_reload_and_abort(
-                entry,
-                data={**entry.data, CONF_HOST: updated_host},
-                reason="reconfigure_successful",
+                reconfigure_entry, data_updates={CONF_HOST: updated_host}
             )
 
         return self.async_show_form(

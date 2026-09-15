@@ -1,13 +1,12 @@
 """Support for getting the disk temperature of a host."""
 
-from __future__ import annotations
-
 from datetime import timedelta
 import logging
 import socket
-from telnetlib import Telnet  # pylint: disable=deprecated-module
+from typing import Any, override
 
-import voluptuous as vol
+import probatio
+from telnetlib import Telnet  # pylint: disable=deprecated-module
 
 from homeassistant.components.sensor import (
     PLATFORM_SCHEMA as SENSOR_PLATFORM_SCHEMA,
@@ -15,6 +14,7 @@ from homeassistant.components.sensor import (
     SensorEntity,
 )
 from homeassistant.const import (
+    ATTR_MODEL,
     CONF_DISKS,
     CONF_HOST,
     CONF_NAME,
@@ -22,14 +22,13 @@ from homeassistant.const import (
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 _LOGGER = logging.getLogger(__name__)
 
 ATTR_DEVICE = "device"
-ATTR_MODEL = "model"
 
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 7634
@@ -40,10 +39,12 @@ SCAN_INTERVAL = timedelta(minutes=1)
 
 PLATFORM_SCHEMA = SENSOR_PLATFORM_SCHEMA.extend(
     {
-        vol.Optional(CONF_DISKS, default=[]): vol.All(cv.ensure_list, [cv.string]),
-        vol.Optional(CONF_HOST, default=DEFAULT_HOST): cv.string,
-        vol.Optional(CONF_PORT, default=DEFAULT_PORT): cv.port,
-        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
+        probatio.Optional(CONF_DISKS, default=[]): probatio.All(
+            cv.ensure_list, [cv.string]
+        ),
+        probatio.Optional(CONF_HOST, default=DEFAULT_HOST): cv.string,
+        probatio.Optional(CONF_PORT, default=DEFAULT_PORT): cv.port,
+        probatio.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
     }
 )
 
@@ -82,10 +83,12 @@ class HddTempSensor(SensorEntity):
         self._details = None
 
     @property
-    def extra_state_attributes(self):
+    @override
+    def extra_state_attributes(self) -> dict[str, Any] | None:
         """Return the state attributes of the sensor."""
         if self._details is not None:
             return {ATTR_DEVICE: self._details[0], ATTR_MODEL: self._details[1]}
+        return None
 
     def update(self) -> None:
         """Get the latest data from HDDTemp daemon and updates the state."""

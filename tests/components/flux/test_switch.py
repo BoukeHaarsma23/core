@@ -1,5 +1,6 @@
 """The tests for the Flux switch platform."""
 
+from datetime import date, datetime
 from unittest.mock import patch
 
 from freezegun import freeze_time
@@ -16,7 +17,7 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant, State
 from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
-import homeassistant.util.dt as dt_util
+from homeassistant.util import dt as dt_util
 
 from tests.common import (
     assert_setup_component,
@@ -32,6 +33,15 @@ from tests.components.light.common import MockLight
 async def set_utc(hass: HomeAssistant) -> None:
     """Set timezone to UTC."""
     await hass.config.async_set_time_zone("UTC")
+
+
+@pytest.fixture
+def ignore_missing_translations() -> str | list[str]:
+    """Ignore specific missing translations."""
+    return [
+        "component.switch.services.flux_update.name",
+        "component.switch.services.flux_update.description",
+    ]
 
 
 async def test_valid_config(hass: HomeAssistant) -> None:
@@ -154,6 +164,10 @@ async def test_valid_config_no_name(hass: HomeAssistant) -> None:
         await hass.async_block_till_done()
 
 
+@pytest.mark.parametrize(
+    "ignore_missing_translations",
+    [[]],
+)
 async def test_invalid_config_no_lights(hass: HomeAssistant) -> None:
     """Test configuration."""
     with assert_setup_component(0, "switch"):
@@ -187,7 +201,9 @@ async def test_flux_when_switch_is_off(
     sunset_time = test_time.replace(hour=17, minute=0, second=0)
     sunrise_time = test_time.replace(hour=5, minute=0, second=0)
 
-    def event_date(hass, event, now=None):
+    def event_date(
+        hass: HomeAssistant, event: str, now: date | datetime | None = None
+    ) -> datetime | None:
         if event == SUN_EVENT_SUNRISE:
             return sunrise_time
         return sunset_time
@@ -242,7 +258,9 @@ async def test_flux_before_sunrise(
     sunset_time = test_time.replace(hour=17, minute=0, second=0)
     sunrise_time = test_time.replace(hour=5, minute=0, second=5)
 
-    def event_date(hass, event, now=None):
+    def event_date(
+        hass: HomeAssistant, event: str, now: date | datetime | None = None
+    ) -> datetime | None:
         if event == SUN_EVENT_SUNRISE:
             return sunrise_time
         return sunset_time
@@ -364,7 +382,9 @@ async def test_flux_after_sunrise_before_sunset(
     sunset_time = test_time.replace(hour=17, minute=0, second=0)
     sunrise_time = test_time.replace(hour=5, minute=0, second=0)
 
-    def event_date(hass, event, now=None):
+    def event_date(
+        hass: HomeAssistant, event: str, now: date | datetime | None = None
+    ) -> datetime | None:
         if event == SUN_EVENT_SUNRISE:
             return sunrise_time
         return sunset_time
@@ -426,7 +446,9 @@ async def test_flux_after_sunset_before_stop(
     sunset_time = test_time.replace(hour=17, minute=0, second=0)
     sunrise_time = test_time.replace(hour=5, minute=0, second=0)
 
-    def event_date(hass, event, now=None):
+    def event_date(
+        hass: HomeAssistant, event: str, now: date | datetime | None = None
+    ) -> datetime | None:
         if event == SUN_EVENT_SUNRISE:
             return sunrise_time
         return sunset_time
@@ -489,7 +511,9 @@ async def test_flux_after_stop_before_sunrise(
     sunset_time = test_time.replace(hour=17, minute=0, second=0)
     sunrise_time = test_time.replace(hour=5, minute=0, second=0)
 
-    def event_date(hass, event, now=None):
+    def event_date(
+        hass: HomeAssistant, event: str, now: date | datetime | None = None
+    ) -> datetime | None:
         if event == SUN_EVENT_SUNRISE:
             return sunrise_time
         return sunset_time
@@ -551,7 +575,9 @@ async def test_flux_with_custom_start_stop_times(
     sunset_time = test_time.replace(hour=17, minute=0, second=0)
     sunrise_time = test_time.replace(hour=5, minute=0, second=0)
 
-    def event_date(hass, event, now=None):
+    def event_date(
+        hass: HomeAssistant, event: str, now: date | datetime | None = None
+    ) -> datetime | None:
         if event == SUN_EVENT_SUNRISE:
             return sunrise_time
         return sunset_time
@@ -618,7 +644,9 @@ async def test_flux_before_sunrise_stop_next_day(
     sunset_time = test_time.replace(hour=17, minute=0, second=0)
     sunrise_time = test_time.replace(hour=5, minute=0, second=0)
 
-    def event_date(hass, event, now=None):
+    def event_date(
+        hass: HomeAssistant, event: str, now: date | datetime | None = None
+    ) -> datetime | None:
         if event == SUN_EVENT_SUNRISE:
             return sunrise_time
         return sunset_time
@@ -684,7 +712,9 @@ async def test_flux_after_sunrise_before_sunset_stop_next_day(
     sunset_time = test_time.replace(hour=17, minute=0, second=0)
     sunrise_time = test_time.replace(hour=5, minute=0, second=0)
 
-    def event_date(hass, event, now=None):
+    def event_date(
+        hass: HomeAssistant, event: str, now: date | datetime | None = None
+    ) -> datetime | None:
         if event == SUN_EVENT_SUNRISE:
             return sunrise_time
         return sunset_time
@@ -750,7 +780,9 @@ async def test_flux_after_sunset_before_midnight_stop_next_day(
     sunset_time = test_time.replace(hour=17, minute=0, second=0)
     sunrise_time = test_time.replace(hour=5, minute=0, second=0)
 
-    def event_date(hass, event, now=None):
+    def event_date(
+        hass: HomeAssistant, event: str, now: date | datetime | None = None
+    ) -> datetime | None:
         if event == SUN_EVENT_SUNRISE:
             return sunrise_time
         return sunset_time
@@ -816,7 +848,9 @@ async def test_flux_after_sunset_after_midnight_stop_next_day(
     sunset_time = test_time.replace(hour=17, minute=0, second=0)
     sunrise_time = test_time.replace(hour=5, minute=0, second=0)
 
-    def event_date(hass, event, now=None):
+    def event_date(
+        hass: HomeAssistant, event: str, now: date | datetime | None = None
+    ) -> datetime | None:
         if event == SUN_EVENT_SUNRISE:
             return sunrise_time
         return sunset_time
@@ -882,7 +916,9 @@ async def test_flux_after_stop_before_sunrise_stop_next_day(
     sunset_time = test_time.replace(hour=17, minute=0, second=0)
     sunrise_time = test_time.replace(hour=5, minute=0, second=0)
 
-    def event_date(hass, event, now=None):
+    def event_date(
+        hass: HomeAssistant, event: str, now: date | datetime | None = None
+    ) -> datetime | None:
         if event == SUN_EVENT_SUNRISE:
             return sunrise_time
         return sunset_time
@@ -945,7 +981,9 @@ async def test_flux_with_custom_colortemps(
     sunset_time = test_time.replace(hour=17, minute=0, second=0)
     sunrise_time = test_time.replace(hour=5, minute=0, second=0)
 
-    def event_date(hass, event, now=None):
+    def event_date(
+        hass: HomeAssistant, event: str, now: date | datetime | None = None
+    ) -> datetime | None:
         if event == SUN_EVENT_SUNRISE:
             return sunrise_time
         return sunset_time
@@ -1010,7 +1048,9 @@ async def test_flux_with_custom_brightness(
     sunset_time = test_time.replace(hour=17, minute=0, second=0)
     sunrise_time = test_time.replace(hour=5, minute=0, second=0)
 
-    def event_date(hass, event, now=None):
+    def event_date(
+        hass: HomeAssistant, event: str, now: date | datetime | None = None
+    ) -> datetime | None:
         if event == SUN_EVENT_SUNRISE:
             return sunrise_time
         return sunset_time
@@ -1091,7 +1131,9 @@ async def test_flux_with_multiple_lights(
     sunset_time = test_time.replace(hour=17, minute=0, second=0)
     sunrise_time = test_time.replace(hour=5, minute=0, second=0)
 
-    def event_date(hass, event, now=None):
+    def event_date(
+        hass: HomeAssistant, event: str, now: date | datetime | None = None
+    ) -> datetime | None:
         if event == SUN_EVENT_SUNRISE:
             return sunrise_time
         return sunset_time
@@ -1135,7 +1177,7 @@ async def test_flux_with_multiple_lights(
     assert call.data[light.ATTR_XY_COLOR] == [0.46, 0.376]
 
 
-async def test_flux_with_mired(
+async def test_flux_with_temp(
     hass: HomeAssistant,
     mock_light_entities: list[MockLight],
 ) -> None:
@@ -1158,7 +1200,9 @@ async def test_flux_with_mired(
     sunset_time = test_time.replace(hour=17, minute=0, second=0)
     sunrise_time = test_time.replace(hour=5, minute=0, second=0)
 
-    def event_date(hass, event, now=None):
+    def event_date(
+        hass: HomeAssistant, event: str, now: date | datetime | None = None
+    ) -> datetime | None:
         if event == SUN_EVENT_SUNRISE:
             return sunrise_time
         return sunset_time
@@ -1193,7 +1237,7 @@ async def test_flux_with_mired(
         async_fire_time_changed(hass, test_time)
         await hass.async_block_till_done()
     call = turn_on_calls[-1]
-    assert call.data[light.ATTR_COLOR_TEMP] == 269
+    assert call.data[light.ATTR_COLOR_TEMP_KELVIN] == 3708
 
 
 async def test_flux_with_rgb(
@@ -1219,7 +1263,9 @@ async def test_flux_with_rgb(
     sunset_time = test_time.replace(hour=17, minute=0, second=0)
     sunrise_time = test_time.replace(hour=5, minute=0, second=0)
 
-    def event_date(hass, event, now=None):
+    def event_date(
+        hass: HomeAssistant, event: str, date: date | datetime | None = None
+    ) -> datetime | None:
         if event == SUN_EVENT_SUNRISE:
             return sunrise_time
         return sunset_time

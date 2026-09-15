@@ -1,17 +1,18 @@
 """Config flow for SiteSage Emonitor integration."""
 
 import logging
+from typing import Any, override
 
 from aioemonitor import Emonitor
 import aiohttp
-import voluptuous as vol
+import probatio
 
-from homeassistant.components import dhcp
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import aiohttp_client
 from homeassistant.helpers.device_registry import format_mac
+from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
 from . import name_short_mac
 from .const import DOMAIN
@@ -33,12 +34,16 @@ class EmonitorConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    def __init__(self):
-        """Initialize Emonitor ConfigFlow."""
-        self.discovered_ip = None
-        self.discovered_info = None
+    discovered_info: dict[str, str]
 
-    async def async_step_user(self, user_input=None):
+    def __init__(self) -> None:
+        """Initialize Emonitor ConfigFlow."""
+        self.discovered_ip: str | None = None
+
+    @override
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle the initial step."""
         errors = {}
         if user_input is not None:
@@ -58,14 +63,15 @@ class EmonitorConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
-                {vol.Required("host", default=self.discovered_ip): str}
+            data_schema=probatio.Schema(
+                {probatio.Required("host", default=self.discovered_ip): str}
             ),
             errors=errors,
         )
 
+    @override
     async def async_step_dhcp(
-        self, discovery_info: dhcp.DhcpServiceInfo
+        self, discovery_info: DhcpServiceInfo
     ) -> ConfigFlowResult:
         """Handle dhcp discovery."""
         self.discovered_ip = discovery_info.ip
@@ -77,15 +83,18 @@ class EmonitorConfigFlow(ConfigFlow, domain=DOMAIN):
             self.discovered_info = await fetch_mac_and_title(
                 self.hass, self.discovered_ip
             )
-        except Exception as ex:  # noqa: BLE001
+        except Exception as ex:
             _LOGGER.debug(
                 "Unable to fetch status, falling back to manual entry", exc_info=ex
             )
             return await self.async_step_user()
         return await self.async_step_confirm()
 
-    async def async_step_confirm(self, user_input=None):
+    async def async_step_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Attempt to confirm."""
+        assert self.discovered_ip is not None
         if user_input is not None:
             return self.async_create_entry(
                 title=self.discovered_info["title"],

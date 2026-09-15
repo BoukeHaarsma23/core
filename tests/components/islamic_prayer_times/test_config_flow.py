@@ -3,13 +3,13 @@
 import pytest
 
 from homeassistant import config_entries
-from homeassistant.components import islamic_prayer_times
 from homeassistant.components.islamic_prayer_times.const import (
     CONF_CALC_METHOD,
     CONF_LAT_ADJ_METHOD,
     CONF_MIDNIGHT_MODE,
     CONF_SCHOOL,
     DOMAIN,
+    NAME,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
@@ -24,7 +24,7 @@ pytestmark = pytest.mark.usefixtures("mock_setup_entry")
 async def test_flow_works(hass: HomeAssistant) -> None:
     """Test user config."""
     result = await hass.config_entries.flow.async_init(
-        islamic_prayer_times.DOMAIN, context={"source": config_entries.SOURCE_USER}
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
@@ -35,7 +35,7 @@ async def test_flow_works(hass: HomeAssistant) -> None:
     await hass.async_block_till_done()
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["title"] == "Home"
+    assert result["title"] == NAME
 
 
 async def test_options(hass: HomeAssistant) -> None:
@@ -76,7 +76,7 @@ async def test_integration_already_configured(hass: HomeAssistant) -> None:
     )
     entry.add_to_hass(hass)
     result = await hass.config_entries.flow.async_init(
-        islamic_prayer_times.DOMAIN, context={"source": config_entries.SOURCE_USER}
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"

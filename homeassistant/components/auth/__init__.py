@@ -123,8 +123,6 @@ that link accounts with other cloud providers using LocalOAuth2Implementation
 as part of a config flow.
 """
 
-from __future__ import annotations
-
 import asyncio
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -135,7 +133,7 @@ import uuid
 
 from aiohttp import web
 from multidict import MultiDictProxy
-import voluptuous as vol
+import probatio
 
 from homeassistant.auth import InvalidAuthError
 from homeassistant.auth.models import (
@@ -157,8 +155,8 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.config_entry_oauth2_flow import OAuth2AuthorizeCallbackView
 from homeassistant.helpers.typing import ConfigType
-from homeassistant.loader import bind_hass
 from homeassistant.util import dt as dt_util
+from homeassistant.util.hass_dict import HassKey
 
 from . import indieauth, login_flow, mfa_setup_flow
 
@@ -166,25 +164,24 @@ DOMAIN = "auth"
 
 type StoreResultType = Callable[[str, Credentials], str]
 type RetrieveResultType = Callable[[str, str], Credentials | None]
-
+DATA_STORE: HassKey[StoreResultType] = HassKey(DOMAIN)
 CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 
 DELETE_CURRENT_TOKEN_DELAY = 2
 
 
-@bind_hass
 def create_auth_code(
     hass: HomeAssistant, client_id: str, credential: Credentials
 ) -> str:
     """Create an authorization code to fetch tokens."""
-    return cast(StoreResultType, hass.data[DOMAIN])(client_id, credential)
+    return hass.data[DATA_STORE](client_id, credential)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Component to allow users to login."""
     store_result, retrieve_result = _create_auth_code_store()
 
-    hass.data[DOMAIN] = store_result
+    hass.data[DATA_STORE] = store_result
 
     hass.http.register_view(TokenView(retrieve_result))
     hass.http.register_view(RevokeTokenView())
@@ -418,7 +415,7 @@ class LinkUserView(HomeAssistantView):
         """Initialize the link user view."""
         self._retrieve_credentials = retrieve_credentials
 
-    @RequestDataValidator(vol.Schema({"code": str, "client_id": str}))
+    @RequestDataValidator(probatio.Schema({"code": str, "client_id": str}))
     async def post(self, request: web.Request, data: dict[str, Any]) -> web.Response:
         """Link a user."""
         hass = request.app[KEY_HASS]
@@ -481,7 +478,7 @@ def _create_auth_code_store() -> tuple[StoreResultType, RetrieveResultType]:
     return store_result, retrieve_result
 
 
-@websocket_api.websocket_command({vol.Required("type"): "auth/current_user"})
+@websocket_api.websocket_command({probatio.Required("type"): "auth/current_user"})
 @websocket_api.ws_require_user()
 @websocket_api.async_response
 async def websocket_current_user(
@@ -521,10 +518,10 @@ async def websocket_current_user(
 
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "auth/long_lived_access_token",
-        vol.Required("lifespan"): int,  # days
-        vol.Required("client_name"): str,
-        vol.Optional("client_icon"): str,
+        probatio.Required("type"): "auth/long_lived_access_token",
+        probatio.Required("lifespan"): int,  # days
+        probatio.Required("client_name"): str,
+        probatio.Optional("client_icon"): str,
     }
 )
 @websocket_api.ws_require_user()
@@ -550,7 +547,7 @@ async def websocket_create_long_lived_access_token(
     connection.send_result(msg["id"], access_token)
 
 
-@websocket_api.websocket_command({vol.Required("type"): "auth/refresh_tokens"})
+@websocket_api.websocket_command({probatio.Required("type"): "auth/refresh_tokens"})
 @websocket_api.ws_require_user()
 @callback
 def websocket_refresh_tokens(
@@ -592,8 +589,8 @@ def websocket_refresh_tokens(
 @callback
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "auth/delete_refresh_token",
-        vol.Required("refresh_token_id"): str,
+        probatio.Required("type"): "auth/delete_refresh_token",
+        probatio.Required("refresh_token_id"): str,
     }
 )
 @websocket_api.ws_require_user()
@@ -615,9 +612,9 @@ def websocket_delete_refresh_token(
 @callback
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "auth/delete_all_refresh_tokens",
-        vol.Optional("token_type"): cv.string,
-        vol.Optional("delete_current_token", default=True): bool,
+        probatio.Required("type"): "auth/delete_all_refresh_tokens",
+        probatio.Optional("token_type"): cv.string,
+        probatio.Optional("delete_current_token", default=True): bool,
     }
 )
 @websocket_api.ws_require_user()
@@ -625,7 +622,7 @@ def websocket_delete_all_refresh_tokens(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Handle delete all refresh tokens request."""
-    current_refresh_token: RefreshToken
+    current_refresh_token: RefreshToken | None = None
     remove_failed = False
     token_type = msg.get("token_type")
     delete_current_token = msg.get("delete_current_token")
@@ -653,7 +650,7 @@ def websocket_delete_all_refresh_tokens(
     else:
         connection.send_result(msg["id"], {})
 
-    async def _delete_current_token_soon() -> None:
+    async def _delete_current_token_soon(current_refresh_token: RefreshToken) -> None:
         """Delete the current token after a delay.
 
         We do not want to delete the current token immediately as it will
@@ -674,20 +671,22 @@ def websocket_delete_all_refresh_tokens(
             # the token right away.
             hass.auth.async_remove_refresh_token(current_refresh_token)
 
-    if delete_current_token and (
-        not limit_token_types or current_refresh_token.token_type == token_type
+    if (
+        delete_current_token
+        and current_refresh_token
+        and (not limit_token_types or current_refresh_token.token_type == token_type)
     ):
         # Deleting the token will close the connection so we need
         # to do it with a delay in a tracked task to ensure it still
         # happens if Home Assistant is shutting down.
-        hass.async_create_task(_delete_current_token_soon())
+        hass.async_create_task(_delete_current_token_soon(current_refresh_token))
 
 
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "auth/sign_path",
-        vol.Required("path"): str,
-        vol.Optional("expires", default=30): int,
+        probatio.Required("type"): "auth/sign_path",
+        probatio.Required("path"): str,
+        probatio.Optional("expires", default=30): int,
     }
 )
 @websocket_api.ws_require_user()
@@ -713,9 +712,9 @@ def websocket_sign_path(
 @callback
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "auth/refresh_token_set_expiry",
-        vol.Required("refresh_token_id"): str,
-        vol.Required("enable_expiry"): bool,
+        probatio.Required("type"): "auth/refresh_token_set_expiry",
+        probatio.Required("refresh_token_id"): str,
+        probatio.Required("enable_expiry"): bool,
     }
 )
 @websocket_api.ws_require_user()

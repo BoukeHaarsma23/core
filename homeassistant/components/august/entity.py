@@ -1,6 +1,7 @@
 """Base class for August entity."""
 
 from abc import abstractmethod
+from typing import override
 
 from yalexs.activity import Activity, ActivityType
 from yalexs.doorbell import Doorbell, DoorbellDetail
@@ -20,7 +21,7 @@ from .const import MANUFACTURER
 DEVICE_TYPES = ["keypad", "lock", "camera", "doorbell", "door", "bell"]
 
 
-class AugustEntityMixin(Entity):
+class AugustEntity(Entity):
     """Base implementation for August device."""
 
     _attr_should_poll = False
@@ -72,6 +73,7 @@ class AugustEntityMixin(Entity):
     def _update_from_data(self) -> None:
         """Update the entity state from the data object."""
 
+    @override
     async def async_added_to_hass(self) -> None:
         """Subscribe to updates."""
         self.async_on_remove(
@@ -87,7 +89,7 @@ class AugustEntityMixin(Entity):
         self._update_from_data()
 
 
-class AugustDescriptionEntity(AugustEntityMixin):
+class AugustDescriptionEntity(AugustEntity):
     """An August entity with a description."""
 
     def __init__(

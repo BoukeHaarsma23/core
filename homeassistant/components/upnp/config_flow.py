@@ -1,24 +1,26 @@
 """Config flow for UPNP."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any, cast, override
 from urllib.parse import urlparse
 
-import voluptuous as vol
+import probatio
 
 from homeassistant.components import ssdp
-from homeassistant.components.ssdp import SsdpServiceInfo
 from homeassistant.config_entries import (
     SOURCE_IGNORE,
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
-    OptionsFlow,
-    OptionsFlowWithConfigEntry,
+    OptionsFlowWithReload,
 )
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.service_info.ssdp import (
+    ATTR_UPNP_DEVICE_TYPE,
+    ATTR_UPNP_FRIENDLY_NAME,
+    ATTR_UPNP_MODEL_NAME,
+    SsdpServiceInfo,
+)
 
 from .const import (
     CONFIG_ENTRY_FORCE_POLL,
@@ -38,17 +40,17 @@ from .const import (
 from .device import async_get_mac_address_from_host, get_preferred_location
 
 
-def _friendly_name_from_discovery(discovery_info: ssdp.SsdpServiceInfo) -> str:
+def _friendly_name_from_discovery(discovery_info: SsdpServiceInfo) -> str:
     """Extract user-friendly name from discovery."""
     return cast(
         str,
-        discovery_info.upnp.get(ssdp.ATTR_UPNP_FRIENDLY_NAME)
-        or discovery_info.upnp.get(ssdp.ATTR_UPNP_MODEL_NAME)
+        discovery_info.upnp.get(ATTR_UPNP_FRIENDLY_NAME)
+        or discovery_info.upnp.get(ATTR_UPNP_MODEL_NAME)
         or discovery_info.ssdp_headers.get("_host", ""),
     )
 
 
-def _is_complete_discovery(discovery_info: ssdp.SsdpServiceInfo) -> bool:
+def _is_complete_discovery(discovery_info: SsdpServiceInfo) -> bool:
     """Test if discovery is complete and usable."""
     return bool(
         discovery_info.ssdp_udn
@@ -60,7 +62,7 @@ def _is_complete_discovery(discovery_info: ssdp.SsdpServiceInfo) -> bool:
 
 async def _async_discovered_igd_devices(
     hass: HomeAssistant,
-) -> list[ssdp.SsdpServiceInfo]:
+) -> list[SsdpServiceInfo]:
     """Discovery IGD devices."""
     return await ssdp.async_get_discovery_info_by_st(
         hass, ST_IGD_V1
@@ -77,10 +79,10 @@ async def _async_mac_address_from_discovery(
     return await async_get_mac_address_from_host(hass, host)
 
 
-def _is_igd_device(discovery_info: ssdp.SsdpServiceInfo) -> bool:
+def _is_igd_device(discovery_info: SsdpServiceInfo) -> bool:
     """Test if discovery is a complete IGD device."""
     root_device_info = discovery_info.upnp
-    return root_device_info.get(ssdp.ATTR_UPNP_DEVICE_TYPE) in {ST_IGD_V1, ST_IGD_V2}
+    return root_device_info.get(ATTR_UPNP_DEVICE_TYPE) in {ST_IGD_V1, ST_IGD_V2}
 
 
 class UpnpFlowHandler(ConfigFlow, domain=DOMAIN):
@@ -89,14 +91,18 @@ class UpnpFlowHandler(ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     # Paths:
-    # 1: ssdp(discovery_info) --> ssdp_confirm(None) --> ssdp_confirm({}) --> create_entry()
+    # 1: ssdp(discovery_info) --> ssdp_confirm(None)
+    #    --> ssdp_confirm({}) --> create_entry()
     # 2: user(None): scan --> user({...}) --> create_entry()
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+    @override
+    def async_get_options_flow(
+        config_entry: ConfigEntry,
+    ) -> UpnpOptionsFlowHandler:
         """Get the options flow for this handler."""
-        return UpnpOptionsFlowHandler(config_entry)
+        return UpnpOptionsFlowHandler()
 
     @property
     def _discoveries(self) -> dict[str, SsdpServiceInfo]:
@@ -112,6 +118,7 @@ class UpnpFlowHandler(ConfigFlow, domain=DOMAIN):
         """Remove a discovery by its USN/unique_id."""
         return self._discoveries.pop(usn)
 
+    @override
     async def async_step_user(
         self, user_input: Mapping[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -150,9 +157,9 @@ class UpnpFlowHandler(ConfigFlow, domain=DOMAIN):
         if not self._discoveries:
             return self.async_abort(reason="no_devices_found")
 
-        data_schema = vol.Schema(
+        data_schema = probatio.Schema(
             {
-                vol.Required("unique_id"): vol.In(
+                probatio.Required("unique_id"): probatio.In(
                     {
                         discovery.ssdp_usn: _friendly_name_from_discovery(discovery)
                         for discovery in self._discoveries.values()
@@ -165,8 +172,9 @@ class UpnpFlowHandler(ConfigFlow, domain=DOMAIN):
             data_schema=data_schema,
         )
 
+    @override
     async def async_step_ssdp(
-        self, discovery_info: ssdp.SsdpServiceInfo
+        self, discovery_info: SsdpServiceInfo
     ) -> ConfigFlowResult:
         """Handle a discovered UPnP/IGD device.
 
@@ -251,6 +259,7 @@ class UpnpFlowHandler(ConfigFlow, domain=DOMAIN):
         discovery = self._remove_discovery(self.unique_id)
         return await self._async_create_entry_from_discovery(discovery)
 
+    @override
     async def async_step_ignore(self, user_input: dict[str, Any]) -> ConfigFlowResult:
         """Ignore this config flow."""
         usn = user_input["unique_id"]
@@ -299,7 +308,7 @@ class UpnpFlowHandler(ConfigFlow, domain=DOMAIN):
         return self.async_create_entry(title=title, data=data, options=options)
 
 
-class UpnpOptionsFlowHandler(OptionsFlowWithConfigEntry):
+class UpnpOptionsFlowHandler(OptionsFlowWithReload):
     """Handle an options flow."""
 
     async def async_step_init(
@@ -307,13 +316,13 @@ class UpnpOptionsFlowHandler(OptionsFlowWithConfigEntry):
     ) -> ConfigFlowResult:
         """Handle options flow."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            return self.async_create_entry(data=user_input)
 
-        data_schema = vol.Schema(
+        data_schema = probatio.Schema(
             {
-                vol.Optional(
+                probatio.Optional(
                     CONFIG_ENTRY_FORCE_POLL,
-                    default=self.options.get(
+                    default=self.config_entry.options.get(
                         CONFIG_ENTRY_FORCE_POLL, DEFAULT_CONFIG_ENTRY_FORCE_POLL
                     ),
                 ): bool,

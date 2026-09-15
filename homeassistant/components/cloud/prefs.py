@@ -1,9 +1,7 @@
 """Preference management for cloud."""
 
-from __future__ import annotations
-
 from collections.abc import Callable, Coroutine
-from typing import Any
+from typing import Any, override
 import uuid
 
 from hass_nabucasa.voice import MAP_VOICE, Gender
@@ -11,12 +9,13 @@ from hass_nabucasa.voice import MAP_VOICE, Gender
 from homeassistant.auth.const import GROUP_ID_ADMIN
 from homeassistant.auth.models import User
 from homeassistant.components import webhook
-from homeassistant.components.google_assistant.http import (
+from homeassistant.components.google_assistant.http import (  # pylint: disable=home-assistant-component-root-import
     async_get_users as async_get_google_assistant_users,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import UNDEFINED, UndefinedType
+from homeassistant.util import dt as dt_util
 from homeassistant.util.logging import async_create_catching_coro
 
 from .const import (
@@ -25,6 +24,7 @@ from .const import (
     DEFAULT_GOOGLE_REPORT_STATE,
     DEFAULT_TTS_DEFAULT_VOICE,
     DOMAIN,
+    ONBOARDING_ITEMS,
     PREF_ALEXA_DEFAULT_EXPOSE,
     PREF_ALEXA_ENTITY_CONFIGS,
     PREF_ALEXA_REPORT_STATE,
@@ -32,6 +32,7 @@ from .const import (
     PREF_CLOUD_USER,
     PREF_CLOUDHOOKS,
     PREF_ENABLE_ALEXA,
+    PREF_ENABLE_CLOUD_ICE_SERVERS,
     PREF_ENABLE_GOOGLE,
     PREF_ENABLE_REMOTE,
     PREF_GOOGLE_CONNECTED,
@@ -42,6 +43,8 @@ from .const import (
     PREF_GOOGLE_SECURE_DEVICES_PIN,
     PREF_GOOGLE_SETTINGS_VERSION,
     PREF_INSTANCE_ID,
+    PREF_ONBOARDED_ITEMS,
+    PREF_ONBOARDING_POSTPONED_UNTIL,
     PREF_REMOTE_ALLOW_REMOTE_ENABLE,
     PREF_REMOTE_DOMAIN,
     PREF_TTS_DEFAULT_VOICE,
@@ -59,6 +62,7 @@ GOOGLE_SETTINGS_VERSION = 3
 class CloudPreferencesStore(Store):
     """Store cloud preferences."""
 
+    @override
     async def _async_migrate_func(
         self, old_major_version: int, old_minor_version: int, old_data: dict[str, Any]
     ) -> dict[str, Any]:
@@ -162,20 +166,23 @@ class CloudPreferences:
     async def async_update(
         self,
         *,
-        google_enabled: bool | UndefinedType = UNDEFINED,
         alexa_enabled: bool | UndefinedType = UNDEFINED,
-        remote_enabled: bool | UndefinedType = UNDEFINED,
-        google_secure_devices_pin: str | None | UndefinedType = UNDEFINED,
-        cloudhooks: dict[str, dict[str, str | bool]] | UndefinedType = UNDEFINED,
-        cloud_user: str | UndefinedType = UNDEFINED,
         alexa_report_state: bool | UndefinedType = UNDEFINED,
-        google_report_state: bool | UndefinedType = UNDEFINED,
-        tts_default_voice: tuple[str, str] | UndefinedType = UNDEFINED,
-        remote_domain: str | None | UndefinedType = UNDEFINED,
         alexa_settings_version: int | UndefinedType = UNDEFINED,
-        google_settings_version: int | UndefinedType = UNDEFINED,
+        cloud_ice_servers_enabled: bool | UndefinedType = UNDEFINED,
+        cloud_user: str | UndefinedType = UNDEFINED,
+        cloudhooks: dict[str, dict[str, str | bool]] | UndefinedType = UNDEFINED,
         google_connected: bool | UndefinedType = UNDEFINED,
+        google_enabled: bool | UndefinedType = UNDEFINED,
+        google_report_state: bool | UndefinedType = UNDEFINED,
+        google_secure_devices_pin: str | UndefinedType | None = UNDEFINED,
+        google_settings_version: int | UndefinedType = UNDEFINED,
         remote_allow_remote_enable: bool | UndefinedType = UNDEFINED,
+        remote_domain: str | UndefinedType | None = UNDEFINED,
+        onboarded_items: list[str] | UndefinedType = UNDEFINED,
+        onboarding_postponed_until: str | UndefinedType | None = UNDEFINED,
+        remote_enabled: bool | UndefinedType = UNDEFINED,
+        tts_default_voice: tuple[str, str] | UndefinedType = UNDEFINED,
     ) -> None:
         """Update user preferences."""
         prefs = {**self._prefs}
@@ -184,20 +191,23 @@ class CloudPreferences:
             {
                 key: value
                 for key, value in (
-                    (PREF_ENABLE_GOOGLE, google_enabled),
-                    (PREF_ENABLE_ALEXA, alexa_enabled),
-                    (PREF_ENABLE_REMOTE, remote_enabled),
-                    (PREF_GOOGLE_SECURE_DEVICES_PIN, google_secure_devices_pin),
-                    (PREF_CLOUDHOOKS, cloudhooks),
-                    (PREF_CLOUD_USER, cloud_user),
                     (PREF_ALEXA_REPORT_STATE, alexa_report_state),
-                    (PREF_GOOGLE_REPORT_STATE, google_report_state),
                     (PREF_ALEXA_SETTINGS_VERSION, alexa_settings_version),
-                    (PREF_GOOGLE_SETTINGS_VERSION, google_settings_version),
-                    (PREF_TTS_DEFAULT_VOICE, tts_default_voice),
-                    (PREF_REMOTE_DOMAIN, remote_domain),
+                    (PREF_CLOUD_USER, cloud_user),
+                    (PREF_CLOUDHOOKS, cloudhooks),
+                    (PREF_ENABLE_ALEXA, alexa_enabled),
+                    (PREF_ENABLE_CLOUD_ICE_SERVERS, cloud_ice_servers_enabled),
+                    (PREF_ENABLE_GOOGLE, google_enabled),
+                    (PREF_ENABLE_REMOTE, remote_enabled),
                     (PREF_GOOGLE_CONNECTED, google_connected),
+                    (PREF_GOOGLE_REPORT_STATE, google_report_state),
+                    (PREF_GOOGLE_SECURE_DEVICES_PIN, google_secure_devices_pin),
+                    (PREF_GOOGLE_SETTINGS_VERSION, google_settings_version),
+                    (PREF_ONBOARDED_ITEMS, onboarded_items),
+                    (PREF_ONBOARDING_POSTPONED_UNTIL, onboarding_postponed_until),
                     (PREF_REMOTE_ALLOW_REMOTE_ENABLE, remote_allow_remote_enable),
+                    (PREF_REMOTE_DOMAIN, remote_domain),
+                    (PREF_TTS_DEFAULT_VOICE, tts_default_voice),
                 )
                 if value is not UNDEFINED
             }
@@ -239,11 +249,14 @@ class CloudPreferences:
             PREF_ALEXA_REPORT_STATE: self.alexa_report_state,
             PREF_CLOUDHOOKS: self.cloudhooks,
             PREF_ENABLE_ALEXA: self.alexa_enabled,
+            PREF_ENABLE_CLOUD_ICE_SERVERS: self.cloud_ice_servers_enabled,
             PREF_ENABLE_GOOGLE: self.google_enabled,
             PREF_ENABLE_REMOTE: self.remote_enabled,
             PREF_GOOGLE_DEFAULT_EXPOSE: self.google_default_expose,
             PREF_GOOGLE_REPORT_STATE: self.google_report_state,
             PREF_GOOGLE_SECURE_DEVICES_PIN: self.google_secure_devices_pin,
+            PREF_ONBOARDED_ITEMS: self.onboarded_items,
+            PREF_ONBOARDING_POSTPONED_UNTIL: self.onboarding_postponed_until,
             PREF_REMOTE_ALLOW_REMOTE_ENABLE: self.remote_allow_remote_enable,
             PREF_TTS_DEFAULT_VOICE: self.tts_default_voice,
         }
@@ -282,7 +295,8 @@ class CloudPreferences:
     def alexa_default_expose(self) -> list[str] | None:
         """Return array of entity domains that are exposed by default to Alexa.
 
-        Can return None, in which case for backwards should be interpreted as allow all domains.
+        Can return None, in which case for backwards
+        should be interpreted as allow all domains.
         """
         return self._prefs.get(PREF_ALEXA_DEFAULT_EXPOSE)
 
@@ -340,7 +354,8 @@ class CloudPreferences:
     def google_default_expose(self) -> list[str] | None:
         """Return array of entity domains that are exposed by default to Google.
 
-        Can return None, in which case for backwards should be interpreted as allow all domains.
+        Can return None, in which case for backwards
+        should be interpreted as allow all domains.
         """
         return self._prefs.get(PREF_GOOGLE_DEFAULT_EXPOSE)
 
@@ -355,12 +370,45 @@ class CloudPreferences:
         return self._prefs.get(PREF_INSTANCE_ID)
 
     @property
+    def onboarded_items(self) -> list[str]:
+        """Return list of completed onboarding items."""
+        onboarded_items: list[str] = self._prefs.get(PREF_ONBOARDED_ITEMS, [])
+        return onboarded_items
+
+    @property
+    def onboarding_completed(self) -> bool:
+        """Return if all onboarding items are completed."""
+        return ONBOARDING_ITEMS.issubset(self.onboarded_items)
+
+    @property
+    def onboarding_postponed_until(self) -> str | None:
+        """Return the datetime until which onboarding is postponed."""
+        return self._prefs.get(PREF_ONBOARDING_POSTPONED_UNTIL)
+
+    @property
+    def onboarding_postponed(self) -> bool:
+        """Return if onboarding is currently postponed."""
+        if (postponed_until := self.onboarding_postponed_until) is None:
+            return False
+        if (parsed := dt_util.parse_datetime(postponed_until)) is None:
+            return False
+        return parsed > dt_util.utcnow()
+
+    @property
     def tts_default_voice(self) -> tuple[str, str]:
         """Return the default TTS voice.
 
         The return value is a tuple of language and voice.
         """
         return self._prefs.get(PREF_TTS_DEFAULT_VOICE, DEFAULT_TTS_DEFAULT_VOICE)  # type: ignore[no-any-return]
+
+    @property
+    def cloud_ice_servers_enabled(self) -> bool:
+        """Return if cloud ICE servers are enabled."""
+        cloud_ice_servers_enabled: bool = self._prefs.get(
+            PREF_ENABLE_CLOUD_ICE_SERVERS, True
+        )
+        return cloud_ice_servers_enabled
 
     async def get_cloud_user(self) -> str:
         """Return ID of Home Assistant Cloud system user."""
@@ -409,6 +457,7 @@ class CloudPreferences:
             PREF_ENABLE_ALEXA: True,
             PREF_ENABLE_GOOGLE: True,
             PREF_ENABLE_REMOTE: False,
+            PREF_ENABLE_CLOUD_ICE_SERVERS: True,
             PREF_GOOGLE_CONNECTED: False,
             PREF_GOOGLE_DEFAULT_EXPOSE: DEFAULT_EXPOSED_DOMAINS,
             PREF_GOOGLE_ENTITY_CONFIGS: {},
@@ -416,6 +465,8 @@ class CloudPreferences:
             PREF_GOOGLE_LOCAL_WEBHOOK_ID: webhook.async_generate_id(),
             PREF_INSTANCE_ID: uuid.uuid4().hex,
             PREF_GOOGLE_SECURE_DEVICES_PIN: None,
+            PREF_ONBOARDED_ITEMS: [],
+            PREF_ONBOARDING_POSTPONED_UNTIL: None,
             PREF_REMOTE_DOMAIN: None,
             PREF_REMOTE_ALLOW_REMOTE_ENABLE: True,
             PREF_USERNAME: username,

@@ -1,16 +1,14 @@
 """Support to interface with universal remote control devices."""
 
-from __future__ import annotations
-
 from collections.abc import Iterable
 from datetime import timedelta
 from enum import IntFlag
 import functools as ft
-from functools import cached_property
 import logging
-from typing import Any, final
+from typing import Any, Final, final, override
 
-import voluptuous as vol
+import probatio
+from propcache.api import cached_property
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
@@ -22,20 +20,17 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.deprecation import (
-    DeprecatedConstantEnum,
-    all_with_deprecated_constants,
-    check_if_deprecated_constant,
-    dir_with_deprecated_constants,
-)
 from homeassistant.helpers.entity import ToggleEntity, ToggleEntityDescription
 from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.helpers.typing import ConfigType
-from homeassistant.loader import bind_hass
+from homeassistant.util.hass_dict import HassKey
+
+from .const import RemoteEntityStateAttribute
 
 _LOGGER = logging.getLogger(__name__)
 
-DOMAIN = "remote"
+DOMAIN: Final = "remote"
+DATA_COMPONENT: HassKey[EntityComponent[RemoteEntity]] = HassKey(DOMAIN)
 ENTITY_ID_FORMAT = DOMAIN + ".{}"
 PLATFORM_SCHEMA = cv.PLATFORM_SCHEMA
 PLATFORM_SCHEMA_BASE = cv.PLATFORM_SCHEMA_BASE
@@ -72,25 +67,11 @@ class RemoteEntityFeature(IntFlag):
     ACTIVITY = 4
 
 
-# These SUPPORT_* constants are deprecated as of Home Assistant 2022.5.
-# Please use the RemoteEntityFeature enum instead.
-_DEPRECATED_SUPPORT_LEARN_COMMAND = DeprecatedConstantEnum(
-    RemoteEntityFeature.LEARN_COMMAND, "2025.1"
-)
-_DEPRECATED_SUPPORT_DELETE_COMMAND = DeprecatedConstantEnum(
-    RemoteEntityFeature.DELETE_COMMAND, "2025.1"
-)
-_DEPRECATED_SUPPORT_ACTIVITY = DeprecatedConstantEnum(
-    RemoteEntityFeature.ACTIVITY, "2025.1"
-)
-
-
 REMOTE_SERVICE_ACTIVITY_SCHEMA = cv.make_entity_service_schema(
-    {vol.Optional(ATTR_ACTIVITY): cv.string}
+    {probatio.Optional(ATTR_ACTIVITY): cv.string}
 )
 
 
-@bind_hass
 def is_on(hass: HomeAssistant, entity_id: str) -> bool:
     """Return if the remote is on based on the statemachine."""
     return hass.states.is_state(entity_id, STATE_ON)
@@ -98,7 +79,7 @@ def is_on(hass: HomeAssistant, entity_id: str) -> bool:
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Track states and offer events for remotes."""
-    component = hass.data[DOMAIN] = EntityComponent[RemoteEntity](
+    component = hass.data[DATA_COMPONENT] = EntityComponent[RemoteEntity](
         _LOGGER, DOMAIN, hass, SCAN_INTERVAL
     )
     await component.async_setup(config)
@@ -118,13 +99,15 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     component.async_register_entity_service(
         SERVICE_SEND_COMMAND,
         {
-            vol.Required(ATTR_COMMAND): vol.All(cv.ensure_list, [cv.string]),
-            vol.Optional(ATTR_DEVICE): cv.string,
-            vol.Optional(
+            probatio.Required(ATTR_COMMAND): probatio.All(cv.ensure_list, [cv.string]),
+            probatio.Optional(ATTR_DEVICE): cv.string,
+            probatio.Optional(
                 ATTR_NUM_REPEATS, default=DEFAULT_NUM_REPEATS
             ): cv.positive_int,
-            vol.Optional(ATTR_DELAY_SECS): vol.Coerce(float),
-            vol.Optional(ATTR_HOLD_SECS, default=DEFAULT_HOLD_SECS): vol.Coerce(float),
+            probatio.Optional(ATTR_DELAY_SECS): probatio.Coerce(float),
+            probatio.Optional(
+                ATTR_HOLD_SECS, default=DEFAULT_HOLD_SECS
+            ): probatio.Coerce(float),
         },
         "async_send_command",
     )
@@ -132,11 +115,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     component.async_register_entity_service(
         SERVICE_LEARN_COMMAND,
         {
-            vol.Optional(ATTR_DEVICE): cv.string,
-            vol.Optional(ATTR_COMMAND): vol.All(cv.ensure_list, [cv.string]),
-            vol.Optional(ATTR_COMMAND_TYPE): cv.string,
-            vol.Optional(ATTR_ALTERNATIVE): cv.boolean,
-            vol.Optional(ATTR_TIMEOUT): cv.positive_int,
+            probatio.Optional(ATTR_DEVICE): cv.string,
+            probatio.Optional(ATTR_COMMAND): probatio.All(cv.ensure_list, [cv.string]),
+            probatio.Optional(ATTR_COMMAND_TYPE): cv.string,
+            probatio.Optional(ATTR_ALTERNATIVE): cv.boolean,
+            probatio.Optional(ATTR_TIMEOUT): cv.positive_int,
         },
         "async_learn_command",
     )
@@ -144,8 +127,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     component.async_register_entity_service(
         SERVICE_DELETE_COMMAND,
         {
-            vol.Required(ATTR_COMMAND): vol.All(cv.ensure_list, [cv.string]),
-            vol.Optional(ATTR_DEVICE): cv.string,
+            probatio.Required(ATTR_COMMAND): probatio.All(cv.ensure_list, [cv.string]),
+            probatio.Optional(ATTR_DEVICE): cv.string,
         },
         "async_delete_command",
     )
@@ -155,14 +138,12 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a config entry."""
-    component: EntityComponent[RemoteEntity] = hass.data[DOMAIN]
-    return await component.async_setup_entry(entry)
+    return await hass.data[DATA_COMPONENT].async_setup_entry(entry)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    component: EntityComponent[RemoteEntity] = hass.data[DOMAIN]
-    return await component.async_unload_entry(entry)
+    return await hass.data[DATA_COMPONENT].async_unload_entry(entry)
 
 
 class RemoteEntityDescription(ToggleEntityDescription, frozen_or_thawed=True):
@@ -185,22 +166,10 @@ class RemoteEntity(ToggleEntity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_)
     _attr_supported_features: RemoteEntityFeature = RemoteEntityFeature(0)
 
     @cached_property
+    @override
     def supported_features(self) -> RemoteEntityFeature:
         """Flag supported features."""
         return self._attr_supported_features
-
-    @property
-    def supported_features_compat(self) -> RemoteEntityFeature:
-        """Return the supported features as RemoteEntityFeature.
-
-        Remove this compatibility shim in 2025.1 or later.
-        """
-        features = self.supported_features
-        if type(features) is int:  # noqa: E721
-            new_features = RemoteEntityFeature(features)
-            self._report_deprecated_supported_features_values(new_features)
-            return new_features
-        return features
 
     @cached_property
     def current_activity(self) -> str | None:
@@ -214,14 +183,15 @@ class RemoteEntity(ToggleEntity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_)
 
     @final
     @property
+    @override
     def state_attributes(self) -> dict[str, Any] | None:
         """Return optional state attributes."""
-        if RemoteEntityFeature.ACTIVITY not in self.supported_features_compat:
+        if RemoteEntityFeature.ACTIVITY not in self.supported_features:
             return None
 
         return {
-            ATTR_ACTIVITY_LIST: self.activity_list,
-            ATTR_CURRENT_ACTIVITY: self.current_activity,
+            RemoteEntityStateAttribute.ACTIVITY_LIST: self.activity_list,
+            RemoteEntityStateAttribute.CURRENT_ACTIVITY: self.current_activity,
         }
 
     def send_command(self, command: Iterable[str], **kwargs: Any) -> None:
@@ -251,11 +221,3 @@ class RemoteEntity(ToggleEntity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_)
         await self.hass.async_add_executor_job(
             ft.partial(self.delete_command, **kwargs)
         )
-
-
-# These can be removed if no deprecated constant are in this module anymore
-__getattr__ = ft.partial(check_if_deprecated_constant, module_globals=globals())
-__dir__ = ft.partial(
-    dir_with_deprecated_constants, module_globals_keys=[*globals().keys()]
-)
-__all__ = all_with_deprecated_constants(globals())

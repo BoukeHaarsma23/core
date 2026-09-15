@@ -1,5 +1,14 @@
 {
+  "entity": {
+    "notify": {
+      "mailto": {
+        "default": "mdi:email-outline"
+      }
+    }
+  },
   "services": {
-    "reload": "mdi:reload"
+    "send_message": {
+      "service": "mdi:email-arrow-right-outline"
+    }
   }
 }

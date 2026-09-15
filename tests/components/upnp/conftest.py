@@ -1,12 +1,10 @@
 """Configuration for SSDP tests."""
 
-from __future__ import annotations
-
-from collections.abc import Generator
+from collections.abc import Callable, Coroutine, Generator
 import copy
-from datetime import datetime
 import socket
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, create_autospec, patch
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 from urllib.parse import urlparse
 
 from async_upnp_client.aiohttp import AiohttpNotifyServer
@@ -24,6 +22,16 @@ from homeassistant.components.upnp.const import (
     DOMAIN,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.service_info.ssdp import (
+    ATTR_UPNP_DEVICE_TYPE,
+    ATTR_UPNP_FRIENDLY_NAME,
+    ATTR_UPNP_MANUFACTURER,
+    ATTR_UPNP_MODEL_NAME,
+    ATTR_UPNP_SERIAL,
+    ATTR_UPNP_UDN,
+    SsdpServiceInfo,
+)
+from homeassistant.util import dt as dt_util
 
 from tests.common import MockConfigEntry
 
@@ -35,7 +43,7 @@ TEST_LOCATION6 = "http://[fe80::1%2]/desc.xml"
 TEST_HOST = urlparse(TEST_LOCATION).hostname
 TEST_FRIENDLY_NAME = "mock-name"
 TEST_MAC_ADDRESS = "00:11:22:33:44:55"
-TEST_DISCOVERY = ssdp.SsdpServiceInfo(
+TEST_DISCOVERY = SsdpServiceInfo(
     ssdp_st=TEST_ST,
     ssdp_udn=TEST_UDN,
     ssdp_usn=TEST_USN,
@@ -44,12 +52,12 @@ TEST_DISCOVERY = ssdp.SsdpServiceInfo(
         "_udn": TEST_UDN,
         "location": TEST_LOCATION,
         "usn": TEST_USN,
-        ssdp.ATTR_UPNP_DEVICE_TYPE: TEST_ST,
-        ssdp.ATTR_UPNP_FRIENDLY_NAME: TEST_FRIENDLY_NAME,
-        ssdp.ATTR_UPNP_MANUFACTURER: "mock-manufacturer",
-        ssdp.ATTR_UPNP_MODEL_NAME: "mock-model-name",
-        ssdp.ATTR_UPNP_SERIAL: "mock-serial",
-        ssdp.ATTR_UPNP_UDN: TEST_UDN,
+        ATTR_UPNP_DEVICE_TYPE: TEST_ST,
+        ATTR_UPNP_FRIENDLY_NAME: TEST_FRIENDLY_NAME,
+        ATTR_UPNP_MANUFACTURER: "mock-manufacturer",
+        ATTR_UPNP_MODEL_NAME: "mock-model-name",
+        ATTR_UPNP_SERIAL: "mock-serial",
+        ATTR_UPNP_UDN: TEST_UDN,
     },
     ssdp_headers={
         "_host": TEST_HOST,
@@ -74,18 +82,18 @@ def mock_igd_device(mock_async_create_device) -> IgdDevice:
     """Mock async_upnp_client device."""
     mock_upnp_device = create_autospec(UpnpDevice, instance=True)
     mock_upnp_device.device_url = TEST_DISCOVERY.ssdp_location
-    mock_upnp_device.serial_number = TEST_DISCOVERY.upnp[ssdp.ATTR_UPNP_SERIAL]
+    mock_upnp_device.serial_number = TEST_DISCOVERY.upnp[ATTR_UPNP_SERIAL]
 
     mock_igd_device = create_autospec(IgdDevice)
     mock_igd_device.device_type = TEST_DISCOVERY.ssdp_st
-    mock_igd_device.name = TEST_DISCOVERY.upnp[ssdp.ATTR_UPNP_FRIENDLY_NAME]
-    mock_igd_device.manufacturer = TEST_DISCOVERY.upnp[ssdp.ATTR_UPNP_MANUFACTURER]
-    mock_igd_device.model_name = TEST_DISCOVERY.upnp[ssdp.ATTR_UPNP_MODEL_NAME]
+    mock_igd_device.name = TEST_DISCOVERY.upnp[ATTR_UPNP_FRIENDLY_NAME]
+    mock_igd_device.manufacturer = TEST_DISCOVERY.upnp[ATTR_UPNP_MANUFACTURER]
+    mock_igd_device.model_name = TEST_DISCOVERY.upnp[ATTR_UPNP_MODEL_NAME]
     mock_igd_device.udn = TEST_DISCOVERY.ssdp_udn
     mock_igd_device.device = mock_upnp_device
 
     mock_igd_device.async_get_traffic_and_status_data.return_value = IgdState(
-        timestamp=datetime.now(),
+        timestamp=dt_util.naive_now(),
         bytes_received=0,
         bytes_sent=0,
         packets_received=0,
@@ -98,6 +106,10 @@ def mock_igd_device(mock_async_create_device) -> IgdDevice:
         kibibytes_per_sec_sent=None,
         packets_per_sec_received=None,
         packets_per_sec_sent=None,
+        kibibytes_per_sec_received_no_rollover=None,
+        kibibytes_per_sec_sent_no_rollover=None,
+        packets_per_sec_received_no_rollover=None,
+        packets_per_sec_sent_no_rollover=None,
         port_mapping_number_of_entries=0,
     )
 
@@ -175,7 +187,13 @@ async def ssdp_instant_discovery():
     """Instant discovery."""
 
     # Set up device discovery callback.
-    async def register_callback(hass, callback, match_dict):
+    async def register_callback(
+        hass: HomeAssistant,
+        callback: Callable[
+            [SsdpServiceInfo, ssdp.SsdpChange], Coroutine[Any, Any, None] | None
+        ],
+        match_dict: dict[str, str] | None = None,
+    ) -> MagicMock:
         """Immediately do callback."""
         await callback(TEST_DISCOVERY, ssdp.SsdpChange.ALIVE)
         return MagicMock()
@@ -202,7 +220,13 @@ async def ssdp_instant_discovery_multi_location():
     test_discovery.ssdp_all_locations = {TEST_LOCATION6, TEST_LOCATION}
 
     # Set up device discovery callback.
-    async def register_callback(hass, callback, match_dict):
+    async def register_callback(
+        hass: HomeAssistant,
+        callback: Callable[
+            [SsdpServiceInfo, ssdp.SsdpChange], Coroutine[Any, Any, None] | None
+        ],
+        match_dict: dict[str, str] | None = None,
+    ) -> MagicMock:
         """Immediately do callback."""
         await callback(test_discovery, ssdp.SsdpChange.ALIVE)
         return MagicMock()
@@ -225,7 +249,13 @@ async def ssdp_no_discovery():
     """No discovery."""
 
     # Set up device discovery callback.
-    async def register_callback(hass, callback, match_dict):
+    async def register_callback(
+        hass: HomeAssistant,
+        callback: Callable[
+            [SsdpServiceInfo, ssdp.SsdpChange], Coroutine[Any, Any, None] | None
+        ],
+        match_dict: dict[str, str] | None = None,
+    ) -> MagicMock:
         """Don't do callback."""
         return MagicMock()
 
@@ -267,11 +297,8 @@ async def mock_config_entry(
 
     # Load config_entry.
     entry.add_to_hass(hass)
-    with patch(
-        "homeassistant.helpers.entity.Entity.entity_registry_enabled_default",
-        PropertyMock(return_value=True),
-    ):
-        await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
+
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
 
     return entry

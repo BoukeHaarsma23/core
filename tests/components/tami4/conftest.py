@@ -1,7 +1,7 @@
 """Common fixutres with default mocks as well as common test helper methods."""
 
 from collections.abc import Generator
-from datetime import datetime
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -61,6 +61,31 @@ def mock__get_devices_metadata(request: pytest.FixtureRequest) -> Generator[None
 
 
 @pytest.fixture
+def mock__get_devices_metadata_no_name(
+    request: pytest.FixtureRequest,
+) -> Generator[None]:
+    """Fixture to mock _get_devices which makes a call to the API."""
+
+    side_effect = getattr(request, "param", None)
+
+    device_metadata = DeviceMetadata(
+        id=1,
+        name=None,
+        connected=True,
+        psn="psn",
+        type="type",
+        device_firmware="v1.1",
+    )
+
+    with patch(
+        "Tami4EdgeAPI.Tami4EdgeAPI.Tami4EdgeAPI._get_devices_metadata",
+        return_value=[device_metadata],
+        side_effect=side_effect,
+    ):
+        yield
+
+
+@pytest.fixture
 def mock_get_device(
     request: pytest.FixtureRequest,
 ) -> Generator[None]:
@@ -70,11 +95,11 @@ def mock_get_device(
 
     water_quality = WaterQuality(
         uv=UV(
-            upcoming_replacement=int(datetime.now().timestamp()),
+            upcoming_replacement=int(time.time()),
             installed=True,
         ),
         filter=Filter(
-            upcoming_replacement=int(datetime.now().timestamp()),
+            upcoming_replacement=int(time.time()),
             milli_litters_passed=1000,
             installed=True,
         ),

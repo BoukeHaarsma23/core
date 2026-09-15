@@ -1,6 +1,6 @@
 """Support for Blue Current sensors."""
 
-from __future__ import annotations
+from typing import override
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -8,7 +8,6 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CURRENCY_EURO,
     UnitOfElectricCurrent,
@@ -17,9 +16,9 @@ from homeassistant.const import (
     UnitOfPower,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import Connector
+from . import BlueCurrentConfigEntry, Connector
 from .const import DOMAIN
 from .entity import BlueCurrentEntity, ChargepointEntity
 
@@ -211,10 +210,12 @@ PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: BlueCurrentConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Blue Current sensors."""
-    connector: Connector = hass.data[DOMAIN][entry.entry_id]
+    connector = entry.runtime_data
     sensor_list: list[SensorEntity] = [
         ChargePointSensor(connector, sensor, evse_id)
         for evse_id in connector.charge_points
@@ -251,6 +252,7 @@ class ChargePointSensor(ChargepointEntity, SensorEntity):
         self._attr_unique_id = f"{sensor.key}_{evse_id}"
 
     @callback
+    @override
     def update_from_latest_data(self) -> None:
         """Update the sensor from the latest data."""
 
@@ -270,6 +272,7 @@ class ChargePointTimestampSensor(ChargePointSensor):
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 
     @callback
+    @override
     def update_from_latest_data(self) -> None:
         """Update the sensor from the latest data."""
         new_value = self.connector.charge_points[self.evse_id].get(self.key)
@@ -298,6 +301,7 @@ class GridSensor(BlueCurrentEntity, SensorEntity):
         self._attr_unique_id = sensor.key
 
     @callback
+    @override
     def update_from_latest_data(self) -> None:
         """Update the grid sensor from the latest data."""
 

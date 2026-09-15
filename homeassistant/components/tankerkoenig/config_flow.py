@@ -1,9 +1,7 @@
 """Config flow for Tankerkoenig."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, override
 
 from aiotankerkoenig import (
     GasType,
@@ -12,13 +10,12 @@ from aiotankerkoenig import (
     Tankerkoenig,
     TankerkoenigInvalidKeyError,
 )
-import voluptuous as vol
+import probatio
 
 from homeassistant.config_entries import (
-    ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
-    OptionsFlow,
+    OptionsFlowWithReload,
 )
 from homeassistant.const import (
     CONF_API_KEY,
@@ -31,15 +28,16 @@ from homeassistant.const import (
     UnitOfLength,
 )
 from homeassistant.core import callback
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.selector import (
     LocationSelector,
     NumberSelector,
     NumberSelectorConfig,
 )
 
-from .const import CONF_FUEL_TYPES, CONF_STATIONS, DEFAULT_RADIUS, DOMAIN, FUEL_TYPES
+from .const import CONF_STATIONS, DEFAULT_RADIUS, DOMAIN
+from .coordinator import TankerkoenigConfigEntry
 
 
 async def async_get_nearby_stations(
@@ -70,12 +68,14 @@ class FlowHandler(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
+    @override
     def async_get_options_flow(
-        config_entry: ConfigEntry,
+        config_entry: TankerkoenigConfigEntry,
     ) -> OptionsFlowHandler:
         """Get the options flow for this handler."""
-        return OptionsFlowHandler(config_entry)
+        return OptionsFlowHandler()
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -121,8 +121,8 @@ class FlowHandler(ConfigFlow, domain=DOMAIN):
             return self.async_show_form(
                 step_id="select_station",
                 description_placeholders={"stations_count": str(len(self._stations))},
-                data_schema=vol.Schema(
-                    {vol.Required(CONF_STATIONS): cv.multi_select(self._stations)}
+                data_schema=probatio.Schema(
+                    {probatio.Required(CONF_STATIONS): cv.multi_select(self._stations)}
                 ),
             )
 
@@ -144,9 +144,8 @@ class FlowHandler(ConfigFlow, domain=DOMAIN):
         if not user_input:
             return self._show_form_reauth()
 
-        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
-        assert entry
-        user_input = {**entry.data, **user_input}
+        reauth_entry = self._get_reauth_entry()
+        user_input = {**reauth_entry.data, **user_input}
 
         tankerkoenig = Tankerkoenig(
             api_key=user_input[CONF_API_KEY],
@@ -157,9 +156,7 @@ class FlowHandler(ConfigFlow, domain=DOMAIN):
         except TankerkoenigInvalidKeyError:
             return self._show_form_reauth(user_input, {CONF_API_KEY: "invalid_auth"})
 
-        self.hass.config_entries.async_update_entry(entry, data=user_input)
-        await self.hass.config_entries.async_reload(entry.entry_id)
-        return self.async_abort(reason="reauth_successful")
+        return self.async_update_reload_and_abort(reauth_entry, data=user_input)
 
     def _show_form_user(
         self,
@@ -170,19 +167,17 @@ class FlowHandler(ConfigFlow, domain=DOMAIN):
             user_input = {}
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(
+                    # Name field is no longer allowed in config flow schemas
+                    # pylint: disable-next=home-assistant-config-flow-name-field
+                    probatio.Required(
                         CONF_NAME, default=user_input.get(CONF_NAME, "")
                     ): cv.string,
-                    vol.Required(
+                    probatio.Required(
                         CONF_API_KEY, default=user_input.get(CONF_API_KEY, "")
                     ): cv.string,
-                    vol.Required(
-                        CONF_FUEL_TYPES,
-                        default=user_input.get(CONF_FUEL_TYPES, list(FUEL_TYPES)),
-                    ): cv.multi_select(FUEL_TYPES),
-                    vol.Required(
+                    probatio.Required(
                         CONF_LOCATION,
                         default=user_input.get(
                             CONF_LOCATION,
@@ -192,7 +187,7 @@ class FlowHandler(ConfigFlow, domain=DOMAIN):
                             },
                         ),
                     ): LocationSelector(),
-                    vol.Required(
+                    probatio.Required(
                         CONF_RADIUS, default=user_input.get(CONF_RADIUS, DEFAULT_RADIUS)
                     ): NumberSelector(
                         NumberSelectorConfig(
@@ -216,9 +211,9 @@ class FlowHandler(ConfigFlow, domain=DOMAIN):
             user_input = {}
         return self.async_show_form(
             step_id="reauth_confirm",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(
+                    probatio.Required(
                         CONF_API_KEY, default=user_input.get(CONF_API_KEY, "")
                     ): cv.string,
                 }
@@ -236,12 +231,11 @@ class FlowHandler(ConfigFlow, domain=DOMAIN):
         )
 
 
-class OptionsFlowHandler(OptionsFlow):
+class OptionsFlowHandler(OptionsFlowWithReload):
     """Handle an options flow."""
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
+    def __init__(self) -> None:
         """Initialize options flow."""
-        self.config_entry = config_entry
         self._stations: dict[str, str] = {}
 
     async def async_step_init(
@@ -283,13 +277,13 @@ class OptionsFlowHandler(OptionsFlow):
 
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(
+                    probatio.Required(
                         CONF_SHOW_ON_MAP,
                         default=self.config_entry.options[CONF_SHOW_ON_MAP],
                     ): bool,
-                    vol.Required(
+                    probatio.Required(
                         CONF_STATIONS, default=self.config_entry.data[CONF_STATIONS]
                     ): cv.multi_select(self._stations),
                 }

@@ -1,11 +1,9 @@
 """Provides device automations for deconz events."""
 
-from __future__ import annotations
+import probatio
 
-import voluptuous as vol
-
-from homeassistant.components.device_automation import DEVICE_TRIGGER_BASE_SCHEMA
-from homeassistant.components.device_automation.exceptions import (
+from homeassistant.components.device_automation import (
+    DEVICE_TRIGGER_BASE_SCHEMA,
     InvalidDeviceAutomationConfig,
 )
 from homeassistant.components.homeassistant.triggers import event as event_trigger
@@ -22,7 +20,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.trigger import TriggerActionType, TriggerInfo
 from homeassistant.helpers.typing import ConfigType
 
-from . import DOMAIN
+from . import DOMAIN, DeconzConfigEntry
 from .deconz_event import (
     CONF_DECONZ_EVENT,
     CONF_GESTURE,
@@ -31,7 +29,6 @@ from .deconz_event import (
     DeconzPresenceEvent,
     DeconzRelativeRotaryEvent,
 )
-from .hub import DeconzHub
 
 CONF_SUBTYPE = "subtype"
 
@@ -167,6 +164,31 @@ FRIENDS_OF_HUE_SWITCH = {
     (CONF_SHORT_RELEASE, CONF_BOTTOM_BUTTONS): {CONF_EVENT: 6002},
     (CONF_LONG_PRESS, CONF_BOTTOM_BUTTONS): {CONF_EVENT: 6001},
     (CONF_LONG_RELEASE, CONF_BOTTOM_BUTTONS): {CONF_EVENT: 6003},
+}
+
+RODRET_REMOTE_MODEL = "RODRET Dimmer"
+RODRET_REMOTE_MODEL_2 = "RODRET wireless dimmer"
+RODRET_REMOTE = {
+    (CONF_SHORT_RELEASE, CONF_TURN_ON): {CONF_EVENT: 1002},
+    (CONF_LONG_PRESS, CONF_TURN_ON): {CONF_EVENT: 1001},
+    (CONF_LONG_RELEASE, CONF_TURN_ON): {CONF_EVENT: 1003},
+    (CONF_SHORT_RELEASE, CONF_TURN_OFF): {CONF_EVENT: 2002},
+    (CONF_LONG_PRESS, CONF_TURN_OFF): {CONF_EVENT: 2001},
+    (CONF_LONG_RELEASE, CONF_TURN_OFF): {CONF_EVENT: 2003},
+}
+
+SOMRIG_REMOTE_MODEL = "SOMRIG shortcut button"
+SOMRIG_REMOTE = {
+    (CONF_SHORT_PRESS, CONF_BUTTON_1): {CONF_EVENT: 1000},
+    (CONF_SHORT_RELEASE, CONF_BUTTON_1): {CONF_EVENT: 1002},
+    (CONF_LONG_PRESS, CONF_BUTTON_1): {CONF_EVENT: 1001},
+    (CONF_LONG_RELEASE, CONF_BUTTON_1): {CONF_EVENT: 1003},
+    (CONF_DOUBLE_PRESS, CONF_BUTTON_1): {CONF_EVENT: 1004},
+    (CONF_SHORT_PRESS, CONF_BUTTON_2): {CONF_EVENT: 2000},
+    (CONF_SHORT_RELEASE, CONF_BUTTON_2): {CONF_EVENT: 2002},
+    (CONF_LONG_PRESS, CONF_BUTTON_2): {CONF_EVENT: 2001},
+    (CONF_LONG_RELEASE, CONF_BUTTON_2): {CONF_EVENT: 2003},
+    (CONF_DOUBLE_PRESS, CONF_BUTTON_2): {CONF_EVENT: 2004},
 }
 
 STYRBAR_REMOTE_MODEL = "Remote Control N2"
@@ -600,6 +622,9 @@ REMOTES = {
     HUE_TAP_REMOTE_MODEL: HUE_TAP_REMOTE,
     HUE_WALL_REMOTE_MODEL: HUE_WALL_REMOTE,
     FRIENDS_OF_HUE_SWITCH_MODEL: FRIENDS_OF_HUE_SWITCH,
+    RODRET_REMOTE_MODEL: RODRET_REMOTE,
+    RODRET_REMOTE_MODEL_2: RODRET_REMOTE,
+    SOMRIG_REMOTE_MODEL: SOMRIG_REMOTE,
     STYRBAR_REMOTE_MODEL: STYRBAR_REMOTE,
     SYMFONISK_SOUND_CONTROLLER_MODEL: SYMFONISK_SOUND_CONTROLLER,
     TRADFRI_ON_OFF_SWITCH_MODEL: TRADFRI_ON_OFF_SWITCH,
@@ -649,7 +674,7 @@ REMOTES = {
 }
 
 TRIGGER_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend(
-    {vol.Required(CONF_TYPE): str, vol.Required(CONF_SUBTYPE): str}
+    {probatio.Required(CONF_TYPE): str, probatio.Required(CONF_SUBTYPE): str}
 )
 
 
@@ -658,9 +683,9 @@ def _get_deconz_event_from_device(
     device: dr.DeviceEntry,
 ) -> DeconzAlarmEvent | DeconzEvent | DeconzPresenceEvent | DeconzRelativeRotaryEvent:
     """Resolve deconz event from device."""
-    hubs: dict[str, DeconzHub] = hass.data.get(DOMAIN, {})
-    for hub in hubs.values():
-        for deconz_event in hub.events:
+    entry: DeconzConfigEntry
+    for entry in hass.config_entries.async_loaded_entries(DOMAIN):
+        for deconz_event in entry.runtime_data.events:
             if device.id == deconz_event.device_id:
                 return deconz_event
 
@@ -677,7 +702,9 @@ async def async_validate_trigger_config(
     config = TRIGGER_SCHEMA(config)
 
     device_registry = dr.async_get(hass)
-    device = device_registry.async_get(config[CONF_DEVICE_ID])
+    device = device_registry.async_get(
+        config[CONF_DEVICE_ID], include_child_devices=False
+    )
 
     trigger = (config[CONF_TYPE], config[CONF_SUBTYPE])
 
@@ -706,7 +733,14 @@ async def async_attach_trigger(
     event_data: dict[str, int | str] = {}
 
     device_registry = dr.async_get(hass)
-    device = device_registry.devices[config[CONF_DEVICE_ID]]
+    device = device_registry.async_get(
+        config[CONF_DEVICE_ID], include_child_devices=False
+    )
+
+    if not device:
+        raise InvalidDeviceAutomationConfig(
+            f"deCONZ trigger device with ID {config[CONF_DEVICE_ID]} not found"
+        )
 
     deconz_event = _get_deconz_event_from_device(hass, device)
     if event_id := deconz_event.serial:
@@ -739,9 +773,9 @@ async def async_get_triggers(
     Generate device trigger list.
     """
     device_registry = dr.async_get(hass)
-    device = device_registry.devices[device_id]
+    device = device_registry.async_get(device_id, include_child_devices=False)
 
-    if device.model not in REMOTES:
+    if device is None or device.model not in REMOTES:
         return []
 
     triggers = []

@@ -1,10 +1,9 @@
 """Fixtures for Whois integration tests."""
 
-from __future__ import annotations
-
 from collections.abc import Generator
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -43,9 +42,12 @@ def mock_whois() -> Generator[MagicMock]:
     """Return a mocked query."""
     with (
         patch(
-            "homeassistant.components.whois.whois_query",
+            "homeassistant.components.whois.coordinator.whoisdomain_query",
         ) as whois_mock,
-        patch("homeassistant.components.whois.config_flow.whois.query", new=whois_mock),
+        patch(
+            "homeassistant.components.whois.config_flow.whoisdomain.query",
+            new=whois_mock,
+        ),
     ):
         domain = whois_mock.return_value
         domain.abuse_contact = "abuse@example.com"
@@ -53,7 +55,7 @@ def mock_whois() -> Generator[MagicMock]:
         domain.creation_date = datetime(2019, 1, 1, 0, 0, 0)
         domain.dnssec = True
         domain.expiration_date = datetime(2023, 1, 1, 0, 0, 0)
-        domain.last_updated = datetime(
+        domain.updated_date = datetime(
             2022, 1, 1, 0, 0, 0, tzinfo=dt_util.get_time_zone("Europe/Amsterdam")
         )
         domain.name = "home-assistant.io"
@@ -62,34 +64,34 @@ def mock_whois() -> Generator[MagicMock]:
         domain.registrant = "registrant@example.com"
         domain.registrar = "My Registrar"
         domain.reseller = "Top Domains, Low Prices"
-        domain.status = "OK"
+        domain.status = "ok"
         domain.statuses = ["OK"]
         yield whois_mock
 
 
 @pytest.fixture
-def mock_whois_missing_some_attrs() -> Generator[Mock]:
+def mock_whois_missing_some_attrs() -> Generator[Any]:
     """Return a mocked query that only sets admin."""
 
     class LimitedWhoisMock:
         """A limited mock of whois_query."""
 
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
             """Mock only attributes the library always sets being available."""
             self.creation_date = datetime(2019, 1, 1, 0, 0, 0)
             self.dnssec = True
             self.expiration_date = datetime(2023, 1, 1, 0, 0, 0)
-            self.last_updated = datetime(
+            self.updated_date = datetime(
                 2022, 1, 1, 0, 0, 0, tzinfo=dt_util.get_time_zone("Europe/Amsterdam")
             )
             self.name = "home-assistant.io"
             self.name_servers = ["ns1.example.com", "ns2.example.com"]
             self.registrar = "My Registrar"
-            self.status = "OK"
+            self.status = "ok"
             self.statuses = ["OK"]
 
     with patch(
-        "homeassistant.components.whois.whois_query", LimitedWhoisMock
+        "homeassistant.components.whois.coordinator.whoisdomain_query", LimitedWhoisMock
     ) as whois_mock:
         yield whois_mock
 

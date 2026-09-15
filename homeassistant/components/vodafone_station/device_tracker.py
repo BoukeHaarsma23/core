@@ -1,27 +1,33 @@
 """Support for Vodafone Station routers."""
 
-from __future__ import annotations
+from typing import override
 
-from aiovodafone import VodafoneStationDevice
-
-from homeassistant.components.device_tracker import ScannerEntity, SourceType
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.components.device_tracker import ScannerEntity
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import _LOGGER, DOMAIN
-from .coordinator import VodafoneStationDeviceInfo, VodafoneStationRouter
+from .const import LOGGER
+from .coordinator import (
+    VodafoneConfigEntry,
+    VodafoneStationDeviceInfo,
+    VodafoneStationRouter,
+)
+
+# Coordinator is used to centralize the data updates
+PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: VodafoneConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up device tracker for Vodafone Station component."""
 
-    _LOGGER.debug("Start device trackers setup")
-    coordinator: VodafoneStationRouter = hass.data[DOMAIN][entry.entry_id]
+    LOGGER.debug("Start device trackers setup")
+    coordinator = entry.runtime_data
 
     tracked: set = set()
 
@@ -42,17 +48,17 @@ async def async_setup_entry(
 @callback
 def async_add_new_tracked_entities(
     coordinator: VodafoneStationRouter,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
     tracked: set[str],
 ) -> None:
     """Add new tracker entities from the router."""
     new_tracked = []
 
-    _LOGGER.debug("Adding device trackers entities")
+    LOGGER.debug("Adding device trackers entities")
     for mac, device_info in coordinator.data.devices.items():
         if mac in tracked:
             continue
-        _LOGGER.debug("New device tracker: %s", device_info.device.name)
+        LOGGER.debug("New device tracker: %s", device_info.device.name)
         new_tracked.append(VodafoneStationTracker(coordinator, device_info))
         tracked.add(mac)
 
@@ -63,6 +69,8 @@ class VodafoneStationTracker(CoordinatorEntity[VodafoneStationRouter], ScannerEn
     """Representation of a Vodafone Station device."""
 
     _attr_translation_key = "device_tracker"
+    _attr_has_entity_name = True
+    mac_address: str
 
     def __init__(
         self, coordinator: VodafoneStationRouter, device_info: VodafoneStationDeviceInfo
@@ -70,43 +78,26 @@ class VodafoneStationTracker(CoordinatorEntity[VodafoneStationRouter], ScannerEn
         """Initialize a Vodafone Station device."""
         super().__init__(coordinator)
         self._coordinator = coordinator
-        device = device_info.device
-        mac = device.mac
-        self._device_mac = mac
+        mac = device_info.device.mac
+        self._attr_mac_address = mac
         self._attr_unique_id = mac
-        self._attr_name = device.name or mac.replace(":", "_")
+        self._attr_hostname = self._attr_name = device_info.device.name or mac.replace(
+            ":", "_"
+        )
 
     @property
     def _device_info(self) -> VodafoneStationDeviceInfo:
         """Return fresh data for the device."""
-        return self.coordinator.data.devices[self._device_mac]
+        return self.coordinator.data.devices[self.mac_address]
 
     @property
-    def _device(self) -> VodafoneStationDevice:
-        """Return fresh data for the device."""
-        return self.coordinator.data.devices[self._device_mac].device
-
-    @property
+    @override
     def is_connected(self) -> bool:
         """Return true if the device is connected to the network."""
         return self._device_info.home
 
     @property
-    def source_type(self) -> SourceType:
-        """Return the source type."""
-        return SourceType.ROUTER
-
-    @property
-    def hostname(self) -> str | None:
-        """Return the hostname of device."""
-        return self._attr_name
-
-    @property
+    @override
     def ip_address(self) -> str | None:
         """Return the primary ip address of the device."""
-        return self._device.ip_address
-
-    @property
-    def mac_address(self) -> str:
-        """Return the mac address of the device."""
-        return self._device_mac
+        return self._device_info.device.ip_address

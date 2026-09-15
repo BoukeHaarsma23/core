@@ -1,15 +1,12 @@
 """Support for functionality to interact with Android / Fire TV devices."""
 
-from __future__ import annotations
-
-from datetime import timedelta
+from datetime import datetime, timedelta
 import hashlib
 import logging
-from typing import Any
+from typing import override
 
 from androidtv.constants import APPS, KEYS
 from androidtv.setup_async import AndroidTVAsync, FireTVAsync
-import voluptuous as vol
 
 from homeassistant.components import persistent_notification
 from homeassistant.components.media_player import (
@@ -18,48 +15,35 @@ from homeassistant.components.media_player import (
     MediaPlayerEntityFeature,
     MediaPlayerState,
 )
-from homeassistant.const import ATTR_COMMAND
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import config_validation as cv, entity_platform
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.util import Throttle
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util.dt import utcnow
 
 from . import AndroidTVConfigEntry
 from .const import (
     CONF_APPS,
     CONF_EXCLUDE_UNNAMED_APPS,
     CONF_GET_SOURCES,
-    CONF_SCREENCAP,
+    CONF_SCREENCAP_INTERVAL,
     CONF_TURN_OFF_COMMAND,
     CONF_TURN_ON_COMMAND,
     DEFAULT_EXCLUDE_UNNAMED_APPS,
     DEFAULT_GET_SOURCES,
-    DEFAULT_SCREENCAP,
+    DEFAULT_SCREENCAP_INTERVAL,
     DEVICE_ANDROIDTV,
     SIGNAL_CONFIG_ENTITY,
 )
 from .entity import AndroidTVEntity, adb_decorator
+from .services import ATTR_ADB_RESPONSE, ATTR_HDMI_INPUT
 
 _LOGGER = logging.getLogger(__name__)
-
-ATTR_ADB_RESPONSE = "adb_response"
-ATTR_DEVICE_PATH = "device_path"
-ATTR_HDMI_INPUT = "hdmi_input"
-ATTR_LOCAL_PATH = "local_path"
-
-MIN_TIME_BETWEEN_SCREENCAPS = timedelta(seconds=60)
-
-SERVICE_ADB_COMMAND = "adb_command"
-SERVICE_DOWNLOAD = "download"
-SERVICE_LEARN_SENDEVENT = "learn_sendevent"
-SERVICE_UPLOAD = "upload"
 
 # Translate from `AndroidTV` / `FireTV` reported state to HA state.
 ANDROIDTV_STATES = {
     "off": MediaPlayerState.OFF,
     "idle": MediaPlayerState.IDLE,
-    "standby": MediaPlayerState.STANDBY,
+    "standby": MediaPlayerState.IDLE,
     "playing": MediaPlayerState.PLAYING,
     "paused": MediaPlayerState.PAUSED,
 }
@@ -68,7 +52,7 @@ ANDROIDTV_STATES = {
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: AndroidTVConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the Android Debug Bridge entity."""
     device_class = entry.runtime_data.aftv.DEVICE_CLASS
@@ -78,32 +62,6 @@ async def async_setup_entry(
             if device_class == DEVICE_ANDROIDTV
             else FireTVDevice(entry)
         ]
-    )
-
-    platform = entity_platform.async_get_current_platform()
-    platform.async_register_entity_service(
-        SERVICE_ADB_COMMAND,
-        {vol.Required(ATTR_COMMAND): cv.string},
-        "adb_command",
-    )
-    platform.async_register_entity_service(
-        SERVICE_LEARN_SENDEVENT, {}, "learn_sendevent"
-    )
-    platform.async_register_entity_service(
-        SERVICE_DOWNLOAD,
-        {
-            vol.Required(ATTR_DEVICE_PATH): cv.string,
-            vol.Required(ATTR_LOCAL_PATH): cv.string,
-        },
-        "service_download",
-    )
-    platform.async_register_entity_service(
-        SERVICE_UPLOAD,
-        {
-            vol.Required(ATTR_DEVICE_PATH): cv.string,
-            vol.Required(ATTR_LOCAL_PATH): cv.string,
-        },
-        "service_upload",
     )
 
 
@@ -125,7 +83,8 @@ class ADBDevice(AndroidTVEntity, MediaPlayerEntity):
         self._app_name_to_id: dict[str, str] = {}
         self._get_sources = DEFAULT_GET_SOURCES
         self._exclude_unnamed_apps = DEFAULT_EXCLUDE_UNNAMED_APPS
-        self._screencap = DEFAULT_SCREENCAP
+        self._screencap_delta: timedelta | None = None
+        self._last_screencap: datetime | None = None
         self.turn_on_command: str | None = None
         self.turn_off_command: str | None = None
 
@@ -159,10 +118,17 @@ class ADBDevice(AndroidTVEntity, MediaPlayerEntity):
         self._exclude_unnamed_apps = options.get(
             CONF_EXCLUDE_UNNAMED_APPS, DEFAULT_EXCLUDE_UNNAMED_APPS
         )
-        self._screencap = options.get(CONF_SCREENCAP, DEFAULT_SCREENCAP)
+        screencap_interval: int = options.get(
+            CONF_SCREENCAP_INTERVAL, DEFAULT_SCREENCAP_INTERVAL
+        )
+        if screencap_interval > 0:
+            self._screencap_delta = timedelta(minutes=screencap_interval)
+        else:
+            self._screencap_delta = None
         self.turn_off_command = options.get(CONF_TURN_OFF_COMMAND)
         self.turn_on_command = options.get(CONF_TURN_ON_COMMAND)
 
+    @override
     async def async_added_to_hass(self) -> None:
         """Set config parameter when add to hass."""
         await super().async_added_to_hass()
@@ -183,7 +149,7 @@ class ADBDevice(AndroidTVEntity, MediaPlayerEntity):
     async def _async_get_screencap(self, prev_app_id: str | None = None) -> None:
         """Take a screen capture from the device when enabled."""
         if (
-            not self._screencap
+            not self._screencap_delta
             or self.state in {MediaPlayerState.OFF, None}
             or not self.available
         ):
@@ -193,11 +159,18 @@ class ADBDevice(AndroidTVEntity, MediaPlayerEntity):
             force: bool = prev_app_id is not None
             if force:
                 force = prev_app_id != self._attr_app_id
-            await self._adb_get_screencap(no_throttle=force)
+            await self._adb_get_screencap(force)
 
-    @Throttle(MIN_TIME_BETWEEN_SCREENCAPS)
-    async def _adb_get_screencap(self, **kwargs: Any) -> None:
-        """Take a screen capture from the device every 60 seconds."""
+    async def _adb_get_screencap(self, force: bool = False) -> None:
+        """Take a screen capture from the device every configured minutes."""
+        time_elapsed = self._screencap_delta is not None and (
+            self._last_screencap is None
+            or (utcnow() - self._last_screencap) >= self._screencap_delta
+        )
+        if not (force or time_elapsed):
+            return
+
+        self._last_screencap = utcnow()
         if media_data := await self._adb_screencap():
             self._media_image = media_data, "image/png"
             self._attr_media_image_hash = hashlib.sha256(media_data).hexdigest()[:16]
@@ -205,26 +178,31 @@ class ADBDevice(AndroidTVEntity, MediaPlayerEntity):
             self._media_image = None, None
             self._attr_media_image_hash = None
 
+    @override
     async def async_get_media_image(self) -> tuple[bytes | None, str | None]:
         """Fetch current playing image."""
         return self._media_image
 
     @adb_decorator()
+    @override
     async def async_media_play(self) -> None:
         """Send play command."""
         await self.aftv.media_play()
 
     @adb_decorator()
+    @override
     async def async_media_pause(self) -> None:
         """Send pause command."""
         await self.aftv.media_pause()
 
     @adb_decorator()
+    @override
     async def async_media_play_pause(self) -> None:
         """Send play/pause command."""
         await self.aftv.media_play_pause()
 
     @adb_decorator()
+    @override
     async def async_turn_on(self) -> None:
         """Turn on the device."""
         if self.turn_on_command:
@@ -233,6 +211,7 @@ class ADBDevice(AndroidTVEntity, MediaPlayerEntity):
             await self.aftv.turn_on()
 
     @adb_decorator()
+    @override
     async def async_turn_off(self) -> None:
         """Turn off the device."""
         if self.turn_off_command:
@@ -241,16 +220,19 @@ class ADBDevice(AndroidTVEntity, MediaPlayerEntity):
             await self.aftv.turn_off()
 
     @adb_decorator()
+    @override
     async def async_media_previous_track(self) -> None:
         """Send previous track command (results in rewind)."""
         await self.aftv.media_previous_track()
 
     @adb_decorator()
+    @override
     async def async_media_next_track(self) -> None:
         """Send next track command (results in fast-forward)."""
         await self.aftv.media_next_track()
 
     @adb_decorator()
+    @override
     async def async_select_source(self, source: str) -> None:
         """Select input source.
 
@@ -265,29 +247,30 @@ class ADBDevice(AndroidTVEntity, MediaPlayerEntity):
                 await self.aftv.stop_app(self._app_name_to_id.get(source_, source_))
 
     @adb_decorator()
-    async def adb_command(self, command: str) -> None:
+    async def adb_command(self, command: str) -> dict[str, str] | None:
         """Send an ADB command to an Android / Fire TV device."""
         if key := KEYS.get(command):
             await self.aftv.adb_shell(f"input keyevent {key}")
-            return
+            return None
 
         if command == "GET_PROPERTIES":
-            self._attr_extra_state_attributes[ATTR_ADB_RESPONSE] = str(
-                await self.aftv.get_properties_dict()
-            )
+            adb_response = str(await self.aftv.get_properties_dict())
+            self._attr_extra_state_attributes[ATTR_ADB_RESPONSE] = adb_response
             self.async_write_ha_state()
-            return
+            return {ATTR_ADB_RESPONSE: adb_response}
 
         try:
             response = await self.aftv.adb_shell(command)
         except UnicodeDecodeError:
-            return
+            return None
 
         if isinstance(response, str) and response.strip():
-            self._attr_extra_state_attributes[ATTR_ADB_RESPONSE] = response.strip()
+            adb_response = response.strip()
+            self._attr_extra_state_attributes[ATTR_ADB_RESPONSE] = adb_response
             self.async_write_ha_state()
+            return {ATTR_ADB_RESPONSE: adb_response}
 
-        return
+        return None
 
     @adb_decorator()
     async def learn_sendevent(self) -> None:
@@ -298,7 +281,7 @@ class ADBDevice(AndroidTVEntity, MediaPlayerEntity):
             self.async_write_ha_state()
 
             msg = (
-                f"Output from service '{SERVICE_LEARN_SENDEVENT}' from"
+                f"Output from service 'learn_sendevent' from"
                 f" {self.entity_id}: '{output}'"
             )
             persistent_notification.async_create(
@@ -306,11 +289,11 @@ class ADBDevice(AndroidTVEntity, MediaPlayerEntity):
                 msg,
                 title="Android Debug Bridge",
             )
-            _LOGGER.info("%s", msg)
+            _LOGGER.debug("%s", msg)
 
     @adb_decorator()
     async def service_download(self, device_path: str, local_path: str) -> None:
-        """Download a file from your Android / Fire TV device to your Home Assistant instance."""
+        """Download a file from your Android / Fire TV device."""
         if not self.hass.config.is_allowed_path(local_path):
             _LOGGER.warning("'%s' is not secure to load data from!", local_path)
             return
@@ -319,7 +302,7 @@ class ADBDevice(AndroidTVEntity, MediaPlayerEntity):
 
     @adb_decorator()
     async def service_upload(self, device_path: str, local_path: str) -> None:
-        """Upload a file from your Home Assistant instance to an Android / Fire TV device."""
+        """Upload a file to an Android / Fire TV device."""
         if not self.hass.config.is_allowed_path(local_path):
             _LOGGER.warning("'%s' is not secure to load data from!", local_path)
             return
@@ -394,11 +377,13 @@ class AndroidTVDevice(ADBDevice):
         await self._async_get_screencap(prev_app_id)
 
     @adb_decorator()
+    @override
     async def async_media_stop(self) -> None:
         """Send stop command."""
         await self.aftv.media_stop()
 
     @adb_decorator()
+    @override
     async def async_mute_volume(self, mute: bool) -> None:
         """Mute the volume."""
         is_muted = await self.aftv.is_volume_muted()
@@ -408,16 +393,19 @@ class AndroidTVDevice(ADBDevice):
             await self.aftv.mute_volume()
 
     @adb_decorator()
+    @override
     async def async_set_volume_level(self, volume: float) -> None:
         """Set the volume level."""
         await self.aftv.set_volume_level(volume)
 
     @adb_decorator()
+    @override
     async def async_volume_down(self) -> None:
         """Send volume down command."""
         self._attr_volume_level = await self.aftv.volume_down(self._attr_volume_level)
 
     @adb_decorator()
+    @override
     async def async_volume_up(self) -> None:
         """Send volume up command."""
         self._attr_volume_level = await self.aftv.volume_up(self._attr_volume_level)
@@ -484,6 +472,7 @@ class FireTVDevice(ADBDevice):
         await self._async_get_screencap(prev_app_id)
 
     @adb_decorator()
+    @override
     async def async_media_stop(self) -> None:
         """Send stop (back) command."""
         await self.aftv.back()

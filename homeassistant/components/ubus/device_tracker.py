@@ -1,21 +1,20 @@
 """Support for OpenWRT (ubus) routers."""
 
-from __future__ import annotations
-
 import logging
 import re
+from typing import override
 
 from openwrt.ubus import Ubus
-import voluptuous as vol
+import probatio
 
 from homeassistant.components.device_tracker import (
-    DOMAIN,
+    DOMAIN as DEVICE_TRACKER_DOMAIN,
     PLATFORM_SCHEMA as DEVICE_TRACKER_PLATFORM_SCHEMA,
     DeviceScanner,
 )
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
 _LOGGER = logging.getLogger(__name__)
@@ -26,26 +25,28 @@ DHCP_SOFTWARES = ["dnsmasq", "odhcpd", "none"]
 
 PLATFORM_SCHEMA = DEVICE_TRACKER_PLATFORM_SCHEMA.extend(
     {
-        vol.Required(CONF_HOST): cv.string,
-        vol.Required(CONF_PASSWORD): cv.string,
-        vol.Required(CONF_USERNAME): cv.string,
-        vol.Optional(CONF_DHCP_SOFTWARE, default=DEFAULT_DHCP_SOFTWARE): vol.In(
-            DHCP_SOFTWARES
-        ),
+        probatio.Required(CONF_HOST): cv.string,
+        probatio.Required(CONF_PASSWORD): cv.string,
+        probatio.Required(CONF_USERNAME): cv.string,
+        probatio.Optional(
+            CONF_DHCP_SOFTWARE, default=DEFAULT_DHCP_SOFTWARE
+        ): probatio.In(DHCP_SOFTWARES),
     }
 )
 
 
 def get_scanner(hass: HomeAssistant, config: ConfigType) -> DeviceScanner | None:
     """Validate the configuration and return an ubus scanner."""
-    dhcp_sw = config[DOMAIN][CONF_DHCP_SOFTWARE]
+    config = config[DEVICE_TRACKER_DOMAIN]
+
+    dhcp_sw = config[CONF_DHCP_SOFTWARE]
     scanner: DeviceScanner
     if dhcp_sw == "dnsmasq":
-        scanner = DnsmasqUbusDeviceScanner(config[DOMAIN])
+        scanner = DnsmasqUbusDeviceScanner(config)
     elif dhcp_sw == "odhcpd":
-        scanner = OdhcpdUbusDeviceScanner(config[DOMAIN])
+        scanner = OdhcpdUbusDeviceScanner(config)
     else:
-        scanner = UbusDeviceScanner(config[DOMAIN])
+        scanner = UbusDeviceScanner(config)
 
     return scanner if scanner.success_init else None
 
@@ -89,6 +90,7 @@ class UbusDeviceScanner(DeviceScanner):
         self.mac2name = None
         self.success_init = self.ubus.connect() is not None
 
+    @override
     def scan_devices(self):
         """Scan for new devices and return a list with found device IDs."""
         self._update_info()
@@ -99,6 +101,7 @@ class UbusDeviceScanner(DeviceScanner):
         self.mac2name = {}
 
     @_refresh_on_access_denied
+    @override
     def get_device_name(self, device):
         """Return the name of the given device or None if we don't know."""
         if self.mac2name is None:
@@ -108,6 +111,7 @@ class UbusDeviceScanner(DeviceScanner):
             return None
         return self.mac2name.get(device.upper(), None)
 
+    @override
     async def async_get_extra_attributes(self, device: str) -> dict[str, str]:
         """Return the host to distinguish between multiple routers."""
         return {"host": self.host}
@@ -121,7 +125,7 @@ class UbusDeviceScanner(DeviceScanner):
         if not self.success_init:
             return False
 
-        _LOGGER.info("Checking hostapd")
+        _LOGGER.debug("Checking hostapd")
 
         if not self.hostapd:
             hostapd = self.ubus.get_hostapd()
@@ -150,6 +154,7 @@ class DnsmasqUbusDeviceScanner(UbusDeviceScanner):
         super().__init__(config)
         self.leasefile = None
 
+    @override
     def _generate_mac2name(self):
         if self.leasefile is None:
             if result := self.ubus.get_uci_config("dhcp", "dnsmasq"):
@@ -172,6 +177,7 @@ class DnsmasqUbusDeviceScanner(UbusDeviceScanner):
 class OdhcpdUbusDeviceScanner(UbusDeviceScanner):
     """Implement the Ubus device scanning for the odhcp DHCP server."""
 
+    @override
     def _generate_mac2name(self):
         if result := self.ubus.get_dhcp_method("ipv4leases"):
             self.mac2name = {}

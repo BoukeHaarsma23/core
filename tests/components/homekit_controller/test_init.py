@@ -8,9 +8,8 @@ from unittest.mock import patch
 from aiohomekit import AccessoryNotFoundError
 from aiohomekit.model import Accessory, Transport
 from aiohomekit.model.characteristics import CharacteristicsTypes
-from aiohomekit.model.services import ServicesTypes
+from aiohomekit.model.services import Service, ServicesTypes
 from aiohomekit.testing import FakePairing
-from attr import asdict
 import pytest
 from syrupy.assertion import SnapshotAssertion
 
@@ -40,7 +39,7 @@ ALIVE_DEVICE_NAME = "testdevice"
 ALIVE_DEVICE_ENTITY_ID = "light.testdevice"
 
 
-def create_motion_sensor_service(accessory):
+def create_motion_sensor_service(accessory: Accessory) -> None:
     """Define motion characteristics as per page 225 of HAP spec."""
     service = accessory.add_service(ServicesTypes.MOTION_SENSOR)
     cur_state = service.add_char(CharacteristicsTypes.MOTION_DETECTED)
@@ -83,7 +82,7 @@ async def test_async_remove_entry(
     assert hkid not in hass.data[ENTITY_MAP].storage_data
 
 
-def create_alive_service(accessory):
+def create_alive_service(accessory: Accessory) -> Service:
     """Create a service to validate we can only remove dead devices."""
     service = accessory.add_service(ServicesTypes.LIGHTBULB, name=ALIVE_DEVICE_NAME)
     service.add_char(CharacteristicsTypes.ON)
@@ -103,20 +102,19 @@ async def test_device_remove_devices(
         hass, get_next_aid(), create_alive_service
     )
     config_entry = helper.config_entry
-    entry_id = config_entry.entry_id
 
     entity = entity_registry.entities[ALIVE_DEVICE_ENTITY_ID]
 
     live_device_entry = device_registry.async_get(entity.device_id)
     client = await hass_ws_client(hass)
-    response = await client.remove_device(live_device_entry.id, entry_id)
+    response = await client.remove_device(live_device_entry.id)
     assert not response["success"]
 
     dead_device_entry = device_registry.async_get_or_create(
         config_entry_id=config_entry.entry_id,
         identifiers={("homekit_controller:accessory-id", "E9:88:E7:B8:B4:40:aid:1")},
     )
-    response = await client.remove_device(dead_device_entry.id, entry_id)
+    response = await client.remove_device(dead_device_entry.id)
     assert response["success"]
 
 
@@ -174,6 +172,7 @@ async def test_offline_device_raises(
     assert hass.states.get("light.testdevice").state == STATE_OFF
 
 
+@pytest.mark.usefixtures("fake_ble_discovery")
 async def test_ble_device_only_checks_is_available(
     hass: HomeAssistant, get_next_aid: Callable[[], int], controller
 ) -> None:
@@ -242,6 +241,36 @@ async def test_ble_device_only_checks_is_available(
     assert hass.states.get("light.testdevice").state == STATE_OFF
 
 
+@pytest.mark.usefixtures("fake_ble_discovery", "fake_ble_pairing")
+async def test_ble_device_populates_connections(
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    get_next_aid: Callable[[], int],
+    controller,
+) -> None:
+    """Test a BLE device populates connections in the device registry."""
+    aid = get_next_aid()
+
+    accessory = Accessory.create_with_info(
+        aid, "TestDevice", "example.com", "Test", "0001", "0.1"
+    )
+    create_alive_service(accessory)
+
+    await async_setup_component(hass, DOMAIN, {})
+    config_entry, _ = await setup_test_accessories_with_controller(
+        hass, [accessory], controller
+    )
+    await hass.async_block_till_done()
+
+    assert config_entry.state is ConfigEntryState.LOADED
+    assert (
+        device_registry.async_get_device_by_connection(
+            ("bluetooth", "AA:BB:CC:DD:EE:FF"), config_entry.entry_id
+        )
+        is not None
+    )
+
+
 @pytest.mark.parametrize("example", FIXTURES, ids=lambda val: str(val.stem))
 async def test_snapshots(
     hass: HomeAssistant,
@@ -250,7 +279,7 @@ async def test_snapshots(
     snapshot: SnapshotAssertion,
     example: str,
 ) -> None:
-    """Detect regressions in enumerating a homekit accessory database and building entities."""
+    """Detect regressions in enumerating accessory DB and building entities."""
     accessories = await setup_accessories_from_file(hass, example)
     config_entry, _ = await setup_test_accessories(hass, accessories)
 
@@ -284,19 +313,8 @@ async def test_snapshots(
                 state_dict["attributes"].pop("access_token", None)
                 state_dict["attributes"].pop("entity_picture", None)
 
-            entry = asdict(entity_entry)
-            entry.pop("id", None)
-            entry.pop("device_id", None)
-            entry.pop("created_at", None)
-            entry.pop("modified_at", None)
+            entities.append({"entry": entity_entry, "state": state_dict})
 
-            entities.append({"entry": entry, "state": state_dict})
-
-        device_dict = asdict(device)
-        device_dict.pop("id", None)
-        device_dict.pop("via_device_id", None)
-        device_dict.pop("created_at", None)
-        device_dict.pop("modified_at", None)
-        devices.append({"device": device_dict, "entities": entities})
+        devices.append({"device": device, "entities": entities})
 
     assert snapshot == devices

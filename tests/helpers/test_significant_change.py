@@ -1,5 +1,8 @@
 """Test significant change helper."""
 
+from types import MappingProxyType
+from typing import Any
+
 import pytest
 
 from homeassistant.components.sensor import SensorDeviceClass
@@ -67,13 +70,20 @@ async def test_significant_change_extra(
     assert checker.async_is_significant_change(State(ent_id, "100", attrs), extra_arg=1)
 
     def extra_significant_check(
-        hass, old_state, old_attrs, old_extra_arg, new_state, new_attrs, new_extra_arg
-    ):
+        hass: HomeAssistant,
+        old_state: str,
+        old_attrs: dict | MappingProxyType,
+        old_extra_arg: Any,
+        new_state: str,
+        new_attrs: dict | MappingProxyType,
+        new_extra_arg: Any,
+    ) -> bool | None:
         return old_extra_arg != new_extra_arg
 
     checker.extra_significant_check = extra_significant_check
 
-    # This is normally a significant change (100 -> 200), but the extra arg check marks it
+    # This is normally a significant change (100 -> 200), but the
+    # extra arg check marks it
     # as insignificant.
     assert not checker.async_is_significant_change(
         State(ent_id, "200", attrs), extra_arg=1

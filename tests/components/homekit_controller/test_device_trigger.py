@@ -2,9 +2,9 @@
 
 from collections.abc import Callable
 
+from aiohomekit.model import Accessory
 from aiohomekit.model.characteristics import CharacteristicsTypes
 from aiohomekit.model.services import ServicesTypes
-import pytest
 from pytest_unordered import unordered
 
 from homeassistant.components import automation
@@ -20,12 +20,7 @@ from .common import setup_test_component
 from tests.common import async_get_device_automations
 
 
-@pytest.fixture(autouse=True, name="stub_blueprint_populate")
-def stub_blueprint_populate_autouse(stub_blueprint_populate: None) -> None:
-    """Stub copying the blueprints to the config folder."""
-
-
-def create_remote(accessory):
+def create_remote(accessory: Accessory) -> None:
     """Define characteristics for a button (that is inn a group)."""
     service_label = accessory.add_service(ServicesTypes.SERVICE_LABEL)
 
@@ -50,7 +45,7 @@ def create_remote(accessory):
     battery.add_char(CharacteristicsTypes.BATTERY_LEVEL)
 
 
-def create_button(accessory):
+def create_button(accessory: Accessory) -> None:
     """Define a button (that is not in a group)."""
     button = accessory.add_service(ServicesTypes.STATELESS_PROGRAMMABLE_SWITCH)
 
@@ -65,7 +60,7 @@ def create_button(accessory):
     battery.add_char(CharacteristicsTypes.BATTERY_LEVEL)
 
 
-def create_doorbell(accessory):
+def create_doorbell(accessory: Accessory) -> None:
     """Define a button (that is not in a group)."""
     button = accessory.add_service(ServicesTypes.DOORBELL)
 

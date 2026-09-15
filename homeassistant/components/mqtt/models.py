@@ -1,7 +1,5 @@
 """Models used by multiple MQTT modules."""
 
-from __future__ import annotations
-
 from ast import literal_eval
 import asyncio
 from collections import deque
@@ -9,11 +7,17 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 import logging
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict, override
+
+from paho.mqtt.client import MQTTMessage
 
 from homeassistant.const import ATTR_ENTITY_ID, ATTR_NAME, Platform
-from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
-from homeassistant.exceptions import ServiceValidationError, TemplateError
+from homeassistant.core import CALLBACK_TYPE, callback
+from homeassistant.exceptions import (
+    HomeAssistantError,
+    ServiceValidationError,
+    TemplateError,
+)
 from homeassistant.helpers import template
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.service_info.mqtt import ReceivePayloadType
@@ -26,8 +30,6 @@ from homeassistant.helpers.typing import (
 from homeassistant.util.hass_dict import HassKey
 
 if TYPE_CHECKING:
-    from paho.mqtt.client import MQTTMessage
-
     from .client import MQTT, Subscription
     from .debug_info import TimestampedPublishMessage
     from .device_trigger import Trigger
@@ -44,11 +46,90 @@ class PayloadSentinel(StrEnum):
     DEFAULT = "default"
 
 
+MAX_28BIT: int = 268435455
+
+
+class SubscriptionID:
+    """ID generator for wildcard subscriptions."""
+
+    _next_id: int = 2
+    _used_ids: set[int]
+    _available_ids: set[int]
+    _registered_subscriptions: dict[str, int]  # topic, subscription_id
+
+    def __init__(self) -> None:
+        """Initialize the Subscription Identifier generator."""
+        self._used_ids = set()
+        self._available_ids = set()
+        self._registered_subscriptions = {}
+
+    def _generate(self, topic: str) -> int:
+        """Generate a new subscription ID."""
+        if self._available_ids:
+            subscription_id = self._available_ids.pop()
+            self._used_ids.add(subscription_id)
+            self._registered_subscriptions[topic] = subscription_id
+            return subscription_id
+
+        subscription_id = self._next_id
+        if subscription_id > MAX_28BIT:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="mqtt_max_subscription_id_reached",
+            )
+        self._used_ids.add(subscription_id)
+        self._next_id += 1
+        self._registered_subscriptions[topic] = subscription_id
+        return subscription_id
+
+    def get_subscription_id(self, topic: str) -> int:
+        """Get a registered subscription ID."""
+        return self._registered_subscriptions[topic]
+
+    def get_or_generate(self, topic: str) -> int:
+        """Get an existing or generate a new subscription ID.
+
+        ID 0 is reserved.
+        ID 1 is used for non wildcard topics.
+        Generator starts at ID 2.
+        """
+        if topic in self._registered_subscriptions:
+            return self._registered_subscriptions[topic]
+        return self._generate(topic)
+
+    def release(self, topic: str) -> None:
+        """Release a Subscription Identifier to allow reuse."""
+        if (
+            (subscription_id := self._registered_subscriptions.pop(topic, None))
+            is not None
+            and subscription_id
+            and subscription_id in self._used_ids
+        ):
+            self._used_ids.remove(subscription_id)
+            self._available_ids.add(subscription_id)
+
+
 _LOGGER = logging.getLogger(__name__)
 
 ATTR_THIS = "this"
 
 type PublishPayloadType = str | bytes | int | float | None
+
+
+def convert_outgoing_mqtt_payload(
+    payload: PublishPayloadType,
+) -> PublishPayloadType:
+    """Ensure correct raw MQTT payload is passed as bytes for publishing."""
+    if isinstance(payload, str) and payload.startswith(("b'", 'b"')):
+        try:
+            native_object = literal_eval(payload)
+        except ValueError, TypeError, SyntaxError, MemoryError:
+            pass
+        else:
+            if isinstance(native_object, bytes):
+                return native_object
+
+    return payload
 
 
 @dataclass
@@ -143,10 +224,14 @@ class MqttCommandTemplateException(ServiceValidationError):
         }
         entity_id_log = "" if entity_id is None else f" for entity '{entity_id}'"
         self._message = (
-            f"{type(base_exception).__name__}: {base_exception} rendering template{entity_id_log}"
-            f", template: '{command_template}' and payload: {value_log}"
+            f"{type(base_exception).__name__}:"
+            f" {base_exception} rendering"
+            f" template{entity_id_log}"
+            f", template: '{command_template}'"
+            f" and payload: {value_log}"
         )
 
+    @override
     def __str__(self) -> str:
         """Return exception message string."""
         return self._message
@@ -159,21 +244,12 @@ class MqttCommandTemplate:
         self,
         command_template: template.Template | None,
         *,
-        hass: HomeAssistant | None = None,
         entity: Entity | None = None,
     ) -> None:
         """Instantiate a command template."""
         self._template_state: template.TemplateStateFromEntityId | None = None
         self._command_template = command_template
-        if command_template is None:
-            return
-
         self._entity = entity
-
-        command_template.hass = hass
-
-        if entity:
-            command_template.hass = entity.hass
 
     @callback
     def async_render(
@@ -182,22 +258,6 @@ class MqttCommandTemplate:
         variables: TemplateVarsType = None,
     ) -> PublishPayloadType:
         """Render or convert the command template with given value or variables."""
-
-        def _convert_outgoing_payload(
-            payload: PublishPayloadType,
-        ) -> PublishPayloadType:
-            """Ensure correct raw MQTT payload is passed as bytes for publishing."""
-            if isinstance(payload, str):
-                try:
-                    native_object = literal_eval(payload)
-                    if isinstance(native_object, bytes):
-                        return native_object
-
-                except (ValueError, TypeError, SyntaxError, MemoryError):
-                    pass
-
-            return payload
-
         if self._command_template is None:
             return value
 
@@ -219,7 +279,7 @@ class MqttCommandTemplate:
             self._command_template,
         )
         try:
-            return _convert_outgoing_payload(
+            return convert_outgoing_mqtt_payload(
                 self._command_template.async_render(values, parse_result=False)
             )
         except TemplateError as exc:
@@ -254,10 +314,15 @@ class MqttValueTemplateException(TemplateError):
         )
         payload_log = str(payload)
         self._message = (
-            f"{type(base_exception).__name__}: {base_exception} rendering template{entity_id_log}"
-            f", template: '{value_template}'{default_payload_log} and payload: {payload_log}"
+            f"{type(base_exception).__name__}:"
+            f" {base_exception} rendering"
+            f" template{entity_id_log}"
+            f", template: '{value_template}'"
+            f"{default_payload_log}"
+            f" and payload: {payload_log}"
         )
 
+    @override
     def __str__(self) -> str:
         """Return exception message string."""
         return self._message
@@ -270,7 +335,6 @@ class MqttValueTemplate:
         self,
         value_template: template.Template | None,
         *,
-        hass: HomeAssistant | None = None,
         entity: Entity | None = None,
         config_attributes: TemplateVarsType = None,
     ) -> None:
@@ -278,14 +342,7 @@ class MqttValueTemplate:
         self._template_state: template.TemplateStateFromEntityId | None = None
         self._value_template = value_template
         self._config_attributes = config_attributes
-        if value_template is None:
-            return
-
-        value_template.hass = hass
         self._entity = entity
-
-        if entity:
-            value_template.hass = entity.hass
 
     @callback
     def async_render_with_possible_json_value(
@@ -381,6 +438,15 @@ class EntityTopicState:
             entity_id, entity = self.subscribe_calls.popitem()
             try:
                 entity.async_write_ha_state()
+            except ValueError as exc:
+                _LOGGER.error(
+                    "Value error while updating state of %s, topic: "
+                    "'%s' with payload: %s: %s",
+                    entity_id,
+                    msg.topic,
+                    msg.payload,
+                    exc,
+                )
             except Exception:
                 _LOGGER.exception(
                     "Exception raised while updating state of %s, topic: "
@@ -408,6 +474,12 @@ class MqttData:
     )
     device_triggers: dict[str, Trigger] = field(default_factory=dict)
     data_config_flow_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Attribute `discovery_discovered_and_disabled` maps a discovery hash to
+    # the entity registry index, which is a tuple (entity_platform, "mqtt", unique_id)
+    # It allows to cleanup disabled entities when an empty payload is received.
+    discovery_discovered_and_disabled: dict[tuple[str, str], tuple[str, str, str]] = (
+        field(default_factory=dict)
+    )
     discovery_already_discovered: set[tuple[str, str]] = field(default_factory=set)
     discovery_pending_discovered: dict[tuple[str, str], PendingDiscovered] = field(
         default_factory=dict
@@ -425,6 +497,63 @@ class MqttData:
     state_write_requests: EntityTopicState = field(default_factory=EntityTopicState)
     subscriptions_to_restore: set[Subscription] = field(default_factory=set)
     tags: dict[str, dict[str, MQTTTagScanner]] = field(default_factory=dict)
+    subscription_id_generator: SubscriptionID = field(default_factory=SubscriptionID)
+
+
+@dataclass(slots=True)
+class MqttComponentConfig:
+    """(component, object_id, node_id, discovery_payload)."""
+
+    component: str
+    object_id: str
+    node_id: str | None
+    discovery_payload: MQTTDiscoveryPayload
+
+
+class MessageExpiryInterval(TypedDict, total=False):
+    """Hold the Message Expiry Interval."""
+
+    days: float
+    hours: float
+    minutes: float
+    seconds: float
+
+
+class DeviceMqttOptions(TypedDict, total=False):
+    """Hold the shared MQTT specific options for an MQTT device."""
+
+    qos: int
+    message_expiry_interval: MessageExpiryInterval
+
+
+class MqttDeviceData(TypedDict, total=False):
+    """Hold the data for an MQTT device."""
+
+    name: str
+    identifiers: str
+    configuration_url: str
+    sw_version: str
+    hw_version: str
+    model: str
+    model_id: str
+    mqtt_settings: DeviceMqttOptions
+
+
+class MqttAvailabilityData(TypedDict, total=False):
+    """Hold the availability configuration for a device."""
+
+    availability_topic: str
+    availability_template: str
+    payload_available: str
+    payload_not_available: str
+
+
+class MqttSubentryData(TypedDict, total=False):
+    """Hold the data for a MQTT subentry."""
+
+    device: MqttDeviceData
+    components: dict[str, dict[str, Any]]
+    availability: MqttAvailabilityData
 
 
 DATA_MQTT: HassKey[MqttData] = HassKey("mqtt")

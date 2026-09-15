@@ -1,25 +1,23 @@
 """Config flow for edge integration."""
 
-from __future__ import annotations
-
 import logging
 import re
-from typing import Any
+from typing import Any, override
 
+import probatio
 from Tami4EdgeAPI import Tami4EdgeAPI, exceptions
-import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.exceptions import HomeAssistantError
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import config_validation as cv
 
 from .const import CONF_PHONE, CONF_REFRESH_TOKEN, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-_STEP_PHONE_NUMBER_SCHEMA = vol.Schema({vol.Required(CONF_PHONE): cv.string})
+_STEP_PHONE_NUMBER_SCHEMA = probatio.Schema({probatio.Required(CONF_PHONE): cv.string})
 
-_STEP_OTP_CODE_SCHEMA = vol.Schema({vol.Required("otp"): cv.string})
+_STEP_OTP_CODE_SCHEMA = probatio.Schema({probatio.Required("otp"): cv.string})
 _PHONE_MATCHER = re.compile(r"^(\+?972)?0?(?P<number>\d{8,9})$")
 
 
@@ -30,6 +28,7 @@ class Tami4ConfigFlow(ConfigFlow, domain=DOMAIN):
 
     phone: str
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -42,7 +41,7 @@ class Tami4ConfigFlow(ConfigFlow, domain=DOMAIN):
                 if m := _PHONE_MATCHER.match(phone):
                     self.phone = f"+972{m.group('number')}"
                 else:
-                    raise InvalidPhoneNumber
+                    raise InvalidPhoneNumber  # noqa: TRY301
                 await self.hass.async_add_executor_job(
                     Tami4EdgeAPI.request_otp, self.phone
                 )
@@ -68,11 +67,13 @@ class Tami4ConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             otp = user_input["otp"]
             try:
-                refresh_token = await self.hass.async_add_executor_job(
-                    Tami4EdgeAPI.submit_otp, self.phone, otp
-                )
-                api = await self.hass.async_add_executor_job(
-                    Tami4EdgeAPI, refresh_token
+
+                def _submit_otp_and_create_api() -> tuple[str, Tami4EdgeAPI]:
+                    refresh_token = Tami4EdgeAPI.submit_otp(self.phone, otp)
+                    return refresh_token, Tami4EdgeAPI(refresh_token)
+
+                refresh_token, api = await self.hass.async_add_executor_job(
+                    _submit_otp_and_create_api
                 )
             except exceptions.OTPFailedException:
                 errors["base"] = "invalid_auth"
@@ -82,8 +83,11 @@ class Tami4ConfigFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
             else:
+                device_name = api.device_metadata.name
+                if device_name is None:
+                    device_name = "Tami4"
                 return self.async_create_entry(
-                    title=api.device_metadata.name,
+                    title=device_name,
                     data={CONF_REFRESH_TOKEN: refresh_token},
                 )
 

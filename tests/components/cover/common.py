@@ -2,8 +2,7 @@
 
 from typing import Any
 
-from homeassistant.components.cover import CoverEntity, CoverEntityFeature
-from homeassistant.const import STATE_CLOSED, STATE_CLOSING, STATE_OPEN, STATE_OPENING
+from homeassistant.components.cover import CoverEntity, CoverEntityFeature, CoverState
 
 from tests.common import MockEntity
 
@@ -22,11 +21,12 @@ class MockCover(MockEntity, CoverEntity):
             if reports_opening_closing is not None
             else CoverEntityFeature.STOP in self.supported_features
         )
+        self.last_kwargs: dict[str, Any] | None = None
 
     @property
     def is_closed(self):
         """Return if the cover is closed or not."""
-        if "state" in self._values and self._values["state"] == STATE_CLOSED:
+        if "state" in self._values and self._values["state"] == CoverState.CLOSED:
             return True
 
         return self.current_cover_position == 0
@@ -35,7 +35,7 @@ class MockCover(MockEntity, CoverEntity):
     def is_opening(self):
         """Return if the cover is opening or not."""
         if "state" in self._values:
-            return self._values["state"] == STATE_OPENING
+            return self._values["state"] == CoverState.OPENING
 
         return False
 
@@ -43,28 +43,34 @@ class MockCover(MockEntity, CoverEntity):
     def is_closing(self):
         """Return if the cover is closing or not."""
         if "state" in self._values:
-            return self._values["state"] == STATE_CLOSING
+            return self._values["state"] == CoverState.CLOSING
 
         return False
 
     def open_cover(self, **kwargs) -> None:
         """Open cover."""
+        self.last_kwargs = kwargs
         if self._reports_opening_closing:
-            self._values["state"] = STATE_OPENING
+            self._values["state"] = CoverState.OPENING
         else:
-            self._values["state"] = STATE_OPEN
+            self._values["state"] = CoverState.OPEN
 
     def close_cover(self, **kwargs) -> None:
         """Close cover."""
+        self.last_kwargs = kwargs
         if self._reports_opening_closing:
-            self._values["state"] = STATE_CLOSING
+            self._values["state"] = CoverState.CLOSING
         else:
-            self._values["state"] = STATE_CLOSED
+            self._values["state"] = CoverState.CLOSED
+
+    def set_cover_position(self, **kwargs) -> None:
+        """Set cover position."""
+        self.last_kwargs = kwargs
 
     def stop_cover(self, **kwargs) -> None:
         """Stop cover."""
         assert CoverEntityFeature.STOP in self.supported_features
-        self._values["state"] = STATE_CLOSED if self.is_closed else STATE_OPEN
+        self._values["state"] = CoverState.CLOSED if self.is_closed else CoverState.OPEN
 
     @property
     def current_cover_position(self):
@@ -75,3 +81,8 @@ class MockCover(MockEntity, CoverEntity):
     def current_cover_tilt_position(self):
         """Return current position of cover tilt."""
         return self._handle("current_cover_tilt_position")
+
+    @property
+    def supported_speeds(self):
+        """Return supported speeds of cover."""
+        return self._handle("supported_speeds")

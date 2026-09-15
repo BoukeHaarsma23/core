@@ -4,13 +4,15 @@ import pytest
 from ttn_client import TTNAuthError
 
 from homeassistant.components.thethingsnetwork.const import CONF_APP_ID, DOMAIN
-from homeassistant.config_entries import SOURCE_REAUTH, SOURCE_USER
+from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import CONF_API_KEY, CONF_HOST
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 
 from . import init_integration
 from .conftest import API_KEY, APP_ID, HOST
+
+from tests.common import MockConfigEntry
 
 USER_DATA = {CONF_HOST: HOST, CONF_APP_ID: APP_ID, CONF_API_KEY: API_KEY}
 
@@ -26,10 +28,8 @@ async def test_user(hass: HomeAssistant, mock_ttnclient) -> None:
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
 
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data=USER_DATA,
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=USER_DATA
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == APP_ID
@@ -52,17 +52,21 @@ async def test_user_errors(
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": SOURCE_USER},
-        data=USER_DATA,
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=USER_DATA
     )
     assert result["type"] is FlowResultType.FORM
     assert base_error in result["errors"]["base"]
 
     # Recover
     mock_ttnclient.return_value.fetch_data.side_effect = None
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data=USER_DATA,
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=USER_DATA
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
 
@@ -82,31 +86,21 @@ async def test_duplicate_entry(
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
 
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data=USER_DATA,
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=USER_DATA
     )
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
 
 
 async def test_step_reauth(
-    hass: HomeAssistant, mock_ttnclient, mock_config_entry
+    hass: HomeAssistant, mock_ttnclient, mock_config_entry: MockConfigEntry
 ) -> None:
     """Test that the reauth step works."""
 
     await init_integration(hass, mock_config_entry)
 
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={
-            "source": SOURCE_REAUTH,
-            "unique_id": APP_ID,
-            "entry_id": mock_config_entry.entry_id,
-        },
-        data=USER_DATA,
-    )
+    result = await mock_config_entry.start_reauth_flow(hass)
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "reauth_confirm"
     assert not result["errors"]

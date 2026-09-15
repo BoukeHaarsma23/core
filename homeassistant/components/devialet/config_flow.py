@@ -1,17 +1,15 @@
 """Support for Devialet Phantom speakers."""
 
-from __future__ import annotations
-
 import logging
-from typing import Any
+from typing import Any, override
 
 from devialet.devialet_api import DevialetApi
-import voluptuous as vol
+import probatio
 
-from homeassistant.components import zeroconf
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_NAME
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from .const import DOMAIN
 
@@ -23,12 +21,13 @@ class DevialetFlowHandler(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    _host: str
+    _model: str
+    _name: str
+    _serial: str
+
     def __init__(self) -> None:
         """Initialize flow."""
-        self._host: str | None = None
-        self._name: str | None = None
-        self._model: str | None = None
-        self._serial: str | None = None
         self._errors: dict[str, str] = {}
 
     async def async_validate_input(self) -> ConfigFlowResult | None:
@@ -51,6 +50,7 @@ class DevialetFlowHandler(ConfigFlow, domain=DOMAIN):
             data={CONF_HOST: self._host, CONF_NAME: client.device_name},
         )
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -64,15 +64,16 @@ class DevialetFlowHandler(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({vol.Required(CONF_HOST): str}),
+            data_schema=probatio.Schema({probatio.Required(CONF_HOST): str}),
             errors=self._errors,
         )
 
+    @override
     async def async_step_zeroconf(
-        self, discovery_info: zeroconf.ZeroconfServiceInfo
+        self, discovery_info: ZeroconfServiceInfo
     ) -> ConfigFlowResult:
         """Handle a flow initialized by zeroconf discovery."""
-        LOGGER.info("Devialet device found via ZEROCONF: %s", discovery_info)
+        LOGGER.debug("Devialet device found via ZEROCONF: %s", discovery_info)
 
         self._host = discovery_info.host
         self._name = discovery_info.name.split(".", 1)[0]

@@ -1,8 +1,6 @@
 """Provides device automations for Lock."""
 
-from __future__ import annotations
-
-import voluptuous as vol
+import probatio
 
 from homeassistant.const import (
     ATTR_ENTITY_ID,
@@ -11,13 +9,6 @@ from homeassistant.const import (
     CONF_DOMAIN,
     CONF_ENTITY_ID,
     CONF_TYPE,
-    STATE_JAMMED,
-    STATE_LOCKED,
-    STATE_LOCKING,
-    STATE_OPEN,
-    STATE_OPENING,
-    STATE_UNLOCKED,
-    STATE_UNLOCKING,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import (
@@ -28,7 +19,7 @@ from homeassistant.helpers import (
 from homeassistant.helpers.config_validation import DEVICE_CONDITION_BASE_SCHEMA
 from homeassistant.helpers.typing import ConfigType, TemplateVarsType
 
-from . import DOMAIN
+from . import DOMAIN, LockState
 
 # mypy: disallow-any-generics
 
@@ -44,8 +35,8 @@ CONDITION_TYPES = {
 
 CONDITION_SCHEMA = DEVICE_CONDITION_BASE_SCHEMA.extend(
     {
-        vol.Required(CONF_ENTITY_ID): cv.entity_id_or_uuid,
-        vol.Required(CONF_TYPE): vol.In(CONDITION_TYPES),
+        probatio.Required(CONF_ENTITY_ID): cv.entity_id_or_uuid,
+        probatio.Required(CONF_TYPE): probatio.In(CONDITION_TYPES),
     }
 )
 
@@ -81,19 +72,19 @@ def async_condition_from_config(
 ) -> condition.ConditionCheckerType:
     """Create a function to test a device condition."""
     if config[CONF_TYPE] == "is_jammed":
-        state = STATE_JAMMED
+        state = LockState.JAMMED
     elif config[CONF_TYPE] == "is_opening":
-        state = STATE_OPENING
+        state = LockState.OPENING
     elif config[CONF_TYPE] == "is_locking":
-        state = STATE_LOCKING
+        state = LockState.LOCKING
     elif config[CONF_TYPE] == "is_open":
-        state = STATE_OPEN
+        state = LockState.OPEN
     elif config[CONF_TYPE] == "is_unlocking":
-        state = STATE_UNLOCKING
+        state = LockState.UNLOCKING
     elif config[CONF_TYPE] == "is_locked":
-        state = STATE_LOCKED
+        state = LockState.LOCKED
     else:
-        state = STATE_UNLOCKED
+        state = LockState.UNLOCKED
 
     registry = er.async_get(hass)
     entity_id = er.async_resolve_entity_id(registry, config[ATTR_ENTITY_ID])

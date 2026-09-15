@@ -1,19 +1,17 @@
 """Helper to check the configuration file."""
 
-from __future__ import annotations
-
 from collections import OrderedDict
 import logging
 import os
 from pathlib import Path
 from typing import NamedTuple, Self
 
-import voluptuous as vol
+from annotatedyaml import loader as yaml_loader
+import probatio
 
 from homeassistant import loader
 from homeassistant.config import (  # type: ignore[attr-defined]
     CONF_PACKAGES,
-    CORE_CONFIG_SCHEMA,
     YAML_CONFIG_FILE,
     config_per_platform,
     extract_domain_configs,
@@ -23,15 +21,15 @@ from homeassistant.config import (  # type: ignore[attr-defined]
     merge_packages_config,
 )
 from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN, HomeAssistant
+from homeassistant.core_config import CORE_CONFIG_SCHEMA
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.requirements import (
     RequirementsNotFound,
     async_clear_install_history,
     async_get_integration_with_requirements,
 )
-import homeassistant.util.yaml.loader as yaml_loader
 
-from . import config_validation as cv
+from . import condition, config_validation as cv, trigger
 from .typing import ConfigType
 
 
@@ -93,6 +91,12 @@ async def async_check_ha_config_file(  # noqa: C901
     result = HomeAssistantConfig()
     async_clear_install_history(hass)
 
+    # Set up condition and trigger helpers needed for config validation.
+    if condition.CONDITIONS not in hass.data:
+        await condition.async_setup(hass)
+    if trigger.TRIGGERS not in hass.data:
+        await trigger.async_setup(hass)
+
     def _pack_error(
         hass: HomeAssistant,
         package: str,
@@ -102,18 +106,21 @@ async def async_check_ha_config_file(  # noqa: C901
     ) -> None:
         """Handle errors from packages."""
         message = f"Setup of package '{package}' failed: {message}"
-        domain = f"homeassistant.packages.{package}{'.' + component if component is not None else ''}"
+        domain = (
+            f"homeassistant.packages.{package}"
+            f"{'.' + component if component is not None else ''}"
+        )
         pack_config = core_config[CONF_PACKAGES].get(package, config)
         result.add_warning(message, domain, pack_config)
 
     def _comp_error(
-        ex: vol.Invalid | HomeAssistantError,
+        ex: probatio.Invalid | HomeAssistantError,
         domain: str,
         component_config: ConfigType,
         config_to_attach: ConfigType,
     ) -> None:
         """Handle errors from components."""
-        if isinstance(ex, vol.Invalid):
+        if isinstance(ex, probatio.Invalid):
             message = format_schema_error(hass, ex, domain, component_config)
         else:
             message = format_homeassistant_error(hass, ex, domain, component_config)
@@ -166,7 +173,7 @@ async def async_check_ha_config_file(  # noqa: C901
         await merge_packages_config(
             hass, config, core_config.get(CONF_PACKAGES, {}), _pack_error
         )
-    except vol.Invalid as err:
+    except probatio.Invalid as err:
         result.add_error(
             format_schema_error(hass, err, HOMEASSISTANT_DOMAIN, core_config),
             HOMEASSISTANT_DOMAIN,
@@ -217,10 +224,10 @@ async def async_check_ha_config_file(  # noqa: C901
                     await config_validator.async_validate_config(hass, config)
                 )[domain]
                 continue
-            except (vol.Invalid, HomeAssistantError) as ex:
+            except (probatio.Invalid, HomeAssistantError) as ex:
                 _comp_error(ex, domain, config, config[domain])
                 continue
-            except Exception as err:  # noqa: BLE001
+            except Exception as err:
                 logging.getLogger(__name__).exception(
                     "Unexpected error validating config"
                 )
@@ -234,11 +241,11 @@ async def async_check_ha_config_file(  # noqa: C901
         config_schema = getattr(component, "CONFIG_SCHEMA", None)
         if config_schema is not None:
             try:
-                validated_config = config_schema(config)
+                validated_config = await cv.async_validate(hass, config_schema, config)
                 # Don't fail if the validator removed the domain from the config
                 if domain in validated_config:
                     result[domain] = validated_config[domain]
-            except vol.Invalid as ex:
+            except probatio.Invalid as ex:
                 _comp_error(ex, domain, config, config[domain])
                 continue
 
@@ -255,8 +262,10 @@ async def async_check_ha_config_file(  # noqa: C901
         for p_name, p_config in config_per_platform(config, domain):
             # Validate component specific platform schema
             try:
-                p_validated = component_platform_schema(p_config)
-            except vol.Invalid as ex:
+                p_validated = await cv.async_validate(
+                    hass, component_platform_schema, p_config
+                )
+            except probatio.Invalid as ex:
                 _comp_error(ex, domain, p_config, p_config)
                 continue
 
@@ -296,7 +305,7 @@ async def async_check_ha_config_file(  # noqa: C901
             if platform_schema is not None:
                 try:
                     p_validated = platform_schema(p_validated)
-                except vol.Invalid as ex:
+                except probatio.Invalid as ex:
                     _comp_error(ex, f"{domain}.{p_name}", p_config, p_config)
                     continue
 

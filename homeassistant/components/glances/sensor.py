@@ -1,8 +1,7 @@
-"""Support gathering system information of hosts which are running glances."""
-
-from __future__ import annotations
+"""Support gathering system information of hosts which are running Glances."""
 
 from dataclasses import dataclass
+from typing import override
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -19,11 +18,11 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import GlancesConfigEntry, GlancesDataUpdateCoordinator
 from .const import CPU_ICON, DOMAIN
+from .coordinator import GlancesConfigEntry, GlancesDataUpdateCoordinator
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -45,6 +44,14 @@ SENSOR_TYPES = {
         key="disk_use",
         type="fs",
         translation_key="disk_used",
+        native_unit_of_measurement=UnitOfInformation.GIBIBYTES,
+        device_class=SensorDeviceClass.DATA_SIZE,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    ("fs", "disk_size"): GlancesSensorEntityDescription(
+        key="disk_size",
+        type="fs",
+        translation_key="disk_size",
         native_unit_of_measurement=UnitOfInformation.GIBIBYTES,
         device_class=SensorDeviceClass.DATA_SIZE,
         state_class=SensorStateClass.MEASUREMENT,
@@ -288,7 +295,7 @@ SENSOR_TYPES = {
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: GlancesConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the Glances sensors."""
 
@@ -325,6 +332,7 @@ class GlancesSensor(CoordinatorEntity[GlancesDataUpdateCoordinator], SensorEntit
 
     entity_description: GlancesSensorEntityDescription
     _attr_has_entity_name = True
+    _data_valid: bool = False
 
     def __init__(
         self,
@@ -349,18 +357,13 @@ class GlancesSensor(CoordinatorEntity[GlancesDataUpdateCoordinator], SensorEntit
         self._update_native_value()
 
     @property
+    @override
     def available(self) -> bool:
         """Set sensor unavailable when native value is invalid."""
-        if super().available:
-            return (
-                not self._numeric_state_expected
-                or isinstance(value := self.native_value, (int, float))
-                or isinstance(value, str)
-                and value.isnumeric()
-            )
-        return False
+        return super().available and self._data_valid
 
     @callback
+    @override
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         self._update_native_value()
@@ -368,10 +371,21 @@ class GlancesSensor(CoordinatorEntity[GlancesDataUpdateCoordinator], SensorEntit
 
     def _update_native_value(self) -> None:
         """Update sensor native value from coordinator data."""
-        data = self.coordinator.data[self.entity_description.type]
-        if dict_val := data.get(self._sensor_label):
+        data = self.coordinator.data.get(self.entity_description.type)
+        if data and (dict_val := data.get(self._sensor_label)):
             self._attr_native_value = dict_val.get(self.entity_description.key)
-        elif self.entity_description.key in data:
+        elif data and (self.entity_description.key in data):
             self._attr_native_value = data.get(self.entity_description.key)
         else:
             self._attr_native_value = None
+        self._update_data_valid()
+
+    def _update_data_valid(self) -> None:
+        self._data_valid = self._attr_native_value is not None and (
+            not self._numeric_state_expected
+            or isinstance(self._attr_native_value, (int, float))
+            or (
+                isinstance(self._attr_native_value, str)
+                and self._attr_native_value.isnumeric()
+            )
+        )

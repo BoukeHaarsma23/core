@@ -1,34 +1,31 @@
 """Support for deCONZ siren."""
 
-from __future__ import annotations
-
-from typing import Any
+from typing import Any, override
 
 from pydeconz.models.event import EventType
 from pydeconz.models.light.siren import Siren
 
 from homeassistant.components.siren import (
     ATTR_DURATION,
-    DOMAIN,
+    DOMAIN as SIREN_DOMAIN,
     SirenEntity,
     SirenEntityFeature,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from .deconz_device import DeconzDevice
-from .hub import DeconzHub
+from . import DeconzConfigEntry
+from .entity import DeconzDevice
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    config_entry: DeconzConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up sirens for deCONZ component."""
-    hub = DeconzHub.get_hub(hass, config_entry)
-    hub.entities[DOMAIN] = set()
+    hub = config_entry.runtime_data
+    hub.entities[SIREN_DOMAIN] = set()
 
     @callback
     def async_add_siren(_: EventType, siren_id: str) -> None:
@@ -45,7 +42,7 @@ async def async_setup_entry(
 class DeconzSiren(DeconzDevice[Siren], SirenEntity):
     """Representation of a deCONZ siren."""
 
-    TYPE = DOMAIN
+    TYPE = SIREN_DOMAIN
     _attr_supported_features = (
         SirenEntityFeature.TURN_ON
         | SirenEntityFeature.TURN_OFF
@@ -53,10 +50,12 @@ class DeconzSiren(DeconzDevice[Siren], SirenEntity):
     )
 
     @property
+    @override
     def is_on(self) -> bool:
         """Return true if siren is on."""
         return self._device.is_on
 
+    @override
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on siren."""
         if (duration := kwargs.get(ATTR_DURATION)) is not None:
@@ -67,6 +66,7 @@ class DeconzSiren(DeconzDevice[Siren], SirenEntity):
             duration=duration,
         )
 
+    @override
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off siren."""
         await self.hub.api.lights.sirens.set_state(

@@ -1,17 +1,20 @@
 {
   "entity": {
     "sensor": {
-      "purity": {
-        "default": "mdi:molecule-co2"
-      },
       "communication_quality": {
         "default": "mdi:wifi"
+      },
+      "purity": {
+        "default": "mdi:molecule-co2"
       },
       "valvetappet": {
         "default": "mdi:gauge"
       }
     },
     "switch": {
+      "child_lock": {
+        "default": "mdi:lock"
+      },
       "routing": {
         "default": "mdi:wifi"
       }

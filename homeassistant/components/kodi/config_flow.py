@@ -1,13 +1,11 @@
 """Config flow for Kodi integration."""
 
-from __future__ import annotations
-
 import logging
+from typing import Any, override
 
+import probatio
 from pykodi import CannotConnectError, InvalidAuthError, Kodi, get_kodi_connection
-import voluptuous as vol
 
-from homeassistant.components import zeroconf
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import (
     CONF_HOST,
@@ -21,6 +19,7 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from .const import (
     CONF_WS_PORT,
@@ -101,8 +100,9 @@ class KodiConfigFlow(ConfigFlow, domain=DOMAIN):
         self._ssl: bool | None = DEFAULT_SSL
         self._discovery_name: str | None = None
 
+    @override
     async def async_step_zeroconf(
-        self, discovery_info: zeroconf.ZeroconfServiceInfo
+        self, discovery_info: ZeroconfServiceInfo
     ) -> ConfigFlowResult:
         """Handle zeroconf discovery."""
         self._host = discovery_info.host
@@ -139,9 +139,12 @@ class KodiConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return await self.async_step_discovery_confirm()
 
-    async def async_step_discovery_confirm(self, user_input=None):
+    async def async_step_discovery_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle user-confirmation of discovered node."""
         if user_input is None:
+            assert self._name is not None
             return self.async_show_form(
                 step_id="discovery_confirm",
                 description_placeholders={"name": self._name},
@@ -149,7 +152,10 @@ class KodiConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self._create_entry()
 
-    async def async_step_user(self, user_input=None):
+    @override
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle the initial step."""
         errors = {}
 
@@ -175,7 +181,9 @@ class KodiConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self._show_user_form(errors)
 
-    async def async_step_credentials(self, user_input=None):
+    async def async_step_credentials(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle username and password input."""
         errors = {}
 
@@ -200,7 +208,9 @@ class KodiConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self._show_credentials_form(errors)
 
-    async def async_step_ws_port(self, user_input=None):
+    async def async_step_ws_port(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle websocket port of discovered node."""
         errors = {}
 
@@ -223,52 +233,34 @@ class KodiConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self._show_ws_port_form(errors)
 
-    async def async_step_import(self, data):
-        """Handle import from YAML."""
-        reason = None
-        try:
-            await validate_http(self.hass, data)
-            await validate_ws(self.hass, data)
-        except InvalidAuth:
-            _LOGGER.exception("Invalid Kodi credentials")
-            reason = "invalid_auth"
-        except CannotConnect:
-            _LOGGER.exception("Cannot connect to Kodi")
-            reason = "cannot_connect"
-        except Exception:
-            _LOGGER.exception("Unexpected exception")
-            reason = "unknown"
-        else:
-            return self.async_create_entry(title=data[CONF_NAME], data=data)
-
-        return self.async_abort(reason=reason)
-
     @callback
-    def _show_credentials_form(self, errors=None):
-        schema = vol.Schema(
+    def _show_credentials_form(
+        self, errors: dict[str, str] | None = None
+    ) -> ConfigFlowResult:
+        schema = probatio.Schema(
             {
-                vol.Optional(
+                probatio.Optional(
                     CONF_USERNAME, description={"suggested_value": self._username}
                 ): str,
-                vol.Optional(
+                probatio.Optional(
                     CONF_PASSWORD, description={"suggested_value": self._password}
                 ): str,
             }
         )
 
         return self.async_show_form(
-            step_id="credentials", data_schema=schema, errors=errors or {}
+            step_id="credentials", data_schema=schema, errors=errors
         )
 
     @callback
     def _show_user_form(self, errors=None):
         default_port = self._port or DEFAULT_PORT
         default_ssl = self._ssl or DEFAULT_SSL
-        schema = vol.Schema(
+        schema = probatio.Schema(
             {
-                vol.Required(CONF_HOST, default=self._host): str,
-                vol.Required(CONF_PORT, default=default_port): int,
-                vol.Required(CONF_SSL, default=default_ssl): bool,
+                probatio.Required(CONF_HOST, default=self._host): str,
+                probatio.Required(CONF_PORT, default=default_port): int,
+                probatio.Required(CONF_SSL, default=default_ssl): bool,
             }
         )
 
@@ -279,9 +271,9 @@ class KodiConfigFlow(ConfigFlow, domain=DOMAIN):
     @callback
     def _show_ws_port_form(self, errors=None):
         suggestion = self._ws_port or DEFAULT_WS_PORT
-        schema = vol.Schema(
+        schema = probatio.Schema(
             {
-                vol.Optional(
+                probatio.Optional(
                     CONF_WS_PORT, description={"suggested_value": suggestion}
                 ): int
             }
@@ -299,7 +291,7 @@ class KodiConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     @callback
-    def _get_data(self):
+    def _get_data(self) -> dict[str, Any]:
         return {
             CONF_NAME: self._name,
             CONF_HOST: self._host,

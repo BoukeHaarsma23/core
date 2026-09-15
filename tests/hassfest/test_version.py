@@ -1,19 +1,29 @@
 """Tests for hassfest version."""
 
+from pathlib import Path
+
+import probatio
 import pytest
-import voluptuous as vol
 
 from script.hassfest.manifest import (
     CUSTOM_INTEGRATION_MANIFEST_SCHEMA,
     validate_version,
 )
-from script.hassfest.model import Integration
+from script.hassfest.model import Config, Integration
 
 
 @pytest.fixture
 def integration():
     """Fixture for hassfest integration model."""
-    integration = Integration("")
+    integration = Integration(
+        Path(),
+        _config=Config(
+            root=Path(".").absolute(),
+            specific_integrations=None,
+            action="validate",
+            requirements=True,
+        ),
+    )
     integration._manifest = {
         "domain": "test",
         "documentation": "https://example.com",
@@ -35,11 +45,11 @@ def test_validate_custom_integration_manifest(integration: Integration) -> None:
     """Test validate custom integration manifest."""
 
     integration.manifest["version"] = "lorem_ipsum"
-    with pytest.raises(vol.Invalid):
+    with pytest.raises(probatio.Invalid):
         CUSTOM_INTEGRATION_MANIFEST_SCHEMA(integration.manifest)
 
     integration.manifest["version"] = None
-    with pytest.raises(vol.Invalid):
+    with pytest.raises(probatio.Invalid):
         CUSTOM_INTEGRATION_MANIFEST_SCHEMA(integration.manifest)
 
     integration.manifest["version"] = "1"

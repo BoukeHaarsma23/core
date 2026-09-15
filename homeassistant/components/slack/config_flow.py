@@ -1,12 +1,11 @@
 """Config flow for Slack integration."""
 
-from __future__ import annotations
-
 import logging
+from typing import override
 
-from slack import WebClient
-from slack.errors import SlackApiError
-import voluptuous as vol
+import probatio
+from slack_sdk.errors import SlackApiError
+from slack_sdk.web.async_client import AsyncSlackResponse, AsyncWebClient
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_API_KEY, CONF_ICON, CONF_NAME, CONF_USERNAME
@@ -16,12 +15,12 @@ from .const import CONF_DEFAULT_CHANNEL, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-CONFIG_SCHEMA = vol.Schema(
+CONFIG_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_API_KEY): str,
-        vol.Required(CONF_DEFAULT_CHANNEL): str,
-        vol.Optional(CONF_ICON): str,
-        vol.Optional(CONF_USERNAME): str,
+        probatio.Required(CONF_API_KEY): str,
+        probatio.Required(CONF_DEFAULT_CHANNEL): str,
+        probatio.Optional(CONF_ICON): str,
+        probatio.Optional(CONF_USERNAME): str,
     }
 )
 
@@ -29,6 +28,7 @@ CONFIG_SCHEMA = vol.Schema(
 class SlackFlowHandler(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Slack."""
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, str] | None = None
     ) -> ConfigFlowResult:
@@ -57,10 +57,10 @@ class SlackFlowHandler(ConfigFlow, domain=DOMAIN):
 
     async def _async_try_connect(
         self, token: str
-    ) -> tuple[str, None] | tuple[None, dict[str, str]]:
+    ) -> tuple[str, None] | tuple[None, AsyncSlackResponse]:
         """Try connecting to Slack."""
         session = aiohttp_client.async_get_clientsession(self.hass)
-        client = WebClient(token=token, run_async=True, session=session)
+        client = AsyncWebClient(token=token, session=session)  # No run_async
 
         try:
             info = await client.auth_test()

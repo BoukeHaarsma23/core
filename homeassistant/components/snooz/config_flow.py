@@ -1,14 +1,13 @@
 """Config flow for Snooz component."""
 
-from __future__ import annotations
-
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, override
 
+import probatio
 from pysnooz.advertisement import SnoozAdvertisementData
-import voluptuous as vol
 
+from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth import (
     BluetoothScanningMode,
     BluetoothServiceInfo,
@@ -43,6 +42,7 @@ class SnoozConfigFlow(ConfigFlow, domain=DOMAIN):
         self._discovered_devices: dict[str, DiscoveredSnooz] = {}
         self._pairing_task: asyncio.Task | None = None
 
+    @override
     async def async_step_bluetooth(
         self, discovery_info: BluetoothServiceInfo
     ) -> ConfigFlowResult:
@@ -75,6 +75,7 @@ class SnoozConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="bluetooth_confirm", description_placeholders=placeholders
         )
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -96,7 +97,8 @@ class SnoozConfigFlow(ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured()
             return self._create_snooz_entry(discovered)
 
-        configured_addresses = self._async_current_ids()
+        await bluetooth.async_request_active_scan(self.hass)
+        configured_addresses = self._async_current_ids(include_ignore=False)
 
         for info in async_discovered_service_info(self.hass):
             address = info.address
@@ -114,9 +116,11 @@ class SnoozConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(CONF_NAME): vol.In(
+                    # Name field is no longer allowed in config flow schemas
+                    # pylint: disable-next=home-assistant-config-flow-name-field
+                    probatio.Required(CONF_NAME): probatio.In(
                         [
                             d.device.display_name
                             for d in self._discovered_devices.values()

@@ -5,7 +5,8 @@ from datetime import date
 from unittest.mock import Mock, patch
 
 from amberelectric import ApiException
-from amberelectric.model.site import Site, SiteStatus
+from amberelectric.models.site import Site
+from amberelectric.models.site_status import SiteStatus
 import pytest
 
 from homeassistant.components.amberelectric.config_flow import filter_sites
@@ -28,7 +29,7 @@ pytestmark = pytest.mark.usefixtures("mock_setup_entry")
 def mock_invalid_key_api() -> Generator:
     """Return an authentication error."""
 
-    with patch("amberelectric.api.AmberApi.create") as mock:
+    with patch("amberelectric.AmberApi") as mock:
         mock.return_value.get_sites.side_effect = ApiException(status=403)
         yield mock
 
@@ -36,7 +37,7 @@ def mock_invalid_key_api() -> Generator:
 @pytest.fixture(name="api_error")
 def mock_api_error() -> Generator:
     """Return an authentication error."""
-    with patch("amberelectric.api.AmberApi.create") as mock:
+    with patch("amberelectric.AmberApi") as mock:
         mock.return_value.get_sites.side_effect = ApiException(status=500)
         yield mock
 
@@ -45,16 +46,36 @@ def mock_api_error() -> Generator:
 def mock_single_site_api() -> Generator:
     """Return a single site."""
     site = Site(
-        "01FG0AGP818PXK0DWHXJRRT2DH",
-        "11111111111",
-        [],
-        "Jemena",
-        SiteStatus.ACTIVE,
-        date(2002, 1, 1),
-        None,
+        id="01FG0AGP818PXK0DWHXJRRT2DH",
+        nmi="11111111111",
+        channels=[],
+        network="Jemena",
+        status=SiteStatus.ACTIVE,
+        active_from=date(2002, 1, 1),
+        closed_on=None,
+        interval_length=30,
     )
 
-    with patch("amberelectric.api.AmberApi.create") as mock:
+    with patch("amberelectric.AmberApi") as mock:
+        mock.return_value.get_sites.return_value = [site]
+        yield mock
+
+
+@pytest.fixture(name="single_site_closed_no_close_date_api")
+def single_site_closed_no_close_date_api() -> Generator:
+    """Return a single closed site with no closed date."""
+    site = Site(
+        id="01FG0AGP818PXK0DWHXJRRT2DH",
+        nmi="11111111111",
+        channels=[],
+        network="Jemena",
+        status=SiteStatus.CLOSED,
+        active_from=None,
+        closed_on=None,
+        interval_length=30,
+    )
+
+    with patch("amberelectric.AmberApi") as mock:
         mock.return_value.get_sites.return_value = [site]
         yield mock
 
@@ -63,16 +84,17 @@ def mock_single_site_api() -> Generator:
 def mock_single_site_pending_api() -> Generator:
     """Return a single site."""
     site = Site(
-        "01FG0AGP818PXK0DWHXJRRT2DH",
-        "11111111111",
-        [],
-        "Jemena",
-        SiteStatus.PENDING,
-        None,
-        None,
+        id="01FG0AGP818PXK0DWHXJRRT2DH",
+        nmi="11111111111",
+        channels=[],
+        network="Jemena",
+        status=SiteStatus.PENDING,
+        active_from=None,
+        closed_on=None,
+        interval_length=30,
     )
 
-    with patch("amberelectric.api.AmberApi.create") as mock:
+    with patch("amberelectric.AmberApi") as mock:
         mock.return_value.get_sites.return_value = [site]
         yield mock
 
@@ -82,35 +104,38 @@ def mock_single_site_rejoin_api() -> Generator:
     """Return a single site."""
     instance = Mock()
     site_1 = Site(
-        "01HGD9QB72HB3DWQNJ6SSCGXGV",
-        "11111111111",
-        [],
-        "Jemena",
-        SiteStatus.CLOSED,
-        date(2002, 1, 1),
-        date(2002, 6, 1),
+        id="01HGD9QB72HB3DWQNJ6SSCGXGV",
+        nmi="11111111111",
+        channels=[],
+        network="Jemena",
+        status=SiteStatus.CLOSED,
+        active_from=date(2002, 1, 1),
+        closed_on=date(2002, 6, 1),
+        interval_length=30,
     )
     site_2 = Site(
-        "01FG0AGP818PXK0DWHXJRRT2DH",
-        "11111111111",
-        [],
-        "Jemena",
-        SiteStatus.ACTIVE,
-        date(2003, 1, 1),
-        None,
+        id="01FG0AGP818PXK0DWHXJRRT2DH",
+        nmi="11111111111",
+        channels=[],
+        network="Jemena",
+        status=SiteStatus.ACTIVE,
+        active_from=date(2003, 1, 1),
+        closed_on=None,
+        interval_length=30,
     )
     site_3 = Site(
-        "01FG0AGP818PXK0DWHXJRRT2DH",
-        "11111111112",
-        [],
-        "Jemena",
-        SiteStatus.CLOSED,
-        date(2003, 1, 1),
-        date(2003, 6, 1),
+        id="01FG0AGP818PXK0DWHXJRRT2DH",
+        nmi="11111111112",
+        channels=[],
+        network="Jemena",
+        status=SiteStatus.CLOSED,
+        active_from=date(2003, 1, 1),
+        closed_on=date(2003, 6, 1),
+        interval_length=30,
     )
     instance.get_sites.return_value = [site_1, site_2, site_3]
 
-    with patch("amberelectric.api.AmberApi.create", return_value=instance):
+    with patch("amberelectric.AmberApi", return_value=instance):
         yield instance
 
 
@@ -120,7 +145,7 @@ def mock_no_site_api() -> Generator:
     instance = Mock()
     instance.get_sites.return_value = []
 
-    with patch("amberelectric.api.AmberApi.create", return_value=instance):
+    with patch("amberelectric.AmberApi", return_value=instance):
         yield instance
 
 
@@ -135,10 +160,9 @@ async def test_single_pending_site(
     assert initial_result.get("step_id") == "user"
 
     # Test filling in API key
-    enter_api_key_result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data={CONF_API_TOKEN: API_KEY},
+    enter_api_key_result = await hass.config_entries.flow.async_configure(
+        initial_result["flow_id"],
+        user_input={CONF_API_TOKEN: API_KEY},
     )
     assert enter_api_key_result.get("type") is FlowResultType.FORM
     assert enter_api_key_result.get("step_id") == "site"
@@ -166,10 +190,9 @@ async def test_single_site(hass: HomeAssistant, single_site_api: Mock) -> None:
     assert initial_result.get("step_id") == "user"
 
     # Test filling in API key
-    enter_api_key_result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data={CONF_API_TOKEN: API_KEY},
+    enter_api_key_result = await hass.config_entries.flow.async_configure(
+        initial_result["flow_id"],
+        user_input={CONF_API_TOKEN: API_KEY},
     )
     assert enter_api_key_result.get("type") is FlowResultType.FORM
     assert enter_api_key_result.get("step_id") == "site"
@@ -188,6 +211,26 @@ async def test_single_site(hass: HomeAssistant, single_site_api: Mock) -> None:
     assert data[CONF_SITE_ID] == "01FG0AGP818PXK0DWHXJRRT2DH"
 
 
+async def test_single_closed_site_no_closed_date(
+    hass: HomeAssistant, single_site_closed_no_close_date_api: Mock
+) -> None:
+    """Test single closed site with no closed date is filtered out."""
+    enter_api_key_result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+
+    assert enter_api_key_result["type"] is FlowResultType.FORM
+    assert enter_api_key_result["step_id"] == "user"
+
+    enter_api_key_result = await hass.config_entries.flow.async_configure(
+        enter_api_key_result["flow_id"],
+        user_input={CONF_API_TOKEN: API_KEY},
+    )
+    assert enter_api_key_result.get("type") is FlowResultType.FORM
+    assert enter_api_key_result.get("step_id") == "user"
+    assert enter_api_key_result.get("errors") == {"api_token": "no_site"}
+
+
 async def test_single_site_rejoin(
     hass: HomeAssistant, single_site_rejoin_api: Mock
 ) -> None:
@@ -199,10 +242,9 @@ async def test_single_site_rejoin(
     assert initial_result.get("step_id") == "user"
 
     # Test filling in API key
-    enter_api_key_result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data={CONF_API_TOKEN: API_KEY},
+    enter_api_key_result = await hass.config_entries.flow.async_configure(
+        initial_result["flow_id"],
+        user_input={CONF_API_TOKEN: API_KEY},
     )
     assert enter_api_key_result.get("type") is FlowResultType.FORM
     assert enter_api_key_result.get("step_id") == "site"
@@ -224,9 +266,15 @@ async def test_single_site_rejoin(
 async def test_no_site(hass: HomeAssistant, no_site_api: Mock) -> None:
     """Test no site."""
     result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data={CONF_API_TOKEN: "psk_123456789"},
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={CONF_API_TOKEN: "psk_123456789"},
     )
 
     assert result.get("type") is FlowResultType.FORM
@@ -244,10 +292,9 @@ async def test_invalid_key(hass: HomeAssistant, invalid_key_api: Mock) -> None:
     assert result.get("step_id") == "user"
 
     # Test filling in API key
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data={CONF_API_TOKEN: "psk_123456789"},
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={CONF_API_TOKEN: "psk_123456789"},
     )
     assert result.get("type") is FlowResultType.FORM
     # Goes back to the user step
@@ -264,10 +311,9 @@ async def test_unknown_error(hass: HomeAssistant, api_error: Mock) -> None:
     assert result.get("step_id") == "user"
 
     # Test filling in API key
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": SOURCE_USER},
-        data={CONF_API_TOKEN: "psk_123456789"},
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={CONF_API_TOKEN: "psk_123456789"},
     )
     assert result.get("type") is FlowResultType.FORM
     # Goes back to the user step
@@ -275,13 +321,9 @@ async def test_unknown_error(hass: HomeAssistant, api_error: Mock) -> None:
     assert result.get("errors") == {"api_token": "unknown_error"}
 
 
-async def test_site_deduplication(single_site_rejoin_api: Mock) -> None:
-    """Test site deduplication."""
+async def test_site_filtering(single_site_rejoin_api: Mock) -> None:
+    """Test that closed sites are filtered out and remaining sites are deduplicated."""
     filtered = filter_sites(single_site_rejoin_api.get_sites())
-    assert len(filtered) == 2
-    assert (
-        next(s for s in filtered if s.nmi == "11111111111").status == SiteStatus.ACTIVE
-    )
-    assert (
-        next(s for s in filtered if s.nmi == "11111111112").status == SiteStatus.CLOSED
-    )
+    assert len(filtered) == 1
+    assert filtered[0].nmi == "11111111111"
+    assert filtered[0].status == SiteStatus.ACTIVE

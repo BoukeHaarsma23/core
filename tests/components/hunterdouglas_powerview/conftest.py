@@ -28,20 +28,21 @@ def mock_hunterdouglas_hub(
     firmware_json: str,
     rooms_json: str,
     scenes_json: str,
+    scenemembers_json: str,
     shades_json: str,
 ) -> Generator[None]:
     """Return a mocked Powerview Hub with all data populated."""
     with (
         patch(
-            "homeassistant.components.hunterdouglas_powerview.Hub.request_raw_data",
+            "homeassistant.components.hunterdouglas_powerview.util.Hub.request_raw_data",
             return_value=load_json_object_fixture(device_json, DOMAIN),
         ),
         patch(
-            "homeassistant.components.hunterdouglas_powerview.Hub.request_home_data",
+            "homeassistant.components.hunterdouglas_powerview.util.Hub.request_home_data",
             return_value=load_json_object_fixture(home_json, DOMAIN),
         ),
         patch(
-            "homeassistant.components.hunterdouglas_powerview.Hub.request_raw_firmware",
+            "homeassistant.components.hunterdouglas_powerview.util.Hub.request_raw_firmware",
             return_value=load_json_object_fixture(firmware_json, DOMAIN),
         ),
         patch(
@@ -63,6 +64,10 @@ def mock_hunterdouglas_hub(
             "homeassistant.components.hunterdouglas_powerview.cover.BaseShade.current_position",
             new_callable=PropertyMock,
             return_value=ShadePosition(primary=0, secondary=0, tilt=0, velocity=0),
+        ),
+        patch(
+            "aiopvapi.scenes.SceneMembers.get_resources",
+            return_value=load_json_value_fixture(scenemembers_json, DOMAIN),
         ),
     ):
         yield
@@ -111,7 +116,7 @@ def firmware_json(api_version: int) -> str:
 def rooms_json(api_version: int) -> str:
     """Return the get_resources fixture for a specific device."""
     if api_version == 1:
-        return "gen2/rooms.json"
+        return "gen1/rooms.json"
     if api_version == 2:
         return "gen2/rooms.json"
     if api_version == 3:
@@ -124,7 +129,7 @@ def rooms_json(api_version: int) -> str:
 def scenes_json(api_version: int) -> str:
     """Return the get_resources fixture for a specific device."""
     if api_version == 1:
-        return "gen2/scenes.json"
+        return "gen1/scenes.json"
     if api_version == 2:
         return "gen2/scenes.json"
     if api_version == 3:
@@ -134,10 +139,24 @@ def scenes_json(api_version: int) -> str:
 
 
 @pytest.fixture
+def scenemembers_json(api_version: int) -> str:
+    """Return the get_resources fixture for a specific device."""
+    if api_version == 1:
+        return "gen1/scenemembers.json"
+    if api_version == 2:
+        return "gen2/scenemembers.json"
+    if api_version == 3:
+        # gen3 does not have scenemembers endpoint
+        return "gen3/home/scenes.json"
+    # Add more conditions for different api_versions if needed
+    raise ValueError(f"Unsupported api_version: {api_version}")
+
+
+@pytest.fixture
 def shades_json(api_version: int) -> str:
     """Return the get_resources fixture for a specific device."""
     if api_version == 1:
-        return "gen2/shades.json"
+        return "gen1/shades.json"
     if api_version == 2:
         return "gen2/shades.json"
     if api_version == 3:

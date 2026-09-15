@@ -4,18 +4,21 @@ import asyncio
 from collections.abc import Callable, Coroutine
 import itertools as it
 import logging
+import struct
 from typing import Any
 
-import voluptuous as vol
+import probatio
 
+from homeassistant import config as conf_util, core_config
 from homeassistant.auth.permissions.const import CAT_ENTITIES, POLICY_CONTROL
 from homeassistant.components import persistent_notification
-import homeassistant.config as conf_util
+from homeassistant.components.notify import DOMAIN as NOTIFY_DOMAIN
 from homeassistant.const import (
     ATTR_ELEVATION,
     ATTR_ENTITY_ID,
     ATTR_LATITUDE,
     ATTR_LONGITUDE,
+    EVENT_HOMEASSISTANT_STARTED,
     RESTART_EXIT_CODE,
     SERVICE_RELOAD,
     SERVICE_SAVE_PERSISTENT_STATES,
@@ -24,6 +27,7 @@ from homeassistant.const import (
     SERVICE_TURN_ON,
 )
 from homeassistant.core import (
+    Event,
     HomeAssistant,
     ServiceCall,
     ServiceResponse,
@@ -31,14 +35,24 @@ from homeassistant.core import (
     split_entity_id,
 )
 from homeassistant.exceptions import HomeAssistantError, Unauthorized, UnknownUser
-from homeassistant.helpers import config_validation as cv, recorder, restore_state
+from homeassistant.helpers import (
+    config_validation as cv,
+    issue_registry as ir,
+    recorder,
+    restore_state,
+)
 from homeassistant.helpers.entity_component import async_update_entity
+from homeassistant.helpers.issue_registry import IssueSeverity
 from homeassistant.helpers.service import (
     async_extract_config_entry_ids,
-    async_extract_referenced_entity_ids,
     async_register_admin_service,
 )
 from homeassistant.helpers.signal import KEY_HA_STOP
+from homeassistant.helpers.system_info import async_get_system_info
+from homeassistant.helpers.target import (
+    TargetSelection,
+    async_extract_referenced_entity_ids,
+)
 from homeassistant.helpers.template import async_load_custom_templates
 from homeassistant.helpers.typing import ConfigType
 
@@ -54,7 +68,7 @@ from .const import (
     SERVICE_HOMEASSISTANT_RESTART,
     SERVICE_HOMEASSISTANT_STOP,
 )
-from .exposed_entities import ExposedEntities
+from .exposed_entities import ExposedEntities, async_should_expose  # noqa: F401
 
 ATTR_ENTRY_ID = "entry_id"
 ATTR_SAFE_MODE = "safe_mode"
@@ -67,19 +81,31 @@ SERVICE_CHECK_CONFIG = "check_config"
 SERVICE_UPDATE_ENTITY = "update_entity"
 SERVICE_SET_LOCATION = "set_location"
 SERVICE_RELOAD_ALL = "reload_all"
-SCHEMA_UPDATE_ENTITY = vol.Schema({ATTR_ENTITY_ID: cv.entity_ids})
-SCHEMA_RELOAD_CONFIG_ENTRY = vol.All(
-    vol.Schema(
+SCHEMA_UPDATE_ENTITY = probatio.Schema({ATTR_ENTITY_ID: cv.entity_ids})
+SCHEMA_RELOAD_CONFIG_ENTRY = probatio.All(
+    probatio.Schema(
         {
-            vol.Optional(ATTR_ENTRY_ID): str,
+            probatio.Optional(ATTR_ENTRY_ID): str,
             **cv.ENTITY_SERVICE_FIELDS,
         },
     ),
     cv.has_at_least_one_key(ATTR_ENTRY_ID, *cv.ENTITY_SERVICE_FIELDS),
 )
-SCHEMA_RESTART = vol.Schema({vol.Optional(ATTR_SAFE_MODE, default=False): bool})
+SCHEMA_RESTART = probatio.Schema(
+    {probatio.Optional(ATTR_SAFE_MODE, default=False): bool}
+)
 
 SHUTDOWN_SERVICES = (SERVICE_HOMEASSISTANT_STOP, SERVICE_HOMEASSISTANT_RESTART)
+
+DEPRECATION_URL = (
+    "https://www.home-assistant.io/blog/2025/05/22/"
+    "deprecating-core-and-supervised-installation-methods-and-32-bit-systems/"
+)
+
+
+def _is_32_bit() -> bool:
+    size = struct.calcsize("P")
+    return size * 8 == 32
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:  # noqa: C901
@@ -91,7 +117,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:  # noqa:
 
     async def async_handle_turn_service(service: ServiceCall) -> None:
         """Handle calls to homeassistant.turn_on/off."""
-        referenced = async_extract_referenced_entity_ids(hass, service)
+        referenced = async_extract_referenced_entity_ids(
+            hass, TargetSelection(service.data)
+        )
         all_referenced = referenced.referenced | referenced.indirectly_referenced
 
         # Generic turn on/off method requires entity id
@@ -154,7 +182,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:  # noqa:
         DOMAIN, SERVICE_SAVE_PERSISTENT_STATES, async_save_persistent_states
     )
 
-    service_schema = vol.Schema({ATTR_ENTITY_ID: cv.entity_ids}, extra=vol.ALLOW_EXTRA)
+    service_schema = probatio.Schema(
+        {ATTR_ENTITY_ID: cv.entity_ids}, extra=probatio.ALLOW_EXTRA
+    )
 
     hass.services.async_register(
         DOMAIN, SERVICE_TURN_OFF, async_handle_turn_service, schema=service_schema
@@ -264,12 +294,15 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:  # noqa:
         """Service handler for reloading core config."""
         try:
             conf = await conf_util.async_hass_config_yaml(hass)
-        except HomeAssistantError as err:
-            _LOGGER.error(err)
-            return
+        except (HomeAssistantError, FileNotFoundError) as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="core_config_reload_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
 
         # auth only processed during startup
-        await conf_util.async_process_ha_core_config(hass, conf.get(DOMAIN) or {})
+        await core_config.async_process_ha_core_config(hass, conf.get(DOMAIN) or {})
 
     async_register_admin_service(
         hass, DOMAIN, SERVICE_RELOAD_CORE_CONFIG, async_handle_reload_config
@@ -282,7 +315,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:  # noqa:
             "longitude": call.data[ATTR_LONGITUDE],
         }
 
-        if elevation := call.data.get(ATTR_ELEVATION):
+        if (elevation := call.data.get(ATTR_ELEVATION)) is not None:
             service_data["elevation"] = elevation
 
         await hass.config.async_update(**service_data)
@@ -292,11 +325,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:  # noqa:
         DOMAIN,
         SERVICE_SET_LOCATION,
         async_set_location,
-        vol.Schema(
+        probatio.Schema(
             {
-                vol.Required(ATTR_LATITUDE): cv.latitude,
-                vol.Required(ATTR_LONGITUDE): cv.longitude,
-                vol.Optional(ATTR_ELEVATION): int,
+                probatio.Required(ATTR_LATITUDE): cv.latitude,
+                probatio.Required(ATTR_LONGITUDE): cv.longitude,
+                probatio.Optional(ATTR_ELEVATION): probatio.Coerce(int),
             }
         ),
     )
@@ -314,7 +347,13 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:  # noqa:
         reload_entries: set[str] = set()
         if ATTR_ENTRY_ID in call.data:
             reload_entries.add(call.data[ATTR_ENTRY_ID])
-        reload_entries.update(await async_extract_config_entry_ids(hass, call))
+        if TargetSelection(call.data).has_any_target:
+            _LOGGER.warning(
+                "Reloading a config entry by target is deprecated and will stop "
+                "working in Home Assistant 2027.4, please specify the config entry "
+                "to reload in the 'entry_id' parameter instead"
+            )
+        reload_entries.update(await async_extract_config_entry_ids(call))
         if not reload_entries:
             raise ValueError("There were no matching config entries to reload")
         await asyncio.gather(
@@ -363,7 +402,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:  # noqa:
                 domain, SERVICE_RELOAD, context=call.context, blocking=True
             )
             for domain, domain_services in services.items()
-            if domain != "notify" and SERVICE_RELOAD in domain_services
+            if domain != NOTIFY_DOMAIN and SERVICE_RELOAD in domain_services
         ] + [
             hass.services.async_call(
                 domain, service, context=call.context, blocking=True
@@ -384,7 +423,63 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:  # noqa:
     exposed_entities = ExposedEntities(hass)
     await exposed_entities.async_initialize()
     hass.data[DATA_EXPOSED_ENTITIES] = exposed_entities
-    async_set_stop_handler(hass, _async_stop)
+    async_set_stop_handler(hass)
+
+    async def _async_check_deprecation(event: Event) -> None:
+        """Check and create deprecation issues after startup."""
+        info = await async_get_system_info(hass)
+
+        installation_type = info["installation_type"][15:]
+        if installation_type in {"Core", "Container"}:
+            deprecated_method = installation_type == "Core"
+            bit32 = _is_32_bit()
+            arch = info["arch"]
+            if bit32 and installation_type == "Container":
+                arch = info.get("container_arch", arch)
+                ir.async_create_issue(
+                    hass,
+                    DOMAIN,
+                    "deprecated_container",
+                    learn_more_url=DEPRECATION_URL,
+                    is_fixable=False,
+                    severity=IssueSeverity.WARNING,
+                    translation_key="deprecated_container",
+                    translation_placeholders={"arch": arch},
+                )
+            deprecated_architecture = bit32 and installation_type != "Container"
+            if deprecated_method or deprecated_architecture:
+                issue_id = "deprecated"
+                if deprecated_method:
+                    issue_id += "_method"
+                if deprecated_architecture:
+                    issue_id += "_architecture"
+                ir.async_create_issue(
+                    hass,
+                    DOMAIN,
+                    issue_id,
+                    learn_more_url=DEPRECATION_URL,
+                    is_fixable=False,
+                    severity=IssueSeverity.WARNING,
+                    translation_key=issue_id,
+                    translation_placeholders={
+                        "installation_type": installation_type,
+                        "arch": arch,
+                    },
+                )
+        if not info["docker"] and not info["virtualenv"]:
+            ir.async_create_issue(
+                hass,
+                DOMAIN,
+                "unsupported_local_deps",
+                breaks_in_ha_version="2026.11.0",
+                learn_more_url=DEPRECATION_URL,
+                is_fixable=False,
+                severity=IssueSeverity.WARNING,
+                translation_key="unsupported_local_deps",
+            )
+
+    # Delay deprecation check to make sure installation method is determined correctly
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _async_check_deprecation)
 
     return True
 
@@ -399,7 +494,11 @@ async def _async_stop(hass: HomeAssistant, restart: bool) -> None:
 @callback
 def async_set_stop_handler(
     hass: HomeAssistant,
-    stop_handler: Callable[[HomeAssistant, bool], Coroutine[Any, Any, None]],
+    stop_handler: Callable[[HomeAssistant, bool], Coroutine[Any, Any, None]]
+    | None = None,
 ) -> None:
-    """Set function which is called by the stop and restart services."""
-    hass.data[DATA_STOP_HANDLER] = stop_handler
+    """Set function which is called by the stop and restart services.
+
+    If stop handler is omitted it will restore the default stop handler.
+    """
+    hass.data[DATA_STOP_HANDLER] = _async_stop if stop_handler is None else stop_handler

@@ -2,12 +2,12 @@
 
 from collections.abc import Mapping
 import logging
-from typing import Any
+from typing import Any, override
 
+import probatio
 from ttn_client import TTNAuthError, TTNClient
-import voluptuous as vol
 
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import SOURCE_REAUTH, ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_API_KEY, CONF_HOST
 from homeassistant.helpers.selector import (
     TextSelector,
@@ -25,8 +25,7 @@ class TTNFlowHandler(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    _reauth_entry: ConfigEntry | None = None
-
+    @override
     async def async_step_user(
         self, user_input: Mapping[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -51,11 +50,9 @@ class TTNFlowHandler(ConfigFlow, domain=DOMAIN):
 
             if not errors:
                 # Create entry
-                if self._reauth_entry:
+                if self.source == SOURCE_REAUTH:
                     return self.async_update_reload_and_abort(
-                        self._reauth_entry,
-                        data=user_input,
-                        reason="reauth_successful",
+                        self._get_reauth_entry(), data=user_input
                     )
                 await self.async_set_unique_id(user_input[CONF_APP_ID])
                 self._abort_if_unique_id_configured()
@@ -67,17 +64,17 @@ class TTNFlowHandler(ConfigFlow, domain=DOMAIN):
 
         # Show form for user to provide settings
         if not user_input:
-            if self._reauth_entry:
-                user_input = self._reauth_entry.data
+            if self.source == SOURCE_REAUTH:
+                user_input = self._get_reauth_entry().data
             else:
                 user_input = {CONF_HOST: TTN_API_HOST}
 
         schema = self.add_suggested_values_to_schema(
-            vol.Schema(
+            probatio.Schema(
                 {
-                    vol.Required(CONF_HOST): str,
-                    vol.Required(CONF_APP_ID): str,
-                    vol.Required(CONF_API_KEY): TextSelector(
+                    probatio.Required(CONF_HOST): str,
+                    probatio.Required(CONF_APP_ID): str,
+                    probatio.Required(CONF_API_KEY): TextSelector(
                         TextSelectorConfig(
                             type=TextSelectorType.PASSWORD, autocomplete="api_key"
                         )
@@ -86,17 +83,19 @@ class TTNFlowHandler(ConfigFlow, domain=DOMAIN):
             ),
             user_input,
         )
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
-
-    async def async_step_reauth(
-        self, user_input: Mapping[str, Any]
-    ) -> ConfigFlowResult:
-        """Handle a flow initialized by a reauth event."""
-
-        self._reauth_entry = self.hass.config_entries.async_get_entry(
-            self.context["entry_id"]
+        return self.async_show_form(
+            step_id="user",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={
+                "instructions_url": "https://www.thethingsindustries.com/docs/integrations/adding-applications/"
+            },
         )
 
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Handle a flow initialized by a reauth event."""
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(

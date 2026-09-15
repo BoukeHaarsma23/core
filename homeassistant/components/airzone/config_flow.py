@@ -1,35 +1,33 @@
 """Config flow for Airzone."""
 
-from __future__ import annotations
-
 import logging
-from typing import Any
+from typing import Any, override
 
 from aioairzone.const import DEFAULT_PORT, DEFAULT_SYSTEM_ID
 from aioairzone.exceptions import AirzoneError, InvalidSystem
 from aioairzone.localapi import AirzoneLocalApi, ConnectionOptions
-import voluptuous as vol
+import probatio
 
-from homeassistant.components import dhcp
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_ID, CONF_PORT
 from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.helpers import aiohttp_client
 from homeassistant.helpers.device_registry import format_mac
+from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-CONFIG_SCHEMA = vol.Schema(
+CONFIG_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_HOST): str,
-        vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
+        probatio.Required(CONF_HOST): str,
+        probatio.Required(CONF_PORT, default=DEFAULT_PORT): int,
     }
 )
 SYSTEM_ID_SCHEMA = CONFIG_SCHEMA.extend(
     {
-        vol.Required(CONF_ID, default=1): int,
+        probatio.Required(CONF_ID, default=1): int,
     }
 )
 
@@ -44,7 +42,9 @@ class AirZoneConfigFlow(ConfigFlow, domain=DOMAIN):
 
     _discovered_ip: str | None = None
     _discovered_mac: str | None = None
+    MINOR_VERSION = 2
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -53,6 +53,9 @@ class AirZoneConfigFlow(ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
+            if CONF_ID not in user_input:
+                user_input[CONF_ID] = DEFAULT_SYSTEM_ID
+
             self._async_abort_entries_match(user_input)
 
             airzone = AirzoneLocalApi(
@@ -60,7 +63,7 @@ class AirZoneConfigFlow(ConfigFlow, domain=DOMAIN):
                 ConnectionOptions(
                     user_input[CONF_HOST],
                     user_input[CONF_PORT],
-                    user_input.get(CONF_ID, DEFAULT_SYSTEM_ID),
+                    user_input[CONF_ID],
                 ),
             )
 
@@ -84,6 +87,9 @@ class AirZoneConfigFlow(ConfigFlow, domain=DOMAIN):
                     )
 
                 title = f"Airzone {user_input[CONF_HOST]}:{user_input[CONF_PORT]}"
+                if user_input[CONF_ID] != DEFAULT_SYSTEM_ID:
+                    title += f" #{user_input[CONF_ID]}"
+
                 return self.async_create_entry(title=title, data=user_input)
 
         return self.async_show_form(
@@ -92,8 +98,9 @@ class AirZoneConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    @override
     async def async_step_dhcp(
-        self, discovery_info: dhcp.DhcpServiceInfo
+        self, discovery_info: DhcpServiceInfo
     ) -> ConfigFlowResult:
         """Handle DHCP discovery."""
         self._discovered_ip = discovery_info.ip
@@ -114,7 +121,7 @@ class AirZoneConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         try:
             await airzone.get_version()
-        except AirzoneError as err:
+        except (AirzoneError, TimeoutError) as err:
             raise AbortFlow("cannot_connect") from err
 
         return await self.async_step_discovered_connection()
@@ -127,7 +134,7 @@ class AirZoneConfigFlow(ConfigFlow, domain=DOMAIN):
         assert self._discovered_mac is not None
 
         errors = {}
-        base_schema = {vol.Required(CONF_PORT, default=DEFAULT_PORT): int}
+        base_schema = {probatio.Required(CONF_PORT, default=DEFAULT_PORT): int}
 
         if user_input is not None:
             airzone = AirzoneLocalApi(
@@ -142,7 +149,7 @@ class AirZoneConfigFlow(ConfigFlow, domain=DOMAIN):
             try:
                 mac = await airzone.validate()
             except InvalidSystem:
-                base_schema[vol.Required(CONF_ID, default=1)] = int
+                base_schema[probatio.Required(CONF_ID, default=1)] = int
                 errors[CONF_ID] = "invalid_system_id"
             except AirzoneError:
                 errors["base"] = "cannot_connect"
@@ -165,6 +172,6 @@ class AirZoneConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="discovered_connection",
-            data_schema=vol.Schema(base_schema),
+            data_schema=probatio.Schema(base_schema),
             errors=errors,
         )

@@ -1,15 +1,15 @@
 """Mastodon tests configuration."""
 
 from collections.abc import Generator
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+from mastodon.Mastodon import Account, InstanceV2, Status
 import pytest
 
 from homeassistant.components.mastodon.const import CONF_BASE_URL, DOMAIN
 from homeassistant.const import CONF_ACCESS_TOKEN, CONF_CLIENT_ID, CONF_CLIENT_SECRET
 
-from tests.common import MockConfigEntry, load_json_object_fixture
-from tests.components.smhi.common import AsyncMock
+from tests.common import MockConfigEntry, load_fixture
 
 
 @pytest.fixture
@@ -32,11 +32,27 @@ def mock_mastodon_client() -> Generator[AsyncMock]:
         ) as mock_client,
     ):
         client = mock_client.return_value
-        client.instance.return_value = load_json_object_fixture("instance.json", DOMAIN)
-        client.account_verify_credentials.return_value = load_json_object_fixture(
-            "account_verify_credentials.json", DOMAIN
+        client.instance_v1.return_value = InstanceV2.from_json(
+            load_fixture("instance.json", DOMAIN)
         )
-        client.status_post.return_value = None
+        client.instance_v2.return_value = InstanceV2.from_json(
+            load_fixture("instance.json", DOMAIN)
+        )
+        client.account_verify_credentials.return_value = Account.from_json(
+            load_fixture("account.json", DOMAIN)
+        )
+        client.account_lookup.return_value = Account.from_json(
+            load_fixture("account.json", DOMAIN)
+        )
+        client.mastodon_api_version = 2
+        client.status_post.return_value = Status.from_json(
+            load_fixture("status_post.json", DOMAIN)
+        )
+
+        client.account_update_credentials.return_value = Account.from_json(
+            load_fixture("account.json", DOMAIN)
+        )
+
         yield client
 
 
@@ -53,5 +69,7 @@ def mock_config_entry() -> MockConfigEntry:
             CONF_ACCESS_TOKEN: "access_token",
         },
         entry_id="01J35M4AH9HYRC2V0G6RNVNWJH",
-        unique_id="client_id",
+        unique_id="trwnh_mastodon_social",
+        version=1,
+        minor_version=2,
     )

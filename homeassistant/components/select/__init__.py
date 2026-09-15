@@ -1,36 +1,36 @@
 """Component to allow selecting an option from a list as platforms."""
 
-from __future__ import annotations
-
 from datetime import timedelta
-from functools import cached_property
 import logging
-from typing import Any, final
+from typing import Any, final, override
 
-import voluptuous as vol
+import probatio
+from propcache.api import cached_property
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import ATTR_OPTION, SERVICE_SELECT_OPTION
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity import Entity, EntityDescription
 from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.util.hass_dict import HassKey
 
 from .const import (
     ATTR_CYCLE,
-    ATTR_OPTION,
     ATTR_OPTIONS,
     DOMAIN,
     SERVICE_SELECT_FIRST,
     SERVICE_SELECT_LAST,
     SERVICE_SELECT_NEXT,
-    SERVICE_SELECT_OPTION,
     SERVICE_SELECT_PREVIOUS,
+    SelectEntityCapabilityAttribute,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
+DATA_COMPONENT: HassKey[EntityComponent[SelectEntity]] = HassKey(DOMAIN)
 ENTITY_ID_FORMAT = DOMAIN + ".{}"
 PLATFORM_SCHEMA = cv.PLATFORM_SCHEMA
 PLATFORM_SCHEMA_BASE = cv.PLATFORM_SCHEMA_BASE
@@ -43,15 +43,16 @@ __all__ = [
     "ATTR_OPTION",
     "ATTR_OPTIONS",
     "DOMAIN",
-    "PLATFORM_SCHEMA_BASE",
     "PLATFORM_SCHEMA",
-    "SelectEntity",
-    "SelectEntityDescription",
+    "PLATFORM_SCHEMA_BASE",
     "SERVICE_SELECT_FIRST",
     "SERVICE_SELECT_LAST",
     "SERVICE_SELECT_NEXT",
     "SERVICE_SELECT_OPTION",
     "SERVICE_SELECT_PREVIOUS",
+    "SelectEntity",
+    "SelectEntityCapabilityAttribute",
+    "SelectEntityDescription",
 ]
 
 # mypy: disallow-any-generics
@@ -59,38 +60,38 @@ __all__ = [
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up Select entities."""
-    component = hass.data[DOMAIN] = EntityComponent[SelectEntity](
+    component = hass.data[DATA_COMPONENT] = EntityComponent[SelectEntity](
         _LOGGER, DOMAIN, hass, SCAN_INTERVAL
     )
     await component.async_setup(config)
 
     component.async_register_entity_service(
         SERVICE_SELECT_FIRST,
-        {},
+        None,
         SelectEntity.async_first.__name__,
     )
 
     component.async_register_entity_service(
         SERVICE_SELECT_LAST,
-        {},
+        None,
         SelectEntity.async_last.__name__,
     )
 
     component.async_register_entity_service(
         SERVICE_SELECT_NEXT,
-        {vol.Optional(ATTR_CYCLE, default=True): bool},
+        {probatio.Optional(ATTR_CYCLE, default=True): bool},
         SelectEntity.async_next.__name__,
     )
 
     component.async_register_entity_service(
         SERVICE_SELECT_OPTION,
-        {vol.Required(ATTR_OPTION): cv.string},
+        {probatio.Required(ATTR_OPTION): cv.string},
         SelectEntity.async_handle_select_option.__name__,
     )
 
     component.async_register_entity_service(
         SERVICE_SELECT_PREVIOUS,
-        {vol.Optional(ATTR_CYCLE, default=True): bool},
+        {probatio.Optional(ATTR_CYCLE, default=True): bool},
         SelectEntity.async_previous.__name__,
     )
 
@@ -99,14 +100,12 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a config entry."""
-    component: EntityComponent[SelectEntity] = hass.data[DOMAIN]
-    return await component.async_setup_entry(entry)
+    return await hass.data[DATA_COMPONENT].async_setup_entry(entry)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    component: EntityComponent[SelectEntity] = hass.data[DOMAIN]
-    return await component.async_unload_entry(entry)
+    return await hass.data[DATA_COMPONENT].async_unload_entry(entry)
 
 
 class SelectEntityDescription(EntityDescription, frozen_or_thawed=True):
@@ -124,22 +123,26 @@ CACHED_PROPERTIES_WITH_ATTR_ = {
 class SelectEntity(Entity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_):
     """Representation of a Select entity."""
 
-    _entity_component_unrecorded_attributes = frozenset({ATTR_OPTIONS})
+    _entity_component_unrecorded_attributes = frozenset(
+        {SelectEntityCapabilityAttribute.OPTIONS}
+    )
 
     entity_description: SelectEntityDescription
-    _attr_current_option: str | None
+    _attr_current_option: str | None = None
     _attr_options: list[str]
     _attr_state: None = None
 
     @property
+    @override
     def capability_attributes(self) -> dict[str, Any]:
         """Return capability attributes."""
         return {
-            ATTR_OPTIONS: self.options,
+            SelectEntityCapabilityAttribute.OPTIONS: self.options,
         }
 
     @property
     @final
+    @override
     def state(self) -> str | None:
         """Return the entity state."""
         current_option = self.current_option
@@ -163,6 +166,18 @@ class SelectEntity(Entity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_):
     def current_option(self) -> str | None:
         """Return the selected entity option to represent the entity state."""
         return self._attr_current_option
+
+    @final
+    @callback
+    def _options_or_raise(self) -> list[str]:
+        """Return the options, raise ServiceValidationError if there are none."""
+        if not (options := self.options):
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="no_options",
+                translation_placeholders={"entity_id": self.entity_id},
+            )
+        return options
 
     @final
     @callback
@@ -232,9 +247,9 @@ class SelectEntity(Entity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_):
         """Offset current index."""
         current_index = 0
         current_option = self.current_option
-        options = self.options
-        if current_option is not None and current_option in self.options:
-            current_index = self.options.index(current_option)
+        options = self._options_or_raise()
+        if current_option is not None and current_option in options:
+            current_index = options.index(current_option)
 
         new_index = current_index + offset
         if cycle:
@@ -249,6 +264,6 @@ class SelectEntity(Entity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_):
     @final
     async def _async_select_index(self, idx: int) -> None:
         """Select new option by index."""
-        options = self.options
+        options = self._options_or_raise()
         new_index = idx % len(options)
         await self.async_select_option(options[new_index])

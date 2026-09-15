@@ -5,8 +5,8 @@ pubsub subscriber.
 """
 
 from typing import Any
+from unittest.mock import AsyncMock
 
-from google_nest_sdm.event import EventMessage
 import pytest
 
 from homeassistant.components.sensor import (
@@ -20,12 +20,13 @@ from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
     PERCENTAGE,
     STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
-from .common import DEVICE_ID, CreateDevice, FakeSubscriber, PlatformSetup
+from .common import DEVICE_ID, CreateDevice, PlatformSetup, create_nest_event
 
 
 @pytest.fixture
@@ -191,14 +192,14 @@ async def test_device_name_from_structure(
     )
     await setup_platform()
 
-    temperature = hass.states.get("sensor.some_room_temperature")
+    temperature = hass.states.get("sensor.some_room_some_room_temperature")
     assert temperature is not None
     assert temperature.state == "25.2"
 
 
 async def test_event_updates_sensor(
     hass: HomeAssistant,
-    subscriber: FakeSubscriber,
+    subscriber: AsyncMock,
     create_device: CreateDevice,
     setup_platform: PlatformSetup,
 ) -> None:
@@ -217,7 +218,7 @@ async def test_event_updates_sensor(
     assert temperature.state == "25.1"
 
     # Simulate a pubsub message received by the subscriber with a trait update
-    event = EventMessage.create_event(
+    event = create_nest_event(
         {
             "eventId": "some-event-id",
             "timestamp": "2019-01-01T00:00:01Z",
@@ -230,7 +231,6 @@ async def test_event_updates_sensor(
                 },
             },
         },
-        auth=None,
     )
     await subscriber.async_receive_event(event)
     await hass.async_block_till_done()  # Process dispatch/update signal
@@ -288,3 +288,76 @@ async def test_temperature_rounding(
 
     temperature = hass.states.get("sensor.my_sensor_temperature")
     assert temperature.state == "25.2"
+
+
+async def test_thermostat_fan_timer_sensor(
+    hass: HomeAssistant,
+    device_registry: dr.DeviceRegistry,
+    entity_registry: er.EntityRegistry,
+    create_device: CreateDevice,
+    setup_platform: PlatformSetup,
+) -> None:
+    """Test a thermostat with a fan timer sensor."""
+    create_device.create(
+        {
+            "sdm.devices.traits.Fan": {
+                "timerMode": "ON",
+                "timerTimeout": "2019-05-10T03:22:54Z",
+            },
+        }
+    )
+    await setup_platform()
+
+    fan_timer = hass.states.get("sensor.my_sensor_fan_timer_timeout")
+    assert fan_timer is not None
+    assert fan_timer.state == "2019-05-10T03:22:54+00:00"
+    assert fan_timer.attributes.get(ATTR_DEVICE_CLASS) == SensorDeviceClass.TIMESTAMP
+    assert fan_timer.attributes.get(ATTR_STATE_CLASS) is None
+    assert fan_timer.attributes.get(ATTR_FRIENDLY_NAME) == "My Sensor Fan timer timeout"
+
+    entry = entity_registry.async_get("sensor.my_sensor_fan_timer_timeout")
+    assert entry.unique_id == f"{DEVICE_ID}-fan-timer"
+    assert entry.domain == "sensor"
+
+    device = device_registry.async_get(entry.device_id)
+    assert device.name == "My Sensor"
+    assert device.identifiers == {("nest", DEVICE_ID)}
+
+
+async def test_thermostat_fan_timer_sensor_not_active(
+    hass: HomeAssistant,
+    create_device: CreateDevice,
+    setup_platform: PlatformSetup,
+) -> None:
+    """Test a thermostat fan timer sensor when the timer is inactive."""
+    create_device.create(
+        {
+            "sdm.devices.traits.Fan": {
+                "timerMode": "OFF",
+            },
+        }
+    )
+    await setup_platform()
+
+    fan_timer = hass.states.get("sensor.my_sensor_fan_timer_timeout")
+    # When the timer is inactive, timer_timeout is None, rendering the sensor state unknown.
+    assert fan_timer is not None
+    assert fan_timer.state == STATE_UNKNOWN
+
+
+async def test_thermostat_fan_timer_sensor_unsupported(
+    hass: HomeAssistant,
+    create_device: CreateDevice,
+    setup_platform: PlatformSetup,
+) -> None:
+    """Test that the fan timer sensor is not created if the Fan trait lacks timer support."""
+    create_device.create(
+        {
+            "sdm.devices.traits.Fan": {},
+        }
+    )
+    await setup_platform()
+
+    fan_timer = hass.states.get("sensor.my_sensor_fan_timer_timeout")
+    # The sensor should not be created when timer_mode is unsupported/None
+    assert fan_timer is None

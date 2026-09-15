@@ -1,12 +1,10 @@
 """Config flow for WeatherflowCloud integration."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, override
 
 from aiohttp import ClientResponseError
-import voluptuous as vol
+import probatio
 from weatherflow4py.api import WeatherFlowRestAPI
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
@@ -33,9 +31,15 @@ class WeatherFlowCloudConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     async def async_step_reauth(
-        self, user_input: Mapping[str, Any]
+        self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
         """Handle a flow for reauth."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle a flow initiated by reauthentication."""
         errors = {}
 
         if user_input is not None:
@@ -43,22 +47,20 @@ class WeatherFlowCloudConfigFlow(ConfigFlow, domain=DOMAIN):
             errors = await _validate_api_token(api_token)
             if not errors:
                 # Update the existing entry and abort
-                if existing_entry := self.hass.config_entries.async_get_entry(
-                    self.context["entry_id"]
-                ):
-                    return self.async_update_reload_and_abort(
-                        existing_entry,
-                        data={CONF_API_TOKEN: api_token},
-                        reason="reauth_successful",
-                        reload_even_if_entry_is_unchanged=False,
-                    )
+                existing_entry = self._get_reauth_entry()
+                return self.async_update_reload_and_abort(
+                    existing_entry,
+                    data={CONF_API_TOKEN: api_token},
+                    reason="reauth_successful",
+                )
 
         return self.async_show_form(
-            step_id="reauth",
-            data_schema=vol.Schema({vol.Required(CONF_API_TOKEN): str}),
+            step_id="reauth_confirm",
+            data_schema=probatio.Schema({probatio.Required(CONF_API_TOKEN): str}),
             errors=errors,
         )
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -77,6 +79,6 @@ class WeatherFlowCloudConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({vol.Required(CONF_API_TOKEN): str}),
+            data_schema=probatio.Schema({probatio.Required(CONF_API_TOKEN): str}),
             errors=errors,
         )

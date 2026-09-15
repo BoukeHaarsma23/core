@@ -10,9 +10,10 @@ from pylutron_caseta.smartbridge import Smartbridge
 import pytest
 
 from homeassistant import config_entries
-from homeassistant.components import zeroconf
-from homeassistant.components.lutron_caseta import DOMAIN
-import homeassistant.components.lutron_caseta.config_flow as CasetaConfigFlow
+from homeassistant.components.lutron_caseta import (
+    DOMAIN,
+    config_flow as CasetaConfigFlow,
+)
 from homeassistant.components.lutron_caseta.const import (
     CONF_CA_CERTS,
     CONF_CERTFILE,
@@ -23,6 +24,7 @@ from homeassistant.components.lutron_caseta.const import (
 from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from . import ENTRY_MOCK_DATA, MockBridge
 
@@ -186,14 +188,15 @@ async def test_already_configured_with_ignored(hass: HomeAssistant) -> None:
     config_entry.add_to_hass(hass)
 
     result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": config_entries.SOURCE_USER},
-        data={
-            CONF_HOST: "1.1.1.1",
-            CONF_KEYFILE: "",
-            CONF_CERTFILE: "",
-            CONF_CA_CERTS: "",
-        },
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={CONF_HOST: "1.1.1.1"},
     )
     assert result["type"] is FlowResultType.FORM
 
@@ -421,7 +424,7 @@ async def test_zeroconf_host_already_configured(
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_ZEROCONF},
-        data=zeroconf.ZeroconfServiceInfo(
+        data=ZeroconfServiceInfo(
             ip_address=ip_address("1.1.1.1"),
             ip_addresses=[ip_address("1.1.1.1")],
             hostname="LuTrOn-abc.local.",
@@ -449,7 +452,7 @@ async def test_zeroconf_lutron_id_already_configured(hass: HomeAssistant) -> Non
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_ZEROCONF},
-        data=zeroconf.ZeroconfServiceInfo(
+        data=ZeroconfServiceInfo(
             ip_address=ip_address("1.1.1.1"),
             ip_addresses=[ip_address("1.1.1.1")],
             hostname="LuTrOn-abc.local.",
@@ -472,7 +475,7 @@ async def test_zeroconf_not_lutron_device(hass: HomeAssistant) -> None:
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_ZEROCONF},
-        data=zeroconf.ZeroconfServiceInfo(
+        data=ZeroconfServiceInfo(
             ip_address=ip_address("1.1.1.1"),
             ip_addresses=[ip_address("1.1.1.1")],
             hostname="notlutron-abc.local.",
@@ -500,7 +503,7 @@ async def test_zeroconf(hass: HomeAssistant, source, tmp_path: Path) -> None:
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": source},
-        data=zeroconf.ZeroconfServiceInfo(
+        data=ZeroconfServiceInfo(
             ip_address=ip_address("1.1.1.1"),
             ip_addresses=[ip_address("1.1.1.1")],
             hostname="LuTrOn-abc.local.",

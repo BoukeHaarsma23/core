@@ -1,15 +1,14 @@
 """Adds config flow for Trafikverket Ferry integration."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
-from typing import Any
+import logging
+from typing import Any, override
 
+import probatio
 from pytrafikverket import TrafikverketFerry
 from pytrafikverket.exceptions import InvalidAuthentication, NoFerryFound
-import voluptuous as vol
 
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_API_KEY, CONF_NAME, CONF_WEEKDAY, WEEKDAYS
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -17,15 +16,23 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .const import CONF_FROM, CONF_TIME, CONF_TO, DOMAIN
 from .util import create_unique_id
 
-DATA_SCHEMA = vol.Schema(
+_LOGGER = logging.getLogger(__name__)
+
+DATA_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_API_KEY): selector.TextSelector(
+        probatio.Required(CONF_API_KEY): selector.TextSelector(
             selector.TextSelectorConfig()
         ),
-        vol.Required(CONF_FROM): selector.TextSelector(selector.TextSelectorConfig()),
-        vol.Optional(CONF_TO): selector.TextSelector(selector.TextSelectorConfig()),
-        vol.Optional(CONF_TIME): selector.TimeSelector(selector.TimeSelectorConfig()),
-        vol.Required(CONF_WEEKDAY, default=WEEKDAYS): selector.SelectSelector(
+        probatio.Required(CONF_FROM): selector.TextSelector(
+            selector.TextSelectorConfig()
+        ),
+        probatio.Optional(CONF_TO): selector.TextSelector(
+            selector.TextSelectorConfig()
+        ),
+        probatio.Optional(CONF_TIME): selector.TimeSelector(
+            selector.TimeSelectorConfig()
+        ),
+        probatio.Required(CONF_WEEKDAY, default=WEEKDAYS): selector.SelectSelector(
             selector.SelectSelectorConfig(
                 options=WEEKDAYS,
                 multiple=True,
@@ -35,9 +42,9 @@ DATA_SCHEMA = vol.Schema(
         ),
     }
 )
-DATA_SCHEMA_REAUTH = vol.Schema(
+DATA_SCHEMA_REAUTH = probatio.Schema(
     {
-        vol.Required(CONF_API_KEY): selector.TextSelector(
+        probatio.Required(CONF_API_KEY): selector.TextSelector(
             selector.TextSelectorConfig()
         ),
     }
@@ -48,8 +55,6 @@ class TVFerryConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Trafikverket Ferry integration."""
 
     VERSION = 1
-
-    entry: ConfigEntry | None
 
     async def validate_input(
         self, api_key: str, ferry_from: str, ferry_to: str
@@ -63,8 +68,6 @@ class TVFerryConfigFlow(ConfigFlow, domain=DOMAIN):
         self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
         """Handle re-authentication with Trafikverket."""
-
-        self.entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
@@ -76,27 +79,23 @@ class TVFerryConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input:
             api_key = user_input[CONF_API_KEY]
 
-            assert self.entry is not None
+            reauth_entry = self._get_reauth_entry()
             try:
                 await self.validate_input(
-                    api_key, self.entry.data[CONF_FROM], self.entry.data[CONF_TO]
+                    api_key, reauth_entry.data[CONF_FROM], reauth_entry.data[CONF_TO]
                 )
             except InvalidAuthentication:
                 errors["base"] = "invalid_auth"
             except NoFerryFound:
                 errors["base"] = "invalid_route"
-            except Exception:  # noqa: BLE001
+            except Exception:
+                _LOGGER.exception("Unexpected exception")
                 errors["base"] = "cannot_connect"
             else:
-                self.hass.config_entries.async_update_entry(
-                    self.entry,
-                    data={
-                        **self.entry.data,
-                        CONF_API_KEY: api_key,
-                    },
+                return self.async_update_reload_and_abort(
+                    reauth_entry,
+                    data_updates={CONF_API_KEY: api_key},
                 )
-                await self.hass.config_entries.async_reload(self.entry.entry_id)
-                return self.async_abort(reason="reauth_successful")
 
         return self.async_show_form(
             step_id="reauth_confirm",
@@ -104,6 +103,7 @@ class TVFerryConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -114,13 +114,13 @@ class TVFerryConfigFlow(ConfigFlow, domain=DOMAIN):
             api_key: str = user_input[CONF_API_KEY]
             ferry_from: str = user_input[CONF_FROM]
             ferry_to: str = user_input.get(CONF_TO, "")
-            ferry_time: str = user_input[CONF_TIME]
+            ferry_time: str | None = user_input.get(CONF_TIME)
             weekdays: list[str] = user_input[CONF_WEEKDAY]
 
             name = f"{ferry_from}"
             if ferry_to:
                 name = name + f" to {ferry_to}"
-            if ferry_time != "00:00:00":
+            if ferry_time and ferry_time != "00:00:00":
                 name = name + f" at {ferry_time!s}"
 
             try:
@@ -129,7 +129,8 @@ class TVFerryConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_auth"
             except NoFerryFound:
                 errors["base"] = "invalid_route"
-            except Exception:  # noqa: BLE001
+            except Exception:
+                _LOGGER.exception("Unexpected exception")
                 errors["base"] = "cannot_connect"
             else:
                 if not errors:

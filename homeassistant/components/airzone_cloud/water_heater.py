@@ -1,8 +1,6 @@
 """Support for the Airzone Cloud water heater."""
 
-from __future__ import annotations
-
-from typing import Any, Final
+from typing import Any, Final, override
 
 from aioairzone_cloud.common import HotWaterOperation, TemperatureUnit
 from aioairzone_cloud.const import (
@@ -29,10 +27,9 @@ from homeassistant.components.water_heater import (
 )
 from homeassistant.const import ATTR_TEMPERATURE, STATE_OFF, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import AirzoneCloudConfigEntry
-from .coordinator import AirzoneUpdateCoordinator
+from .coordinator import AirzoneCloudConfigEntry, AirzoneUpdateCoordinator
 from .entity import AirzoneHotWaterEntity
 
 OPERATION_LIB_TO_HASS: Final[dict[HotWaterOperation, str]] = {
@@ -69,7 +66,7 @@ OPERATION_MODE_TO_DHW_PARAMS: Final[dict[str, dict[str, Any]]] = {
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: AirzoneCloudConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Add Airzone Cloud Water Heater from a config_entry."""
     coordinator = entry.runtime_data
@@ -112,6 +109,7 @@ class AirzoneWaterHeater(AirzoneHotWaterEntity, WaterHeaterEntity):
 
         self._async_update_attrs()
 
+    @override
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the water heater off."""
         params = {
@@ -121,6 +119,7 @@ class AirzoneWaterHeater(AirzoneHotWaterEntity, WaterHeaterEntity):
         }
         await self._async_update_params(params)
 
+    @override
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the water heater off."""
         params = {
@@ -130,11 +129,13 @@ class AirzoneWaterHeater(AirzoneHotWaterEntity, WaterHeaterEntity):
         }
         await self._async_update_params(params)
 
+    @override
     async def async_set_operation_mode(self, operation_mode: str) -> None:
         """Set new target operation mode."""
         params = OPERATION_MODE_TO_DHW_PARAMS.get(operation_mode, {})
         await self._async_update_params(params)
 
+    @override
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature."""
         params: dict[str, Any] = {}
@@ -148,6 +149,7 @@ class AirzoneWaterHeater(AirzoneHotWaterEntity, WaterHeaterEntity):
         await self._async_update_params(params)
 
     @callback
+    @override
     def _handle_coordinator_update(self) -> None:
         """Update attributes when the coordinator updates."""
         self._async_update_attrs()

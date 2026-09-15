@@ -1,9 +1,8 @@
 """Support for refoss sensors."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import override
 
 from refoss_ha.controller.electricity import ElectricityXMix
 
@@ -13,7 +12,6 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     UnitOfElectricCurrent,
     UnitOfElectricPotential,
@@ -22,16 +20,11 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
-from .bridge import RefossDataUpdateCoordinator
-from .const import (
-    CHANNEL_DISPLAY_NAME,
-    COORDINATORS,
-    DISPATCH_DEVICE_DISCOVERED,
-    DOMAIN,
-)
+from .bridge import RefossConfigEntry, RefossDataUpdateCoordinator
+from .const import CHANNEL_DISPLAY_NAME, DISPATCH_DEVICE_DISCOVERED, LOGGER, SENSOR_EM
 from .entity import RefossEntity
 
 
@@ -43,8 +36,13 @@ class RefossSensorEntityDescription(SensorEntityDescription):
     fn: Callable[[float], float] = lambda x: x
 
 
+DEVICETYPE_SENSOR: dict[str, str] = {
+    "em06": SENSOR_EM,
+    "em16": SENSOR_EM,
+}
+
 SENSORS: dict[str, tuple[RefossSensorEntityDescription, ...]] = {
-    "em06": (
+    SENSOR_EM: (
         RefossSensorEntityDescription(
             key="power",
             translation_key="power",
@@ -87,7 +85,7 @@ SENSORS: dict[str, tuple[RefossSensorEntityDescription, ...]] = {
             key="energy",
             translation_key="this_month_energy",
             device_class=SensorDeviceClass.ENERGY,
-            state_class=SensorStateClass.TOTAL,
+            state_class=SensorStateClass.TOTAL_INCREASING,
             native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
             suggested_display_precision=2,
             subkey="mConsume",
@@ -97,7 +95,7 @@ SENSORS: dict[str, tuple[RefossSensorEntityDescription, ...]] = {
             key="energy_returned",
             translation_key="this_month_energy_returned",
             device_class=SensorDeviceClass.ENERGY,
-            state_class=SensorStateClass.TOTAL,
+            state_class=SensorStateClass.TOTAL_INCREASING,
             native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
             suggested_display_precision=2,
             subkey="mConsume",
@@ -109,8 +107,8 @@ SENSORS: dict[str, tuple[RefossSensorEntityDescription, ...]] = {
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    config_entry: RefossConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the Refoss device from a config entry."""
 
@@ -121,8 +119,11 @@ async def async_setup_entry(
 
         if not isinstance(device, ElectricityXMix):
             return
+
+        sensor_type = DEVICETYPE_SENSOR.get(device.device_type, "")
+
         descriptions: tuple[RefossSensorEntityDescription, ...] = SENSORS.get(
-            device.device_type, ()
+            sensor_type, ()
         )
 
         async_add_entities(
@@ -134,8 +135,9 @@ async def async_setup_entry(
             for channel in device.channels
             for description in descriptions
         )
+        LOGGER.debug("Device %s add sensor entity success", device.dev_name)
 
-    for coordinator in hass.data[DOMAIN][COORDINATORS]:
+    for coordinator in config_entry.runtime_data.coordinators:
         init_device(coordinator)
 
     config_entry.async_on_unload(
@@ -163,6 +165,7 @@ class RefossSensor(RefossEntity, SensorEntity):
         self._attr_translation_placeholders = {"channel_name": channel_name}
 
     @property
+    @override
     def native_value(self) -> StateType:
         """Return the native value."""
         value = self.coordinator.device.get_value(

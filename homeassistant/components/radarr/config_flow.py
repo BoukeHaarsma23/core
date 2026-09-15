@@ -1,22 +1,20 @@
 """Config flow for Radarr."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, override
 
 from aiohttp import ClientConnectorError
 from aiopyarr import exceptions
 from aiopyarr.models.host_configuration import PyArrHostConfiguration
 from aiopyarr.radarr_client import RadarrClient
-import voluptuous as vol
+import probatio
+from yarl import URL
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import SOURCE_REAUTH, ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_API_KEY, CONF_URL, CONF_VERIFY_SSL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from . import RadarrConfigEntry
 from .const import DEFAULT_NAME, DEFAULT_URL, DOMAIN
 
 
@@ -24,12 +22,11 @@ class RadarrConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Radarr."""
 
     VERSION = 1
-    entry: RadarrConfigEntry | None = None
 
-    async def async_step_reauth(self, _: Mapping[str, Any]) -> ConfigFlowResult:
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
         """Handle configuration by re-auth."""
-        self.entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
-
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
@@ -42,22 +39,28 @@ class RadarrConfigFlow(ConfigFlow, domain=DOMAIN):
         self._set_confirm_only()
         return self.async_show_form(step_id="reauth_confirm")
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle a flow initiated by the user."""
         errors = {}
 
-        if user_input is None:
-            user_input = dict(self.entry.data) if self.entry else None
+        if user_input is not None:
+            # Ensure an explicit port is present in the URL so that
+            # aiopyarr does not fall back to its own service-port default
+            # (which differs from the standard HTTP/HTTPS ports).
+            url = URL(user_input[CONF_URL])
+            if url.explicit_port is None:
+                url = url.with_port(url.port)
+            user_input[CONF_URL] = url.human_repr()
 
-        else:
             try:
                 if result := await validate_input(self.hass, user_input):
                     user_input[CONF_API_KEY] = result[1]
             except exceptions.ArrAuthenticationException:
                 errors = {"base": "invalid_auth"}
-            except (ClientConnectorError, exceptions.ArrConnectionException):
+            except ClientConnectorError, exceptions.ArrConnectionException:
                 errors = {"base": "cannot_connect"}
             except exceptions.ArrWrongAppException:
                 errors = {"base": "wrong_app"}
@@ -66,29 +69,30 @@ class RadarrConfigFlow(ConfigFlow, domain=DOMAIN):
             except exceptions.ArrException:
                 errors = {"base": "unknown"}
             if not errors:
-                if self.entry:
-                    self.hass.config_entries.async_update_entry(
-                        self.entry, data=user_input
+                if self.source == SOURCE_REAUTH:
+                    return self.async_update_reload_and_abort(
+                        self._get_reauth_entry(), data=user_input
                     )
-                    await self.hass.config_entries.async_reload(self.entry.entry_id)
-
-                    return self.async_abort(reason="reauth_successful")
 
                 return self.async_create_entry(
                     title=DEFAULT_NAME,
                     data=user_input,
                 )
 
-        user_input = user_input or {}
+        if user_input is None:
+            user_input = {}
+            if self.source == SOURCE_REAUTH:
+                user_input = dict(self._get_reauth_entry().data)
+
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(
+                    probatio.Required(
                         CONF_URL, default=user_input.get(CONF_URL, DEFAULT_URL)
                     ): str,
-                    vol.Optional(CONF_API_KEY): str,
-                    vol.Optional(
+                    probatio.Optional(CONF_API_KEY): str,
+                    probatio.Optional(
                         CONF_VERIFY_SSL,
                         default=user_input.get(CONF_VERIFY_SSL, False),
                     ): bool,

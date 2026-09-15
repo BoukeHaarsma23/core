@@ -1,18 +1,11 @@
 """Config flow for Mikrotik."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, override
 
-import voluptuous as vol
+import probatio
 
-from homeassistant.config_entries import (
-    ConfigEntry,
-    ConfigFlow,
-    ConfigFlowResult,
-    OptionsFlow,
-)
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import (
     CONF_HOST,
     CONF_PASSWORD,
@@ -31,7 +24,7 @@ from .const import (
     DEFAULT_NAME,
     DOMAIN,
 )
-from .coordinator import get_api
+from .coordinator import MikrotikConfigEntry, get_api
 from .errors import CannotConnect, LoginError
 
 
@@ -39,16 +32,17 @@ class MikrotikFlowHandler(ConfigFlow, domain=DOMAIN):
     """Handle a Mikrotik config flow."""
 
     VERSION = 1
-    _reauth_entry: ConfigEntry | None
 
     @staticmethod
     @callback
+    @override
     def async_get_options_flow(
-        config_entry: ConfigEntry,
+        config_entry: MikrotikConfigEntry,
     ) -> MikrotikOptionsFlowHandler:
         """Get the options flow for this handler."""
-        return MikrotikOptionsFlowHandler(config_entry)
+        return MikrotikOptionsFlowHandler()
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -71,23 +65,22 @@ class MikrotikFlowHandler(ConfigFlow, domain=DOMAIN):
                 )
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(CONF_HOST): str,
-                    vol.Required(CONF_USERNAME): str,
-                    vol.Required(CONF_PASSWORD): str,
-                    vol.Optional(CONF_PORT, default=DEFAULT_API_PORT): int,
-                    vol.Optional(CONF_VERIFY_SSL, default=False): bool,
+                    probatio.Required(CONF_HOST): str,
+                    probatio.Required(CONF_USERNAME): str,
+                    probatio.Required(CONF_PASSWORD): str,
+                    probatio.Optional(CONF_PORT, default=DEFAULT_API_PORT): int,
+                    probatio.Optional(CONF_VERIFY_SSL, default=False): bool,
                 }
             ),
             errors=errors,
         )
 
-    async def async_step_reauth(self, data: Mapping[str, Any]) -> ConfigFlowResult:
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
         """Perform reauth upon an API authentication error."""
-        self._reauth_entry = self.hass.config_entries.async_get_entry(
-            self.context["entry_id"]
-        )
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
@@ -95,9 +88,10 @@ class MikrotikFlowHandler(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Confirm reauth dialog."""
         errors = {}
-        assert self._reauth_entry
+
+        reauth_entry = self._get_reauth_entry()
         if user_input is not None:
-            user_input = {**self._reauth_entry.data, **user_input}
+            user_input = {**reauth_entry.data, **user_input}
             try:
                 await self.hass.async_add_executor_job(get_api, user_input)
             except CannotConnect:
@@ -106,21 +100,14 @@ class MikrotikFlowHandler(ConfigFlow, domain=DOMAIN):
                 errors[CONF_PASSWORD] = "invalid_auth"
 
             if not errors:
-                self.hass.config_entries.async_update_entry(
-                    self._reauth_entry,
-                    data=user_input,
-                )
-                await self.hass.config_entries.async_reload(self._reauth_entry.entry_id)
-                return self.async_abort(reason="reauth_successful")
+                return self.async_update_reload_and_abort(reauth_entry, data=user_input)
 
         return self.async_show_form(
-            description_placeholders={
-                CONF_USERNAME: self._reauth_entry.data[CONF_USERNAME]
-            },
+            description_placeholders={CONF_USERNAME: reauth_entry.data[CONF_USERNAME]},
             step_id="reauth_confirm",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(CONF_PASSWORD): str,
+                    probatio.Required(CONF_PASSWORD): str,
                 }
             ),
             errors=errors,
@@ -129,10 +116,6 @@ class MikrotikFlowHandler(ConfigFlow, domain=DOMAIN):
 
 class MikrotikOptionsFlowHandler(OptionsFlow):
     """Handle Mikrotik options."""
-
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialize Mikrotik options flow."""
-        self.config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -148,15 +131,15 @@ class MikrotikOptionsFlowHandler(OptionsFlow):
             return self.async_create_entry(title="", data=user_input)
 
         options = {
-            vol.Optional(
+            probatio.Optional(
                 CONF_FORCE_DHCP,
                 default=self.config_entry.options.get(CONF_FORCE_DHCP, False),
             ): bool,
-            vol.Optional(
+            probatio.Optional(
                 CONF_ARP_PING,
                 default=self.config_entry.options.get(CONF_ARP_PING, False),
             ): bool,
-            vol.Optional(
+            probatio.Optional(
                 CONF_DETECTION_TIME,
                 default=self.config_entry.options.get(
                     CONF_DETECTION_TIME, DEFAULT_DETECTION_TIME
@@ -165,5 +148,5 @@ class MikrotikOptionsFlowHandler(OptionsFlow):
         }
 
         return self.async_show_form(
-            step_id="device_tracker", data_schema=vol.Schema(options)
+            step_id="device_tracker", data_schema=probatio.Schema(options)
         )

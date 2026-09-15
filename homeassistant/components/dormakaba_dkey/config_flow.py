@@ -1,30 +1,28 @@
 """Config flow for Dormakaba dKey integration."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
 import logging
-from typing import Any
+from typing import Any, override
 
 from bleak import BleakError
+import probatio
 from py_dormakaba_dkey import DKEYLock, device_filter, errors as dkey_errors
-import voluptuous as vol
 
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
     async_discovered_service_info,
     async_last_service_info,
 )
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import SOURCE_REAUTH, ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ADDRESS
 
 from .const import CONF_ASSOCIATION_DATA, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-STEP_ASSOCIATE_SCHEMA = vol.Schema(
+STEP_ASSOCIATE_SCHEMA = probatio.Schema(
     {
-        vol.Required("activation_code"): str,
+        probatio.Required("activation_code"): str,
     }
 )
 
@@ -34,8 +32,6 @@ class DormkabaConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    _reauth_entry: ConfigEntry | None = None
-
     def __init__(self) -> None:
         """Initialize the config flow."""
         self._lock: DKEYLock | None = None
@@ -44,6 +40,7 @@ class DormkabaConfigFlow(ConfigFlow, domain=DOMAIN):
         # Populated by bluetooth, reauth_confirm and user steps
         self._discovery_info: BluetoothServiceInfoBleak | None = None
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -59,7 +56,7 @@ class DormkabaConfigFlow(ConfigFlow, domain=DOMAIN):
             self._discovery_info = self._discovered_devices[address]
             return await self.async_step_associate()
 
-        current_addresses = self._async_current_ids()
+        current_addresses = self._async_current_ids(include_ignore=False)
         for discovery in async_discovered_service_info(self.hass):
             if (
                 discovery.address in current_addresses
@@ -72,9 +69,9 @@ class DormkabaConfigFlow(ConfigFlow, domain=DOMAIN):
         if not self._discovered_devices:
             return self.async_abort(reason="no_devices_found")
 
-        data_schema = vol.Schema(
+        data_schema = probatio.Schema(
             {
-                vol.Required(CONF_ADDRESS): vol.In(
+                probatio.Required(CONF_ADDRESS): probatio.In(
                     {
                         service_info.address: (
                             f"{service_info.name} ({service_info.address})"
@@ -90,6 +87,7 @@ class DormkabaConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    @override
     async def async_step_bluetooth(
         self, discovery_info: BluetoothServiceInfoBleak
     ) -> ConfigFlowResult:
@@ -121,9 +119,6 @@ class DormkabaConfigFlow(ConfigFlow, domain=DOMAIN):
         self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
         """Handle reauthorization request."""
-        self._reauth_entry = self.hass.config_entries.async_get_entry(
-            self.context["entry_id"]
-        )
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
@@ -131,13 +126,11 @@ class DormkabaConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Handle reauthorization flow."""
         errors = {}
-        reauth_entry = self._reauth_entry
-        assert reauth_entry is not None
 
         if user_input is not None:
             if (
                 discovery_info := async_last_service_info(
-                    self.hass, reauth_entry.data[CONF_ADDRESS], True
+                    self.hass, self._get_reauth_entry().data[CONF_ADDRESS], True
                 )
             ) is None:
                 errors = {"base": "no_longer_in_range"}
@@ -146,7 +139,7 @@ class DormkabaConfigFlow(ConfigFlow, domain=DOMAIN):
                 return await self.async_step_associate()
 
         return self.async_show_form(
-            step_id="reauth_confirm", data_schema=vol.Schema({}), errors=errors
+            step_id="reauth_confirm", data_schema=probatio.Schema({}), errors=errors
         )
 
     async def async_step_associate(
@@ -183,10 +176,10 @@ class DormkabaConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_ADDRESS: self._discovery_info.device.address,
                 CONF_ASSOCIATION_DATA: association_data.to_json(),
             }
-            if reauth_entry := self._reauth_entry:
-                self.hass.config_entries.async_update_entry(reauth_entry, data=data)
-                await self.hass.config_entries.async_reload(reauth_entry.entry_id)
-                return self.async_abort(reason="reauth_successful")
+            if self.source == SOURCE_REAUTH:
+                return self.async_update_reload_and_abort(
+                    self._get_reauth_entry(), data=data
+                )
 
             return self.async_create_entry(
                 title=lock.device_info.device_name

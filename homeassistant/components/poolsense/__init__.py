@@ -4,14 +4,11 @@ import logging
 
 from poolsense import PoolSense
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import aiohttp_client
 
-from .coordinator import PoolSenseDataUpdateCoordinator
-
-type PoolSenseConfigEntry = ConfigEntry[PoolSenseDataUpdateCoordinator]
+from .coordinator import PoolSenseConfigEntry, PoolSenseDataUpdateCoordinator
 
 PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR]
 
@@ -26,6 +23,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: PoolSenseConfigEntry) ->
         aiohttp_client.async_get_clientsession(hass),
         entry.data[CONF_EMAIL],
         entry.data[CONF_PASSWORD],
+        None,
     )
     auth_valid = await poolsense.test_poolsense_credentials()
 
@@ -33,7 +31,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: PoolSenseConfigEntry) ->
         _LOGGER.error("Invalid authentication")
         return False
 
-    coordinator = PoolSenseDataUpdateCoordinator(hass, poolsense)
+    coordinator = PoolSenseDataUpdateCoordinator(hass, entry, poolsense)
 
     await coordinator.async_config_entry_first_refresh()
 

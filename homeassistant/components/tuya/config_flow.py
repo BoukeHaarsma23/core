@@ -1,14 +1,12 @@
 """Config flow for Tuya."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, override
 
+import probatio
 from tuya_sharing import LoginControl
-import voluptuous as vol
 
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import SOURCE_REAUTH, ConfigFlow, ConfigFlowResult
 from homeassistant.helpers import selector
 
 from .const import (
@@ -32,12 +30,12 @@ class TuyaConfigFlow(ConfigFlow, domain=DOMAIN):
 
     __user_code: str
     __qr_code: str
-    __reauth_entry: ConfigEntry | None = None
 
     def __init__(self) -> None:
         """Initialize the config flow."""
         self.__login_control = LoginControl()
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -62,9 +60,9 @@ class TuyaConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(
+                    probatio.Required(
                         CONF_USER_CODE, default=user_input.get(CONF_USER_CODE, "")
                     ): str,
                 }
@@ -80,9 +78,9 @@ class TuyaConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is None:
             return self.async_show_form(
                 step_id="scan",
-                data_schema=vol.Schema(
+                data_schema=probatio.Schema(
                     {
-                        vol.Optional("QR"): selector.QrCodeSelector(
+                        probatio.Optional("QR"): selector.QrCodeSelector(
                             config=selector.QrCodeSelectorConfig(
                                 data=f"tuyaSmart--qrLogin?token={self.__qr_code}",
                                 scale=5,
@@ -105,9 +103,9 @@ class TuyaConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_show_form(
                 step_id="scan",
                 errors={"base": "login_error"},
-                data_schema=vol.Schema(
+                data_schema=probatio.Schema(
                     {
-                        vol.Optional("QR"): selector.QrCodeSelector(
+                        probatio.Optional("QR"): selector.QrCodeSelector(
                             config=selector.QrCodeSelectorConfig(
                                 data=f"tuyaSmart--qrLogin?token={self.__qr_code}",
                                 scale=5,
@@ -135,9 +133,9 @@ class TuyaConfigFlow(ConfigFlow, domain=DOMAIN):
             CONF_ENDPOINT: info[CONF_ENDPOINT],
         }
 
-        if self.__reauth_entry:
+        if self.source == SOURCE_REAUTH:
             return self.async_update_reload_and_abort(
-                self.__reauth_entry,
+                self._get_reauth_entry(),
                 data=entry_data,
             )
 
@@ -146,16 +144,12 @@ class TuyaConfigFlow(ConfigFlow, domain=DOMAIN):
             data=entry_data,
         )
 
-    async def async_step_reauth(self, _: Mapping[str, Any]) -> ConfigFlowResult:
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
         """Handle initiation of re-authentication with Tuya."""
-        self.__reauth_entry = self.hass.config_entries.async_get_entry(
-            self.context["entry_id"]
-        )
-
-        if self.__reauth_entry and CONF_USER_CODE in self.__reauth_entry.data:
-            success, _ = await self.__async_get_qr_code(
-                self.__reauth_entry.data[CONF_USER_CODE]
-            )
+        if CONF_USER_CODE in entry_data:
+            success, _ = await self.__async_get_qr_code(entry_data[CONF_USER_CODE])
             if success:
                 return await self.async_step_scan()
 
@@ -185,9 +179,9 @@ class TuyaConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="reauth_user_code",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(
+                    probatio.Required(
                         CONF_USER_CODE, default=user_input.get(CONF_USER_CODE, "")
                     ): str,
                 }

@@ -1,9 +1,7 @@
 """Support for esphome numbers."""
 
-from __future__ import annotations
-
 from functools import partial
-import math
+from typing import override
 
 from aioesphomeapi import (
     EntityInfo,
@@ -19,10 +17,12 @@ from homeassistant.util.enum import try_parse_enum
 from .entity import (
     EsphomeEntity,
     convert_api_error_ha_error,
-    esphome_state_property,
+    esphome_float_state_property,
     platform_async_setup_entry,
 )
 from .enum_mapper import EsphomeEnumMapper
+
+PARALLEL_UPDATES = 0
 
 NUMBER_MODES: EsphomeEnumMapper[EsphomeNumberMode, NumberMode] = EsphomeEnumMapper(
     {
@@ -37,6 +37,7 @@ class EsphomeNumber(EsphomeEntity[NumberInfo, NumberState], NumberEntity):
     """A number implementation for esphome."""
 
     @callback
+    @override
     def _on_static_info_update(self, static_info: EntityInfo) -> None:
         """Set attrs from static info."""
         super()._on_static_info_update(static_info)
@@ -57,18 +58,20 @@ class EsphomeNumber(EsphomeEntity[NumberInfo, NumberState], NumberEntity):
             self._attr_mode = NumberMode.AUTO
 
     @property
-    @esphome_state_property
+    @esphome_float_state_property
+    @override
     def native_value(self) -> float | None:
         """Return the state of the entity."""
         state = self._state
-        if state.missing_state or not math.isfinite(state.state):
-            return None
-        return state.state
+        return None if state.missing_state else state.state
 
     @convert_api_error_ha_error
+    @override
     async def async_set_native_value(self, value: float) -> None:
         """Update the current value."""
-        self._client.number_command(self._key, value)
+        self._client.number_command(
+            self._key, value, device_id=self._static_info.device_id
+        )
 
 
 async_setup_entry = partial(

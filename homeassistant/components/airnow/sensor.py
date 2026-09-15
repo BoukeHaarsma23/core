@@ -1,11 +1,10 @@
 """Support for the AirNow sensor service."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any
+from typing import Any, override
+
+from dateutil import parser
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -13,18 +12,13 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import (
-    ATTR_TIME,
-    CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
-    CONCENTRATION_PARTS_PER_MILLION,
-)
+from homeassistant.const import ATTR_TIME, UnitOfDensity, UnitOfRatio
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import AirNowConfigEntry, AirNowDataUpdateCoordinator
 from .const import (
     ATTR_API_AQI,
     ATTR_API_AQI_DESCRIPTION,
@@ -34,13 +28,15 @@ from .const import (
     ATTR_API_PM25,
     ATTR_API_REPORT_DATE,
     ATTR_API_REPORT_HOUR,
-    ATTR_API_REPORT_TZINFO,
+    ATTR_API_REPORT_TZ,
     ATTR_API_STATION,
     ATTR_API_STATION_LATITUDE,
     ATTR_API_STATION_LONGITUDE,
     DEFAULT_NAME,
     DOMAIN,
+    US_TZ_OFFSETS,
 )
+from .coordinator import AirNowConfigEntry, AirNowDataUpdateCoordinator
 
 ATTRIBUTION = "Data provided by AirNow"
 
@@ -69,6 +65,20 @@ def station_extra_attrs(data: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def aqi_extra_attrs(data: dict[str, Any]) -> dict[str, Any]:
+    """Process extra attributes for main AQI sensor."""
+    return {
+        ATTR_DESCR: data[ATTR_API_AQI_DESCRIPTION],
+        ATTR_LEVEL: data[ATTR_API_AQI_LEVEL],
+        ATTR_TIME: parser.parse(
+            f"{data[ATTR_API_REPORT_DATE]} "
+            f"{data[ATTR_API_REPORT_HOUR]}:00 "
+            f"{data[ATTR_API_REPORT_TZ]}",
+            tzinfos=US_TZ_OFFSETS,
+        ).isoformat(),
+    }
+
+
 SENSOR_TYPES: tuple[AirNowEntityDescription, ...] = (
     AirNowEntityDescription(
         key=ATTR_API_AQI,
@@ -76,21 +86,12 @@ SENSOR_TYPES: tuple[AirNowEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         device_class=SensorDeviceClass.AQI,
         value_fn=lambda data: data.get(ATTR_API_AQI),
-        extra_state_attributes_fn=lambda data: {
-            ATTR_DESCR: data[ATTR_API_AQI_DESCRIPTION],
-            ATTR_LEVEL: data[ATTR_API_AQI_LEVEL],
-            ATTR_TIME: datetime.strptime(
-                f"{data[ATTR_API_REPORT_DATE]} {data[ATTR_API_REPORT_HOUR]}",
-                "%Y-%m-%d %H",
-            )
-            .replace(tzinfo=data[ATTR_API_REPORT_TZINFO])
-            .isoformat(),
-        },
+        extra_state_attributes_fn=aqi_extra_attrs,
     ),
     AirNowEntityDescription(
         key=ATTR_API_PM10,
         translation_key="pm10",
-        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        native_unit_of_measurement=UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
         state_class=SensorStateClass.MEASUREMENT,
         device_class=SensorDeviceClass.PM10,
         value_fn=lambda data: data.get(ATTR_API_PM10),
@@ -99,7 +100,7 @@ SENSOR_TYPES: tuple[AirNowEntityDescription, ...] = (
     AirNowEntityDescription(
         key=ATTR_API_PM25,
         translation_key="pm25",
-        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+        native_unit_of_measurement=UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
         state_class=SensorStateClass.MEASUREMENT,
         device_class=SensorDeviceClass.PM25,
         value_fn=lambda data: data.get(ATTR_API_PM25),
@@ -108,7 +109,7 @@ SENSOR_TYPES: tuple[AirNowEntityDescription, ...] = (
     AirNowEntityDescription(
         key=ATTR_API_O3,
         translation_key="o3",
-        native_unit_of_measurement=CONCENTRATION_PARTS_PER_MILLION,
+        native_unit_of_measurement=UnitOfRatio.PARTS_PER_MILLION,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda data: data.get(ATTR_API_O3),
         extra_state_attributes_fn=None,
@@ -125,7 +126,7 @@ SENSOR_TYPES: tuple[AirNowEntityDescription, ...] = (
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: AirNowConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up AirNow sensor entities based on a config entry."""
     coordinator = config_entry.runtime_data
@@ -163,11 +164,13 @@ class AirNowSensor(CoordinatorEntity[AirNowDataUpdateCoordinator], SensorEntity)
         )
 
     @property
+    @override
     def native_value(self) -> StateType:
         """Return the state."""
         return self.entity_description.value_fn(self.coordinator.data)
 
     @property
+    @override
     def extra_state_attributes(self) -> dict[str, str] | None:
         """Return the state attributes."""
         if self.entity_description.extra_state_attributes_fn:

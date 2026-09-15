@@ -1,10 +1,9 @@
 """Define an object to manage fetching Mealie data."""
 
-from __future__ import annotations
-
 from abc import abstractmethod
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import override
 
 from aiomealie import (
     MealieAuthenticationError,
@@ -16,14 +15,15 @@ from aiomealie import (
     ShoppingList,
     Statistics,
 )
+from awesomeversion import AwesomeVersion
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-import homeassistant.util.dt as dt_util
+from homeassistant.util import dt as dt_util
 
-from .const import LOGGER
+from .const import DOMAIN, LOGGER
 
 WEEK = timedelta(days=7)
 
@@ -33,6 +33,7 @@ class MealieData:
     """Mealie data type."""
 
     client: MealieClient
+    version: AwesomeVersion
     mealplan_coordinator: MealieMealplanCoordinator
     shoppinglist_coordinator: MealieShoppingListCoordinator
     statistics_coordinator: MealieStatisticsCoordinator
@@ -48,24 +49,34 @@ class MealieDataUpdateCoordinator[_DataT](DataUpdateCoordinator[_DataT]):
     _name: str
     _update_interval: timedelta
 
-    def __init__(self, hass: HomeAssistant, client: MealieClient) -> None:
+    def __init__(
+        self, hass: HomeAssistant, config_entry: MealieConfigEntry, client: MealieClient
+    ) -> None:
         """Initialize the Mealie data coordinator."""
         super().__init__(
             hass,
             LOGGER,
-            name=self._name,
+            config_entry=config_entry,
+            name=f"Mealie {self._name}",
             update_interval=self._update_interval,
         )
         self.client = client
 
+    @override
     async def _async_update_data(self) -> _DataT:
         """Fetch data from Mealie."""
         try:
             return await self._async_update_internal()
         except MealieAuthenticationError as error:
-            raise ConfigEntryAuthFailed from error
+            raise ConfigEntryAuthFailed(
+                translation_domain=DOMAIN,
+                translation_key="auth_failed",
+            ) from error
         except MealieConnectionError as error:
-            raise UpdateFailed(error) from error
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key=f"update_failed_{self._name}",
+            ) from error
 
     @abstractmethod
     async def _async_update_internal(self) -> _DataT:
@@ -77,9 +88,10 @@ class MealieMealplanCoordinator(
 ):
     """Class to manage fetching Mealie data."""
 
-    _name = "MealieMealplan"
+    _name = "mealplan"
     _update_interval = timedelta(hours=1)
 
+    @override
     async def _async_update_internal(self) -> dict[MealplanEntryType, list[Mealplan]]:
         next_week = dt_util.now() + WEEK
         current_date = dt_util.now().date()
@@ -106,9 +118,10 @@ class MealieShoppingListCoordinator(
 ):
     """Class to manage fetching Mealie Shopping list data."""
 
-    _name = "MealieShoppingList"
+    _name = "shopping_list"
     _update_interval = timedelta(minutes=5)
 
+    @override
     async def _async_update_internal(
         self,
     ) -> dict[str, ShoppingListData]:
@@ -130,9 +143,10 @@ class MealieShoppingListCoordinator(
 class MealieStatisticsCoordinator(MealieDataUpdateCoordinator[Statistics]):
     """Class to manage fetching Mealie Statistics data."""
 
-    _name = "MealieStatistics"
+    _name = "statistics"
     _update_interval = timedelta(minutes=15)
 
+    @override
     async def _async_update_internal(
         self,
     ) -> Statistics:

@@ -1,14 +1,17 @@
 """Config flow for WS66i 6-Zone Amplifier integration."""
 
-from __future__ import annotations
-
 import logging
-from typing import Any
+from typing import Any, override
 
+import probatio
 from pyws66i import WS66i, get_ws66i
-import voluptuous as vol
 
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlowWithReload,
+)
 from homeassistant.const import CONF_IP_ADDRESS
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
@@ -36,15 +39,15 @@ SOURCES = [
     CONF_SOURCE_6,
 ]
 
-OPTIONS_SCHEMA = {vol.Optional(source): str for source in SOURCES}
+OPTIONS_SCHEMA = {probatio.Optional(source): str for source in SOURCES}
 
-DATA_SCHEMA = vol.Schema({vol.Required(CONF_IP_ADDRESS): str})
+DATA_SCHEMA = probatio.Schema({probatio.Required(CONF_IP_ADDRESS): str})
 
 FIRST_ZONE = 11
 
 
 @callback
-def _sources_from_config(data):
+def _sources_from_config(data: dict[str, str]) -> dict[str, str]:
     sources_config = {
         str(idx + 1): data.get(source) for idx, source in enumerate(SOURCES)
     }
@@ -94,7 +97,10 @@ class WS66iConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    async def async_step_user(self, user_input=None):
+    @override
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle the initial step."""
         errors = {}
         if user_input is not None:
@@ -119,28 +125,29 @@ class WS66iConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
+    @override
     def async_get_options_flow(
         config_entry: ConfigEntry,
     ) -> Ws66iOptionsFlowHandler:
         """Define the config flow to handle options."""
-        return Ws66iOptionsFlowHandler(config_entry)
+        return Ws66iOptionsFlowHandler()
 
 
 @callback
-def _key_for_source(index, source, previous_sources):
-    return vol.Required(
+def _key_for_source(
+    index: int, source: str, previous_sources: dict[str, str]
+) -> probatio.Required:
+    return probatio.Required(
         source, description={"suggested_value": previous_sources[str(index)]}
     )
 
 
-class Ws66iOptionsFlowHandler(OptionsFlow):
+class Ws66iOptionsFlowHandler(OptionsFlowWithReload):
     """Handle a WS66i options flow."""
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialize."""
-        self.config_entry = config_entry
-
-    async def async_step_init(self, user_input=None):
+    async def async_step_init(
+        self, user_input: dict[str, str] | None = None
+    ) -> ConfigFlowResult:
         """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(
@@ -157,7 +164,7 @@ class Ws66iOptionsFlowHandler(OptionsFlow):
 
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(options),
+            data_schema=probatio.Schema(options),
         )
 
 

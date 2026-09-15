@@ -25,7 +25,7 @@ from homeassistant.const import (
     STATE_PLAYING,
 )
 from homeassistant.core import HomeAssistant
-import homeassistant.util.dt as dt_util
+from homeassistant.util import dt as dt_util
 
 from .const import DEFAULT_DATA, DEFAULT_OPTIONS, PLEX_DIRECT_URL
 from .helpers import trigger_plex_update, wait_for_debouncer
@@ -209,9 +209,12 @@ async def test_setup_when_certificate_changed(
     class WrongCertHostnameException(requests.exceptions.SSLError):
         """Mock the exception showing a mismatched hostname."""
 
-        def __init__(self):  # pylint: disable=super-init-not-called
+        def __init__(self) -> None:  # pylint: disable=super-init-not-called
+            # Shaped the way it is really raised: OSError args of (errno, message)
             self.__context__ = ssl.SSLCertVerificationError(
-                f"hostname '{old_domain}' doesn't match"
+                1,
+                "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed:"
+                f" Hostname mismatch, certificate is not valid for '{old_domain}'.",
             )
 
     old_domain = "1-2-3-4.1111111111ffffff1111111111ffffff.plex.direct"

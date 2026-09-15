@@ -1,9 +1,8 @@
 """Tests for the lifx component."""
 
-from __future__ import annotations
-
 from datetime import timedelta
 import socket
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -37,7 +36,7 @@ async def test_configuring_lifx_causes_discovery(hass: HomeAssistant) -> None:
     class MockLifxDiscovery:
         """Mock lifx discovery."""
 
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
             """Init discovery."""
             discovered = _mocked_bulb()
             self.lights = {discovered.mac_addr: discovered}
@@ -137,7 +136,7 @@ async def test_dns_error_at_startup(hass: HomeAssistant) -> None:
     class MockLifxConnectonDnsError:
         """Mock lifx connection with a dns error."""
 
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
             """Init connection."""
             self.device = bulb
 
@@ -176,6 +175,6 @@ async def test_config_entry_wrong_serial(
         assert already_migrated_config_entry.state is ConfigEntryState.SETUP_RETRY
 
     assert (
-        "Unexpected device found at 127.0.0.1; expected aa:bb:cc:dd:ee:c0, found aa:bb:cc:dd:ee:cc"
-        in caplog.text
+        "Unexpected device found at 127.0.0.1; expected"
+        " aa:bb:cc:dd:ee:c0, found aa:bb:cc:dd:ee:cc" in caplog.text
     )

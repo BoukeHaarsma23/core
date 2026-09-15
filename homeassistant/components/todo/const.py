@@ -1,8 +1,17 @@
 """Constants for the To-do integration."""
 
 from enum import IntFlag, StrEnum
+from typing import TYPE_CHECKING, Final
 
-DOMAIN = "todo"
+from homeassistant.util.hass_dict import HassKey
+
+if TYPE_CHECKING:
+    from homeassistant.helpers.entity_component import EntityComponent
+
+    from . import TodoListEntity
+
+DOMAIN: Final = "todo"
+DATA_COMPONENT: HassKey[EntityComponent[TodoListEntity]] = HassKey(DOMAIN)
 
 ATTR_DUE = "due"
 ATTR_DUE_DATE = "due_date"

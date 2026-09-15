@@ -1,27 +1,25 @@
 """Config flow flow LIFX."""
 
-from __future__ import annotations
-
 import socket
-from typing import Any
+from typing import Any, Self, override
 
 from aiolifx.aiolifx import Light
 from aiolifx.connection import LIFXConnection
-import voluptuous as vol
+import probatio
 
-from homeassistant.components import zeroconf
-from homeassistant.components.dhcp import DhcpServiceInfo
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_DEVICE, CONF_HOST
 from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 from homeassistant.helpers.typing import DiscoveryInfoType
 
 from .const import (
-    _LOGGER,
     CONF_SERIAL,
     DEFAULT_ATTEMPTS,
     DOMAIN,
+    LOGGER,
     OVERALL_TIMEOUT,
     TARGET_ANY,
 )
@@ -41,11 +39,14 @@ class LifXConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    host: str | None = None
+
     def __init__(self) -> None:
         """Initialize the config flow."""
         self._discovered_devices: dict[str, Light] = {}
         self._discovered_device: Light | None = None
 
+    @override
     async def async_step_dhcp(
         self, discovery_info: DhcpServiceInfo
     ) -> ConfigFlowResult:
@@ -69,12 +70,14 @@ class LifXConfigFlow(ConfigFlow, domain=DOMAIN):
                 return self.async_abort(reason="already_configured")
         return await self._async_handle_discovery(host)
 
+    @override
     async def async_step_homekit(
-        self, discovery_info: zeroconf.ZeroconfServiceInfo
+        self, discovery_info: ZeroconfServiceInfo
     ) -> ConfigFlowResult:
         """Handle HomeKit discovery."""
         return await self._async_handle_discovery(host=discovery_info.host)
 
+    @override
     async def async_step_integration_discovery(
         self, discovery_info: DiscoveryInfoType
     ) -> ConfigFlowResult:
@@ -90,11 +93,8 @@ class LifXConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Handle any discovery."""
         self._async_abort_entries_match({CONF_HOST: host})
-        self.context[CONF_HOST] = host
-        if any(
-            progress.get("context", {}).get(CONF_HOST) == host
-            for progress in self._async_in_progress()
-        ):
+        self.host = host
+        if self.hass.config_entries.flow.async_has_matching_flow(self):
             return self.async_abort(reason="already_in_progress")
         if not (
             device := await self._async_try_connect(
@@ -105,6 +105,11 @@ class LifXConfigFlow(ConfigFlow, domain=DOMAIN):
         self._discovered_device = device
         return await self.async_step_discovery_confirm()
 
+    @override
+    def is_matching(self, other_flow: Self) -> bool:
+        """Return True if other_flow is matching this flow."""
+        return other_flow.host == self.host
+
     @callback
     def _async_discovered_pending_migration(self) -> bool:
         """Check if a discovered device is pending migration."""
@@ -112,12 +117,12 @@ class LifXConfigFlow(ConfigFlow, domain=DOMAIN):
         if not (legacy_entry := async_get_legacy_entry(self.hass)):
             return False
         device_registry = dr.async_get(self.hass)
-        existing_device = device_registry.async_get_device(
+        existing_devices = device_registry.async_get_devices(
             identifiers={(DOMAIN, self.unique_id)}
         )
-        return bool(
-            existing_device is not None
-            and legacy_entry.entry_id in existing_device.config_entries
+        return any(
+            device.config_entry_id == legacy_entry.entry_id
+            for device in existing_devices
         )
 
     async def async_step_discovery_confirm(
@@ -126,7 +131,7 @@ class LifXConfigFlow(ConfigFlow, domain=DOMAIN):
         """Confirm discovery."""
         assert self._discovered_device is not None
         discovered = self._discovered_device
-        _LOGGER.debug(
+        LOGGER.debug(
             "Confirming discovery of %s (%s) [%s]",
             discovered.label,
             discovered.group,
@@ -146,6 +151,7 @@ class LifXConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="discovery_confirm", description_placeholders=placeholders
         )
 
+    @override
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -164,7 +170,9 @@ class LifXConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({vol.Optional(CONF_HOST, default=""): str}),
+            data_schema=probatio.Schema(
+                {probatio.Optional(CONF_HOST, default=""): str}
+            ),
             errors=errors,
         )
 
@@ -205,7 +213,9 @@ class LifXConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="no_devices_found")
         return self.async_show_form(
             step_id="pick_device",
-            data_schema=vol.Schema({vol.Required(CONF_DEVICE): vol.In(devices_name)}),
+            data_schema=probatio.Schema(
+                {probatio.Required(CONF_DEVICE): probatio.In(devices_name)}
+            ),
         )
 
     @callback

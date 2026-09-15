@@ -1,33 +1,30 @@
 """Support for deCONZ switches."""
 
-from __future__ import annotations
-
-from typing import Any
+from typing import Any, override
 
 from pydeconz.models.event import EventType
 from pydeconz.models.light.light import Light
 
-from homeassistant.components.switch import DOMAIN, SwitchEntity
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN, SwitchEntity
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
+from . import DeconzConfigEntry
 from .const import POWER_PLUGS
-from .deconz_device import DeconzDevice
-from .hub import DeconzHub
+from .entity import DeconzDevice
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    config_entry: DeconzConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up switches for deCONZ component.
 
     Switches are based on the same device class as lights in deCONZ.
     """
-    hub = DeconzHub.get_hub(hass, config_entry)
-    hub.entities[DOMAIN] = set()
+    hub = config_entry.runtime_data
+    hub.entities[SWITCH_DOMAIN] = set()
 
     @callback
     def async_add_switch(_: EventType, switch_id: str) -> None:
@@ -46,13 +43,15 @@ async def async_setup_entry(
 class DeconzPowerPlug(DeconzDevice[Light], SwitchEntity):
     """Representation of a deCONZ power plug."""
 
-    TYPE = DOMAIN
+    TYPE = SWITCH_DOMAIN
 
     @property
+    @override
     def is_on(self) -> bool:
         """Return true if switch is on."""
         return self._device.on
 
+    @override
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on switch."""
         await self.hub.api.lights.lights.set_state(
@@ -60,6 +59,7 @@ class DeconzPowerPlug(DeconzDevice[Light], SwitchEntity):
             on=True,
         )
 
+    @override
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off switch."""
         await self.hub.api.lights.lights.set_state(
